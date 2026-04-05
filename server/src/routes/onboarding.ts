@@ -51,103 +51,107 @@ export function createOnboardingRoutes(db: Db): Router {
       }
     }
 
-    // Use a transaction for atomicity
-    const result = await db.transaction(async (tx) => {
-      // 1. Create family
-      const [family] = await tx
-        .insert(families)
+    // SQLite transactions are synchronous with better-sqlite3/Drizzle
+    // So we run inserts outside a manual transaction wrapper
+    // (Drizzle's SQLite driver handles this correctly with individual inserts)
+
+    // 1. Create family
+    const [family] = db
+      .insert(families)
+      .values({
+        name: familyName,
+        timezone: timezone ?? "America/New_York",
+      })
+      .returning()
+      .all();
+
+    // 2. Create members + agents
+    const createdMembers = [];
+    const createdAgents = [];
+
+    for (const m of members) {
+      const [member] = db
+        .insert(familyMembers)
         .values({
-          name: familyName,
-          timezone: timezone ?? "America/New_York",
+          familyId: family.id,
+          name: m.name,
+          role: m.role,
+          age: m.age,
+          telegramUserId: m.telegramUserId ?? null,
         })
-        .returning();
+        .returning()
+        .all();
 
-      // 2. Create members + agents
-      const createdMembers = [];
-      const createdAgents = [];
+      createdMembers.push(member);
 
-      for (const m of members) {
-        const [member] = await tx
-          .insert(familyMembers)
-          .values({
+      const model = DEFAULT_MODELS[m.role] ?? DEFAULT_MODELS.child;
+      const budget = DEFAULT_BUDGETS[m.role] ?? DEFAULT_BUDGETS.child;
+
+      const [agent] = db
+        .insert(agents)
+        .values({
+          familyId: family.id,
+          memberId: member.id,
+          model,
+          budgetMonthlyCents: budget,
+        })
+        .returning()
+        .all();
+
+      createdAgents.push(agent);
+    }
+
+    // 3. Create constitution + rules
+    let constitution = null;
+    let createdRules: any[] = [];
+
+    if (rules && Array.isArray(rules) && rules.length > 0) {
+      [constitution] = db
+        .insert(constitutions)
+        .values({
+          familyId: family.id,
+          version: 1,
+          content: "Constitution v1",
+          isActive: true,
+        })
+        .returning()
+        .all();
+
+      createdRules = db
+        .insert(constitutionRules)
+        .values(
+          rules.map((rule: any, idx: number) => ({
+            constitutionId: constitution!.id,
             familyId: family.id,
-            name: m.name,
-            role: m.role,
-            age: m.age,
-            telegramUserId: m.telegramUserId ?? null,
-          })
-          .returning();
+            category: rule.category,
+            ruleText: rule.ruleText,
+            enforcementLevel: rule.enforcementLevel,
+            evaluationType: rule.evaluationType,
+            evaluationConfig: rule.evaluationConfig ?? null,
+            appliesToRoles: rule.appliesToRoles ?? null,
+            appliesToMinAge: rule.appliesToMinAge ?? null,
+            appliesToMaxAge: rule.appliesToMaxAge ?? null,
+            sortOrder: rule.sortOrder ?? idx,
+          }))
+        )
+        .returning()
+        .all();
+    }
 
-        createdMembers.push(member);
+    // 4. Record onboarding state
+    db.insert(onboardingState).values({
+      familyId: family.id,
+      step: rules && rules.length > 0 ? 3 : 2,
+      answers: { familyName, timezone, memberCount: members.length, ruleCount: rules?.length ?? 0 },
+    }).run();
 
-        const model = DEFAULT_MODELS[m.role] ?? DEFAULT_MODELS.child;
-        const budget = DEFAULT_BUDGETS[m.role] ?? DEFAULT_BUDGETS.child;
-
-        const [agent] = await tx
-          .insert(agents)
-          .values({
-            familyId: family.id,
-            memberId: member.id,
-            model,
-            budgetMonthlyCents: budget,
-          })
-          .returning();
-
-        createdAgents.push(agent);
-      }
-
-      // 3. Create constitution + rules
-      let constitution = null;
-      let createdRules: any[] = [];
-
-      if (rules && Array.isArray(rules) && rules.length > 0) {
-        [constitution] = await tx
-          .insert(constitutions)
-          .values({
-            familyId: family.id,
-            version: 1,
-            content: "Constitution v1",
-            isActive: true,
-          })
-          .returning();
-
-        createdRules = await tx
-          .insert(constitutionRules)
-          .values(
-            rules.map((rule: any, idx: number) => ({
-              constitutionId: constitution!.id,
-              familyId: family.id,
-              category: rule.category,
-              ruleText: rule.ruleText,
-              enforcementLevel: rule.enforcementLevel,
-              evaluationType: rule.evaluationType,
-              evaluationConfig: rule.evaluationConfig ?? null,
-              appliesToRoles: rule.appliesToRoles ?? null,
-              appliesToMinAge: rule.appliesToMinAge ?? null,
-              appliesToMaxAge: rule.appliesToMaxAge ?? null,
-              sortOrder: rule.sortOrder ?? idx,
-            }))
-          )
-          .returning();
-      }
-
-      // 4. Record onboarding state
-      await tx.insert(onboardingState).values({
-        familyId: family.id,
-        step: rules && rules.length > 0 ? 3 : 2, // step 1=family, 2=members, 3=rules
-        answers: { familyName, timezone, memberCount: members.length, ruleCount: rules?.length ?? 0 },
-      });
-
-      return {
-        family,
-        members: createdMembers,
-        agents: createdAgents,
-        constitution,
-        rules: createdRules,
-      };
+    res.status(201).json({
+      family,
+      members: createdMembers,
+      agents: createdAgents,
+      constitution,
+      rules: createdRules,
     });
-
-    res.status(201).json(result);
   });
 
   // GET /state/:familyId — return onboarding progress

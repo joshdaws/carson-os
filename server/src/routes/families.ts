@@ -25,6 +25,9 @@ export function createFamilyRoutes(db: Db): Router {
         telegramUserId: familyMembers.telegramUserId,
         agentId: agents.id,
         agentStatus: agents.status,
+        agentModel: agents.model,
+        agentBudgetMonthlyCents: agents.budgetMonthlyCents,
+        agentSpentMonthlyCents: agents.spentMonthlyCents,
       })
       .from(familyMembers)
       .leftJoin(agents, eq(agents.memberId, familyMembers.id))
@@ -39,7 +42,15 @@ export function createFamilyRoutes(db: Db): Router {
         role: m.role,
         age: m.age,
         telegramUserId: m.telegramUserId,
-        agent: m.agentId ? { id: m.agentId, status: m.agentStatus } : null,
+        agent: m.agentId
+          ? {
+              id: m.agentId,
+              status: m.agentStatus,
+              model: m.agentModel,
+              budgetMonthlyCents: m.agentBudgetMonthlyCents ?? 0,
+              spentMonthlyCents: m.agentSpentMonthlyCents ?? 0,
+            }
+          : null,
       })),
     };
   }
