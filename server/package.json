@@ -1,0 +1,31 @@
+{
+  "name": "@carsonos/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@carsonos/db": "workspace:*",
+    "@carsonos/shared": "workspace:*",
+    "drizzle-orm": "^0.38.0",
+    "express": "^5.1.0",
+    "grammy": "^1.35.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
