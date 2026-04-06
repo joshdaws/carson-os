@@ -600,7 +600,7 @@ export function StaffDetailPage() {
         </div>
         <div>
           {conversations.length === 0 && (
-            <p className="text-sm p-4" style={{ color: "#8a8070" }}>No conversations yet.</p>
+            <p className="text-sm p-4" style={{ color: "#8a8070" }}>Conversations appear when family members message this agent via Telegram.</p>
           )}
           {conversations.slice(0, 5).map((c) => (
             <Link

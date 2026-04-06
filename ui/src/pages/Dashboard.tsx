@@ -419,7 +419,8 @@ function PersonalAgentsZone({
 
       {agents.length === 0 && (
         <p className="text-sm" style={{ color: C.textMuted }}>
-          No family-visible agents configured.
+          No personal agents yet.{" "}
+          <a href="/household" className="underline" style={{ color: C.burgundy }}>Create your first agent</a> to get started.
         </p>
       )}
     </section>
@@ -515,7 +516,8 @@ function InternalAgentsZone({ agents }: { agents: StaffAgent[] }) {
           ))}
           {agents.length === 0 && (
             <p className="text-sm" style={{ color: C.textMuted }}>
-              No internal agents configured.
+              No internal staff yet. Create specialist agents (tutor, coach, scheduler) from the{" "}
+              <a href="/household" className="underline" style={{ color: C.burgundy }}>Household page</a>.
             </p>
           )}
         </div>
@@ -792,7 +794,7 @@ export function DashboardPage() {
                 </div>
               ) : (
                 <p className="text-sm" style={{ color: C.textMuted }}>
-                  No recent activity.
+                  Activity will appear when agents start working.
                 </p>
               )}
             </CardContent>
@@ -815,7 +817,7 @@ export function DashboardPage() {
                 </div>
               ) : (
                 <p className="text-sm" style={{ color: C.textMuted }}>
-                  No active projects.
+                  Projects appear when agents delegate work to specialists.
                 </p>
               )}
             </CardContent>
