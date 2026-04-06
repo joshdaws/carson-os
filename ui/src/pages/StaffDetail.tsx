@@ -546,6 +546,11 @@ export function StaffDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Delegation edges */}
+      {agent.staffRole === "personal" || agent.staffRole === "head_butler" ? (
+        <DelegationEdgesCard agentId={agent.id} agentName={agent.name} />
+      ) : null}
+
       {/* Task history */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
@@ -556,7 +561,7 @@ export function StaffDetailPage() {
         </div>
         <div>
           {tasks.length === 0 && (
-            <p className="text-sm p-4" style={{ color: "#8a8070" }}>No tasks yet.</p>
+            <p className="text-sm p-4" style={{ color: "#8a8070" }}>Tasks appear when this agent processes requests.</p>
           )}
           {tasks.map((task) => {
             const style = TASK_STATUS_STYLES[task.status] || TASK_STATUS_STYLES.pending;
@@ -631,5 +636,130 @@ export function StaffDetailPage() {
         </div>
       </Card>
     </div>
+  );
+}
+
+// ── Delegation Edges Card ─────────────────────────────────────────
+
+function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentName: string }) {
+  const queryClient = useQueryClient();
+
+  // Load current delegation edges
+  const { data: edgesData } = useQuery<{ delegations: Array<{ id: string; toAgentId: string; toAgentName: string; toAgentRole: string }> }>({
+    queryKey: ["delegations", agentId],
+    queryFn: () => api.get(`/staff/${agentId}/delegations`),
+  });
+
+  // Load all internal agents as candidates
+  const { data: staffData } = useQuery<{ staff: Array<{ id: string; name: string; staffRole: string; visibility: string }> }>({
+    queryKey: ["staff"],
+    queryFn: () => api.get("/staff"),
+  });
+
+  const addEdge = useMutation({
+    mutationFn: (toAgentId: string) => api.post(`/staff/${agentId}/delegations`, { toAgentId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegations", agentId] }),
+  });
+
+  const removeEdge = useMutation({
+    mutationFn: (toAgentId: string) => api.delete(`/staff/${agentId}/delegations/${toAgentId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegations", agentId] }),
+  });
+
+  const edges = edgesData?.delegations || [];
+  const edgeTargetIds = new Set(edges.map((e) => e.toAgentId));
+  const internalAgents = (staffData?.staff || []).filter(
+    (a) => a.visibility === "internal" && a.id !== agentId,
+  );
+
+  // If no internal agents exist, show guidance
+  const allAgents = staffData?.staff || [];
+  const hasInternalAgents = internalAgents.length > 0;
+
+  const toggleEdge = (targetId: string) => {
+    if (edgeTargetIds.has(targetId)) {
+      removeEdge.mutate(targetId);
+    } else {
+      addEdge.mutate(targetId);
+    }
+  };
+
+  return (
+    <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+      <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
+        <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+          <Shield className="h-4 w-4" style={{ color: "#8a8070" }} />
+          Delegation
+        </h3>
+      </div>
+      <CardContent className="p-4">
+        {!hasInternalAgents ? (
+          <p className="text-sm" style={{ color: "#8a8070" }}>
+            No internal agents available. Create internal specialist agents (tutor, coach, scheduler) from the{" "}
+            <Link to="/household" className="underline" style={{ color: "#8b6f4e" }}>Household page</Link>{" "}
+            to enable delegation.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs mb-3" style={{ color: "#8a8070" }}>
+              {agentName} can delegate work to these internal specialists:
+            </p>
+            {internalAgents.map((a) => (
+              <label
+                key={a.id}
+                className="flex items-center gap-3 py-2 px-3 rounded cursor-pointer hover:opacity-80"
+                style={{ background: edgeTargetIds.has(a.id) ? "#f0ede6" : "transparent" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={edgeTargetIds.has(a.id)}
+                  onChange={() => toggleEdge(a.id)}
+                  disabled={addEdge.isPending || removeEdge.isPending}
+                  className="rounded"
+                  style={{ accentColor: "#8b6f4e" }}
+                />
+                <div>
+                  <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
+                    {a.name}
+                  </span>
+                  <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                    {a.staffRole}
+                  </span>
+                </div>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {/* Also show any edges to non-internal agents (family-visible specialists) */}
+        {allAgents.filter((a) => a.visibility !== "internal" && a.id !== agentId).length > 0 && hasInternalAgents && (
+          <div className="mt-3 pt-3 border-t" style={{ borderColor: "#eee8dd" }}>
+            <p className="text-xs mb-2" style={{ color: "#a09080" }}>
+              Family-visible agents (optional):
+            </p>
+            {allAgents
+              .filter((a) => a.visibility !== "internal" && a.id !== agentId)
+              .map((a) => (
+                <label
+                  key={a.id}
+                  className="flex items-center gap-3 py-1.5 px-3 rounded cursor-pointer hover:opacity-80"
+                >
+                  <input
+                    type="checkbox"
+                    checked={edgeTargetIds.has(a.id)}
+                    onChange={() => toggleEdge(a.id)}
+                    disabled={addEdge.isPending || removeEdge.isPending}
+                    className="rounded"
+                    style={{ accentColor: "#8b6f4e" }}
+                  />
+                  <span className="text-xs" style={{ color: "#8a8070" }}>
+                    {a.name} ({a.staffRole})
+                  </span>
+                </label>
+              ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
