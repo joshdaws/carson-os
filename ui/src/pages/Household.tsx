@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,7 +29,7 @@ import { Link } from "react-router-dom";
 // ── Types ──────────────────────────────────────────────────────────
 
 type MemberRole = "parent" | "student" | "child";
-type StaffRole = "head_butler" | "tutor" | "coach" | "scheduler" | "custom";
+type StaffRole = "head_butler" | "personal" | "tutor" | "coach" | "scheduler" | "custom";
 type AgentStatus = "active" | "paused" | "idle";
 type AutonomyLevel = "supervised" | "trusted" | "autonomous";
 
@@ -346,29 +347,48 @@ function MemberCard({
 
 // ── Add Staff Form ─────────────────────────────────────────────────
 
+// Role templates pre-fill roleContent based on agent type
+const ROLE_TEMPLATES: Record<string, string> = {
+  personal: "You are {name}'s personal assistant. You help with homework, schedule management, activity planning, and general questions. You delegate specialized work to internal specialists when appropriate. You always respond in a way that matches {name}'s age and communication style.",
+  tutor: "You create study plans, generate practice questions, review essays, build vocabulary lists, and track learning progress. You coach through problems without giving direct answers unless the constitution allows it.",
+  coach: "You build workout schedules, create practice plans, track fitness goals, suggest activities, and encourage physical activity.",
+  scheduler: "You manage calendar events, find free time, coordinate family schedules, propose time blocks, and send reminders.",
+  head_butler: "You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal.",
+  custom: "",
+};
+
 function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [name, setName] = useState("");
-  const [staffRole, setStaffRole] = useState<StaffRole>("tutor");
+  const [staffRole, setStaffRole] = useState<StaffRole>("personal");
   const [specialty, setSpecialty] = useState("");
   const [autonomyLevel, setAutonomyLevel] = useState<AutonomyLevel>("supervised");
+  const [visibility, setVisibility] = useState<"family" | "internal">("family");
 
   const mutation = useMutation({
-    mutationFn: (payload: { householdId: string; name: string; staffRole: StaffRole; specialty?: string; autonomyLevel: AutonomyLevel }) =>
-      api.post("/staff", payload),
-    onSuccess: () => {
+    mutationFn: (payload: Record<string, unknown>) => api.post("/staff", payload) as Promise<{ agent: { id: string } }>,
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
-      onClose();
+      // Redirect to StaffDetail so the parent can complete setup
+      navigate(`/staff/${data.agent.id}`);
     },
   });
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+
+    // Pre-fill roleContent from template
+    const template = ROLE_TEMPLATES[staffRole] || "";
+    const roleContent = template.replace(/\{name\}/g, name.trim());
+
     mutation.mutate({
       householdId,
       name: name.trim(),
       staffRole,
+      roleContent,
+      visibility,
       ...(specialty.trim() ? { specialty: specialty.trim() } : {}),
       autonomyLevel,
     });
@@ -394,6 +414,32 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setVisibility("family")}
+              className="flex-1 py-1.5 rounded text-center transition-colors"
+              style={{
+                background: visibility === "family" ? "#1a1f2e" : "#f5f0e8",
+                color: visibility === "family" ? "#e8dfd0" : "#8a8070",
+                border: "1px solid #ddd5c8",
+              }}
+            >
+              Family-facing (has Telegram bot)
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisibility("internal")}
+              className="flex-1 py-1.5 rounded text-center transition-colors"
+              style={{
+                background: visibility === "internal" ? "#1a1f2e" : "#f5f0e8",
+                color: visibility === "internal" ? "#e8dfd0" : "#8a8070",
+                border: "1px solid #ddd5c8",
+              }}
+            >
+              Internal (works behind the scenes)
+            </button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Input placeholder="Specialty (optional)" value={specialty} onChange={(e) => setSpecialty(e.target.value)} />
