@@ -12,24 +12,31 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Key,
+  Settings as SettingsIcon,
   Bot,
+  Key,
   Users,
-  HardDrive,
-  AlertTriangle,
   Eye,
   EyeOff,
   Save,
   Check,
 } from "lucide-react";
 
-// --- Types ---
+// ── Types ──────────────────────────────────────────────────────────
 
 interface SettingsMap {
   [key: string]: string;
 }
 
-// --- Timezone list (common subset) ---
+type AdapterType = "claude-code" | "codex" | "anthropic-sdk";
+
+// ── Constants ──────────────────────────────────────────────────────
+
+const ADAPTER_OPTIONS: { value: AdapterType; label: string; description: string }[] = [
+  { value: "claude-code", label: "Claude Code", description: "Subprocess adapter using Claude Code CLI" },
+  { value: "codex", label: "Codex", description: "OpenAI Codex CLI adapter" },
+  { value: "anthropic-sdk", label: "Anthropic SDK", description: "Direct API calls via Anthropic SDK" },
+];
 
 const TIMEZONES = [
   "America/New_York",
@@ -39,9 +46,6 @@ const TIMEZONES = [
   "America/Anchorage",
   "Pacific/Honolulu",
   "America/Phoenix",
-  "America/Indiana/Indianapolis",
-  "America/Detroit",
-  "America/Kentucky/Louisville",
   "America/Toronto",
   "America/Vancouver",
   "Europe/London",
@@ -53,7 +57,7 @@ const TIMEZONES = [
   "UTC",
 ];
 
-// --- Sub-components ---
+// ── Sub-components ─────────────────────────────────────────────────
 
 function SettingSection({
   title,
@@ -65,10 +69,15 @@ function SettingSection({
   children: React.ReactNode;
 }) {
   return (
-    <Card className="mb-4">
-      <div className="px-4 py-3 border-b flex items-center gap-2">
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">{title}</h3>
+    <Card className="border mb-4" style={{ borderColor: "#ddd5c8" }}>
+      <div
+        className="px-4 py-3 border-b flex items-center gap-2"
+        style={{ borderColor: "#eee8dd" }}
+      >
+        <Icon className="h-4 w-4 text-[#8a8070]" />
+        <h3 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+          {title}
+        </h3>
       </div>
       <CardContent className="p-4 pt-4 space-y-4">{children}</CardContent>
     </Card>
@@ -90,7 +99,7 @@ function PasswordField({
 
   return (
     <div>
-      <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+      <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
         {label}
       </label>
       <div className="flex items-center gap-2">
@@ -101,17 +110,15 @@ function PasswordField({
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             className="pr-9"
+            style={{ borderColor: "#ddd5c8" }}
           />
           <button
             type="button"
             onClick={() => setVisible(!visible)}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2"
+            style={{ color: "#8a8070" }}
           >
-            {visible ? (
-              <EyeOff className="h-3.5 w-3.5" />
-            ) : (
-              <Eye className="h-3.5 w-3.5" />
-            )}
+            {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
@@ -119,24 +126,42 @@ function PasswordField({
   );
 }
 
-function ReadOnlyField({
-  label,
-  value,
+function SaveButton({
+  dirty,
+  saved,
+  loading,
+  onClick,
 }: {
-  label: string;
-  value: string;
+  dirty: boolean;
+  saved: boolean;
+  loading: boolean;
+  onClick: () => void;
 }) {
+  if (saved) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs" style={{ color: "#2e7d32" }}>
+        <Check className="h-3 w-3" /> Saved
+      </span>
+    );
+  }
+
+  if (!dirty) return null;
+
   return (
-    <div>
-      <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-        {label}
-      </label>
-      <Input value={value} readOnly disabled className="bg-secondary/50" />
-    </div>
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={onClick}
+      disabled={loading}
+      className="h-7 text-xs"
+      style={{ borderColor: "#ddd5c8" }}
+    >
+      Save
+    </Button>
   );
 }
 
-// --- Page ---
+// ── Settings Page ──────────────────────────────────────────────────
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
@@ -153,7 +178,6 @@ export function SettingsPage() {
       api.put(`/settings/${key}`, { value }),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
-      // Clear dirty state for this key, show saved indicator
       setDirty((prev) => {
         const next = { ...prev };
         delete next[variables.key];
@@ -170,7 +194,6 @@ export function SettingsPage() {
     },
   });
 
-  // Get current value: dirty draft or saved setting
   const val = (key: string): string => {
     if (key in dirty) return dirty[key];
     return settings?.[key] ?? "";
@@ -194,20 +217,32 @@ export function SettingsPage() {
     }
   };
 
+  const currentAdapter = val("ADAPTER_TYPE") || "claude-code";
+  const showApiKey = currentAdapter === "anthropic-sdk";
+
   if (isLoading) {
     return (
-      <div className="p-6 max-w-3xl">
-        <p className="text-sm text-muted-foreground">Loading settings...</p>
+      <div className="p-6 lg:p-8 max-w-3xl">
+        <p className="text-sm" style={{ color: "#8a8070" }}>Loading settings...</p>
       </div>
     );
   }
 
   return (
-    <div className="p-6 max-w-3xl">
+    <div className="p-6 lg:p-8 max-w-3xl">
+      {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h2 className="text-xl font-semibold">Settings</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
+          <div className="flex items-center gap-2">
+            <SettingsIcon className="h-5 w-5" style={{ color: "#8a8070" }} />
+            <h2
+              className="text-[22px] font-normal"
+              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+            >
+              Settings
+            </h2>
+          </div>
+          <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
             Instance configuration
           </p>
         </div>
@@ -216,27 +251,59 @@ export function SettingsPage() {
             size="sm"
             onClick={handleSaveAll}
             disabled={updateSetting.isPending}
+            style={{ background: "#1a1f2e", color: "#e8dfd0" }}
           >
-            <Save className="h-3.5 w-3.5 mr-1" />
-            Save Changes
+            <Save className="h-3.5 w-3.5 mr-1" /> Save Changes
           </Button>
         )}
       </div>
 
-      {/* API Keys */}
-      <SettingSection title="API Keys" icon={Key}>
-        <PasswordField
-          label="ANTHROPIC_API_KEY"
-          value={val("ANTHROPIC_API_KEY")}
-          onChange={(v) => setVal("ANTHROPIC_API_KEY", v)}
-          placeholder="sk-ant-..."
-        />
+      {/* Adapter Configuration */}
+      <SettingSection title="Adapter Configuration" icon={Bot}>
+        <div>
+          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+            Subprocess Adapter
+          </label>
+          <Select
+            value={currentAdapter}
+            onValueChange={(v) => setVal("ADAPTER_TYPE", v)}
+          >
+            <SelectTrigger style={{ borderColor: "#ddd5c8" }}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ADAPTER_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  <div>
+                    <span className="font-medium">{opt.label}</span>
+                    <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                      {opt.description}
+                    </span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {showApiKey && (
+          <PasswordField
+            label="ANTHROPIC_API_KEY"
+            value={val("ANTHROPIC_API_KEY")}
+            onChange={(v) => setVal("ANTHROPIC_API_KEY", v)}
+            placeholder="sk-ant-..."
+          />
+        )}
+
         <div className="flex justify-end">
           <SaveButton
-            dirty={"ANTHROPIC_API_KEY" in dirty}
-            saved={!!saved["ANTHROPIC_API_KEY"]}
+            dirty={"ADAPTER_TYPE" in dirty || "ANTHROPIC_API_KEY" in dirty}
+            saved={!!saved["ADAPTER_TYPE"] || !!saved["ANTHROPIC_API_KEY"]}
             loading={updateSetting.isPending}
-            onClick={() => saveKey("ANTHROPIC_API_KEY")}
+            onClick={() => {
+              if ("ADAPTER_TYPE" in dirty) saveKey("ADAPTER_TYPE");
+              if ("ANTHROPIC_API_KEY" in dirty) saveKey("ANTHROPIC_API_KEY");
+            }}
           />
         </div>
       </SettingSection>
@@ -244,7 +311,7 @@ export function SettingsPage() {
       {/* Telegram */}
       <SettingSection title="Telegram" icon={Bot}>
         <PasswordField
-          label="BOT_TOKEN"
+          label="Bot Token"
           value={val("TELEGRAM_BOT_TOKEN")}
           onChange={(v) => setVal("TELEGRAM_BOT_TOKEN", v)}
           placeholder="123456:ABC-DEF..."
@@ -259,27 +326,28 @@ export function SettingsPage() {
         </div>
       </SettingSection>
 
-      {/* Family */}
-      <SettingSection title="Family" icon={Users}>
+      {/* Household */}
+      <SettingSection title="Household" icon={Users}>
         <div>
-          <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-            Family Name
+          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+            Household Name
           </label>
           <Input
-            value={val("FAMILY_NAME")}
-            onChange={(e) => setVal("FAMILY_NAME", e.target.value)}
-            placeholder="The Daws Family"
+            value={val("HOUSEHOLD_NAME")}
+            onChange={(e) => setVal("HOUSEHOLD_NAME", e.target.value)}
+            placeholder="The Daws Household"
+            style={{ borderColor: "#ddd5c8" }}
           />
         </div>
         <div>
-          <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
             Timezone
           </label>
           <Select
             value={val("TIMEZONE") || "America/New_York"}
             onValueChange={(v) => setVal("TIMEZONE", v)}
           >
-            <SelectTrigger>
+            <SelectTrigger style={{ borderColor: "#ddd5c8" }}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -291,87 +359,18 @@ export function SettingsPage() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end">
           <SaveButton
-            dirty={"FAMILY_NAME" in dirty || "TIMEZONE" in dirty}
-            saved={!!saved["FAMILY_NAME"] || !!saved["TIMEZONE"]}
+            dirty={"HOUSEHOLD_NAME" in dirty || "TIMEZONE" in dirty}
+            saved={!!saved["HOUSEHOLD_NAME"] || !!saved["TIMEZONE"]}
             loading={updateSetting.isPending}
             onClick={() => {
-              if ("FAMILY_NAME" in dirty) saveKey("FAMILY_NAME");
+              if ("HOUSEHOLD_NAME" in dirty) saveKey("HOUSEHOLD_NAME");
               if ("TIMEZONE" in dirty) saveKey("TIMEZONE");
             }}
           />
         </div>
       </SettingSection>
-
-      {/* Data */}
-      <SettingSection title="Data" icon={HardDrive}>
-        <ReadOnlyField
-          label="Data Directory"
-          value={val("DATA_DIR") || "~/.carson-os"}
-        />
-        <ReadOnlyField
-          label="Database Path"
-          value={val("DATABASE_PATH") || "~/.carson-os/carson.db"}
-        />
-      </SettingSection>
-
-      {/* Danger zone */}
-      <Card className="border-red-200">
-        <div className="px-4 py-3 border-b border-red-200 flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-red-500" />
-          <h3 className="text-sm font-semibold text-red-600">Danger Zone</h3>
-        </div>
-        <CardContent className="p-4 pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium">Reset Everything</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Delete all data and start from scratch. This cannot be undone.
-              </p>
-            </div>
-            <Button variant="destructive" size="sm" disabled>
-              Reset
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
-  );
-}
-
-// --- Small save button helper ---
-
-function SaveButton({
-  dirty,
-  saved,
-  loading,
-  onClick,
-}: {
-  dirty: boolean;
-  saved: boolean;
-  loading: boolean;
-  onClick: () => void;
-}) {
-  if (saved) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs text-green-600">
-        <Check className="h-3 w-3" /> Saved
-      </span>
-    );
-  }
-
-  if (!dirty) return null;
-
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={onClick}
-      disabled={loading}
-      className="h-7 text-xs"
-    >
-      Save
-    </Button>
   );
 }

@@ -1,17 +1,48 @@
-import express, { type Request, type Response, type NextFunction } from "express";
+/**
+ * Express application factory -- mounts all v3 routes with middleware.
+ */
+
+import express, {
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import type { Db } from "@carsonos/db";
+import type { Adapter } from "./services/subprocess-adapter.js";
+import type { ConstitutionEngine } from "./services/constitution-engine.js";
+import type { TaskEngine } from "./services/task-engine.js";
+import type { CarsonOversight } from "./services/carson-oversight.js";
+import type { InterviewEngine } from "./services/interview.js";
+
 import { createHealthRoutes } from "./routes/health.js";
-import { createFamilyRoutes } from "./routes/families.js";
+import { createHouseholdRoutes } from "./routes/households.js";
 import { createMemberRoutes } from "./routes/members.js";
-import { createAgentRoutes } from "./routes/agents.js";
-import { createConversationRoutes } from "./routes/conversations.js";
+import { createStaffRoutes } from "./routes/staff.js";
+import { createTaskRoutes } from "./routes/tasks.js";
 import { createConstitutionRoutes } from "./routes/constitution.js";
-import { createBudgetRoutes } from "./routes/budget.js";
-import { createActivityRoutes } from "./routes/activity.js";
+import { createConversationRoutes } from "./routes/conversations.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
+import { createActivityRoutes } from "./routes/activity.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 
-export async function createApp(db: Db): Promise<express.Express> {
+export interface AppDeps {
+  db: Db;
+  adapter: Adapter;
+  constitutionEngine: ConstitutionEngine;
+  taskEngine: TaskEngine;
+  oversight: CarsonOversight;
+  interviewEngine: InterviewEngine;
+}
+
+export async function createApp(deps: AppDeps): Promise<express.Express> {
+  const {
+    db,
+    adapter,
+    constitutionEngine,
+    taskEngine,
+    oversight,
+    interviewEngine,
+  } = deps;
   const app = express();
 
   // --------------- middleware ---------------
@@ -22,8 +53,14 @@ export async function createApp(db: Db): Promise<express.Express> {
   // CORS for localhost dev
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization",
+    );
     if (_req.method === "OPTIONS") {
       res.status(204).end();
       return;
@@ -39,20 +76,27 @@ export async function createApp(db: Db): Promise<express.Express> {
 
   // --------------- routes ---------------
 
-  app.use("/api/health", createHealthRoutes(db));
-  app.use("/api/families", createFamilyRoutes(db));
-  app.use("/api/families", createMemberRoutes(db));
-  app.use("/api/agents", createAgentRoutes(db));
-  app.use("/api/families", createConversationRoutes(db));
-  app.use("/api/families", createConstitutionRoutes(db));
-  app.use("/api/families", createBudgetRoutes(db));
-  app.use("/api/families", createActivityRoutes(db));
-  app.use("/api/onboarding", createOnboardingRoutes(db));
+  app.use("/api/health", createHealthRoutes({ adapter }));
+  app.use("/api/households", createHouseholdRoutes(db));
+  app.use("/api/households", createMemberRoutes(db));
+  app.use("/api/staff", createStaffRoutes(db));
+  app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight }));
+  app.use(
+    "/api/constitution",
+    createConstitutionRoutes({ db, constitutionEngine }),
+  );
+  app.use(
+    "/api/conversations",
+    createConversationRoutes({ db, constitutionEngine }),
+  );
+  app.use(
+    "/api/onboarding",
+    createOnboardingRoutes({ db, interviewEngine }),
+  );
+  app.use("/api/activity", createActivityRoutes(db));
   app.use("/api/settings", createSettingsRoutes(db));
 
   // --------------- Vite dev middleware / static serving ---------------
-  // In dev: proxy to Vite dev server (run `pnpm --filter @carsonos/ui dev` separately)
-  // In prod: serve static files from ui/dist
   if (process.env.NODE_ENV === "production") {
     app.use(express.static("../ui/dist"));
   }

@@ -3,13 +3,12 @@ import { describe, it, expect } from "vitest";
 import {
   evaluateKeywordBlock,
   evaluateAgeGate,
-  evaluateBudgetCap,
   evaluateRoleRestrict,
   compileSoftRules,
   scanResponse,
 } from "../evaluators.js";
 
-// ── evaluateKeywordBlock ────────────────────────────────────────────
+// -- evaluateKeywordBlock --------------------------------------------
 
 describe("evaluateKeywordBlock", () => {
   const ruleId = "kw-rule-1";
@@ -101,7 +100,7 @@ describe("evaluateKeywordBlock", () => {
   });
 });
 
-// ── evaluateAgeGate ─────────────────────────────────────────────────
+// -- evaluateAgeGate -------------------------------------------------
 
 describe("evaluateAgeGate", () => {
   const ruleId = "age-rule-1";
@@ -161,37 +160,7 @@ describe("evaluateAgeGate", () => {
   });
 });
 
-// ── evaluateBudgetCap ───────────────────────────────────────────────
-
-describe("evaluateBudgetCap", () => {
-  const ruleId = "budget-rule-1";
-
-  it("11. allows when under budget", () => {
-    const result = evaluateBudgetCap(500, 1000, ruleId);
-    expect(result.allowed).toBe(true);
-  });
-
-  it("12. blocks when at budget (spent == cap)", () => {
-    const result = evaluateBudgetCap(1000, 1000, ruleId);
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("Budget exceeded");
-  });
-
-  it("13. always blocks when budget is zero", () => {
-    const result = evaluateBudgetCap(0, 0, ruleId);
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("No budget assigned");
-  });
-
-  it("blocks when over budget", () => {
-    const result = evaluateBudgetCap(1500, 1000, ruleId);
-    expect(result.allowed).toBe(false);
-  });
-});
-
-// ── evaluateRoleRestrict ────────────────────────────────────────────
+// -- evaluateRoleRestrict --------------------------------------------
 
 describe("evaluateRoleRestrict", () => {
   const ruleId = "role-rule-1";
@@ -215,7 +184,7 @@ describe("evaluateRoleRestrict", () => {
   });
 });
 
-// ── compileSoftRules ────────────────────────────────────────────────
+// -- compileSoftRules ------------------------------------------------
 
 describe("compileSoftRules", () => {
   const rules = [
@@ -223,6 +192,7 @@ describe("compileSoftRules", () => {
       ruleText: "Be encouraging and patient",
       category: "interaction-mode",
       appliesToRoles: null,
+      appliesToAgents: null,
       appliesToMinAge: null,
       appliesToMaxAge: null,
     },
@@ -230,6 +200,7 @@ describe("compileSoftRules", () => {
       ruleText: "Use simple language",
       category: "interaction-mode",
       appliesToRoles: ["child" as const],
+      appliesToAgents: null,
       appliesToMinAge: null,
       appliesToMaxAge: 10,
     },
@@ -237,6 +208,7 @@ describe("compileSoftRules", () => {
       ruleText: "Allow discussion of college topics",
       category: "content-governance",
       appliesToRoles: ["student" as const],
+      appliesToAgents: null,
       appliesToMinAge: 13,
       appliesToMaxAge: null,
     },
@@ -244,6 +216,7 @@ describe("compileSoftRules", () => {
       ruleText: "Full admin access",
       category: "access",
       appliesToRoles: ["parent" as const],
+      appliesToAgents: null,
       appliesToMinAge: null,
       appliesToMaxAge: null,
     },
@@ -290,6 +263,7 @@ describe("compileSoftRules", () => {
           ruleText: "Parents only",
           category: "access",
           appliesToRoles: ["parent"],
+          appliesToAgents: null,
           appliesToMinAge: null,
           appliesToMaxAge: null,
         },
@@ -300,9 +274,55 @@ describe("compileSoftRules", () => {
 
     expect(result).toBe("");
   });
+
+  it("filters by agentId when appliesToAgents is set", () => {
+    const agentSpecificRules = [
+      {
+        ruleText: "Tutor-specific rule",
+        category: "interaction-mode",
+        appliesToRoles: null,
+        appliesToAgents: ["tutor-agent-1"],
+        appliesToMinAge: null,
+        appliesToMaxAge: null,
+      },
+      {
+        ruleText: "Universal rule",
+        category: "interaction-mode",
+        appliesToRoles: null,
+        appliesToAgents: null,
+        appliesToMinAge: null,
+        appliesToMaxAge: null,
+      },
+    ];
+
+    // With matching agent -- both rules included
+    const matching = compileSoftRules(
+      agentSpecificRules,
+      "child",
+      8,
+      "tutor-agent-1",
+    );
+    expect(matching).toContain("Tutor-specific rule");
+    expect(matching).toContain("Universal rule");
+
+    // With non-matching agent -- only universal rule
+    const nonMatching = compileSoftRules(
+      agentSpecificRules,
+      "child",
+      8,
+      "other-agent",
+    );
+    expect(nonMatching).not.toContain("Tutor-specific rule");
+    expect(nonMatching).toContain("Universal rule");
+
+    // Without agent ID -- all rules included (no agent filtering)
+    const noAgent = compileSoftRules(agentSpecificRules, "child", 8);
+    expect(noAgent).toContain("Tutor-specific rule");
+    expect(noAgent).toContain("Universal rule");
+  });
 });
 
-// ── scanResponse ────────────────────────────────────────────────────
+// -- scanResponse ----------------------------------------------------
 
 describe("scanResponse", () => {
   it("returns null for a clean response", () => {

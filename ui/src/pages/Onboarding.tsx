@@ -1,165 +1,69 @@
-import { useState, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { api } from "@/api/client";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { Plus, Trash2, Users, Check, Loader2 } from "lucide-react";
+import { Send, Loader2, Check, ArrowRight } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// ── Types ──────────────────────────────────────────────────────────
 
-type MemberRole = "parent" | "student" | "child";
+type OnboardingPhase = "interview" | "review" | "staff_setup" | "telegram_config" | "complete";
 
-interface OnboardingMember {
-  name: string;
-  role: MemberRole;
-  age: string;
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
-interface TemplateRule {
-  id: string;
-  label: string;
-  ruleText: string;
-  category: string;
-  enforcementLevel: "hard" | "soft" | "advisory";
-  evaluationType: string;
-  appliesToRoles: MemberRole[];
-  enabled: boolean;
+interface OnboardingState {
+  phase: OnboardingPhase;
+  messages: ChatMessage[];
+  constitution?: string;
+  staffSelections?: string[];
+  botToken?: string;
 }
 
-interface OnboardingPayload {
-  familyName: string;
-  timezone: string;
-  members: { name: string; role: MemberRole; age: number }[];
-  rules: {
-    category: string;
-    ruleText: string;
-    enforcementLevel: string;
-    evaluationType: string;
-    appliesToRoles: MemberRole[];
-  }[];
-}
+// ── Phase Indicator ────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const TIMEZONES = [
-  { value: "America/New_York", label: "Eastern (ET)" },
-  { value: "America/Chicago", label: "Central (CT)" },
-  { value: "America/Denver", label: "Mountain (MT)" },
-  { value: "America/Los_Angeles", label: "Pacific (PT)" },
-  { value: "America/Anchorage", label: "Alaska (AKT)" },
-  { value: "Pacific/Honolulu", label: "Hawaii (HT)" },
-  { value: "UTC", label: "UTC" },
+const PHASES: { value: OnboardingPhase; label: string }[] = [
+  { value: "interview", label: "Interview" },
+  { value: "review", label: "Review" },
+  { value: "staff_setup", label: "Staff" },
+  { value: "telegram_config", label: "Telegram" },
 ];
 
-const ROLE_OPTIONS: { value: MemberRole; label: string }[] = [
-  { value: "parent", label: "Parent" },
-  { value: "student", label: "Student" },
-  { value: "child", label: "Child" },
-];
+function PhaseIndicator({ current }: { current: OnboardingPhase }) {
+  const currentIndex = PHASES.findIndex((p) => p.value === current);
 
-function modelForRole(role: MemberRole): string {
-  return role === "parent" ? "sonnet" : "haiku";
-}
-
-function budgetForRole(role: MemberRole): string {
-  if (role === "parent") return "$20/mo";
-  if (role === "student") return "$5/mo";
-  return "$2/mo";
-}
-
-const DEFAULT_TEMPLATE_RULES: TemplateRule[] = [
-  {
-    id: "coaching",
-    label: "Coaching Mode",
-    ruleText:
-      "Agents coach through problems, never give direct answers to homework",
-    category: "interaction-mode",
-    enforcementLevel: "soft",
-    evaluationType: "behavioral",
-    appliesToRoles: ["student", "child"],
-    enabled: true,
-  },
-  {
-    id: "privacy",
-    label: "Privacy",
-    ruleText:
-      "No agent may share family financial details, schedules, or personal info externally",
-    category: "privacy",
-    enforcementLevel: "hard",
-    evaluationType: "pre-response",
-    appliesToRoles: ["parent", "student", "child"],
-    enabled: true,
-  },
-  {
-    id: "age-appropriate",
-    label: "Age-Appropriate Content",
-    ruleText:
-      "Children's agents cannot discuss age-inappropriate topics without parent escalation",
-    category: "content-governance",
-    enforcementLevel: "hard",
-    evaluationType: "pre-response",
-    appliesToRoles: ["student", "child"],
-    enabled: true,
-  },
-  {
-    id: "parent-visibility",
-    label: "Parent Visibility",
-    ruleText:
-      "Parent agents have full visibility into all child agent conversations",
-    category: "access",
-    enforcementLevel: "hard",
-    evaluationType: "periodic",
-    appliesToRoles: ["parent"],
-    enabled: true,
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Step Indicator
-// ---------------------------------------------------------------------------
-
-function StepIndicator({ current, total }: { current: number; total: number }) {
   return (
-    <div className="flex items-center justify-center gap-0 mb-8">
-      {Array.from({ length: total }, (_, i) => (
-        <div key={i} className="flex items-center">
+    <div className="flex items-center justify-center gap-0">
+      {PHASES.map((phase, i) => (
+        <div key={phase.value} className="flex items-center">
           <div
             className={cn(
               "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors",
-              i < current
-                ? "bg-primary text-primary-foreground"
-                : i === current
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-muted-foreground",
             )}
+            style={{
+              background: i <= currentIndex ? "#1a1f2e" : "#eee8dd",
+              color: i <= currentIndex ? "#e8dfd0" : "#8a8070",
+            }}
           >
-            {i < current ? (
-              <Check className="h-4 w-4" />
-            ) : (
-              i + 1
-            )}
+            {i < currentIndex ? <Check className="h-4 w-4" /> : i + 1}
           </div>
-          {i < total - 1 && (
+          <span
+            className="text-[10px] ml-1.5 mr-3 hidden sm:inline"
+            style={{ color: i <= currentIndex ? "#1a1f2e" : "#8a8070" }}
+          >
+            {phase.label}
+          </span>
+          {i < PHASES.length - 1 && (
             <div
-              className={cn(
-                "w-16 h-px mx-1",
-                i < current ? "bg-primary" : "bg-border",
-              )}
+              className="w-8 h-px mx-1"
+              style={{ background: i < currentIndex ? "#1a1f2e" : "#ddd5c8" }}
             />
           )}
         </div>
@@ -168,565 +72,650 @@ function StepIndicator({ current, total }: { current: number; total: number }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Toggle Switch (inline, no separate component file needed)
-// ---------------------------------------------------------------------------
+// ── Chat Bubble ────────────────────────────────────────────────────
 
-function Toggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: (val: boolean) => void;
-}) {
+function ChatBubble({ message }: { message: ChatMessage }) {
+  const isUser = message.role === "user";
+
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors",
-        checked ? "bg-primary" : "bg-secondary",
+    <div className={cn("flex mb-4", isUser ? "justify-end" : "justify-start")}>
+      {!isUser && (
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mr-3"
+          style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+        >
+          C
+        </div>
       )}
-    >
-      <span
-        className={cn(
-          "pointer-events-none block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
-          checked ? "translate-x-4" : "translate-x-0.5",
+      <div
+        className={cn("max-w-[70%] rounded-lg px-4 py-3 text-sm leading-relaxed")}
+        style={
+          isUser
+            ? { background: "#1a1f2e", color: "#e8dfd0" }
+            : { background: "#ffffff", color: "#2c2c2c", border: "1px solid #ddd5c8" }
+        }
+      >
+        {isUser ? (
+          message.content
+        ) : (
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+              ol: ({ children }) => <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>,
+              ul: ({ children }) => <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>,
+              li: ({ children }) => <li>{children}</li>,
+              h1: ({ children }) => <h1 className="text-lg font-semibold mb-2">{children}</h1>,
+              h2: ({ children }) => <h2 className="text-base font-semibold mb-2">{children}</h2>,
+              h3: ({ children }) => <h3 className="text-sm font-semibold mb-1">{children}</h3>,
+            }}
+          >
+            {message.content}
+          </Markdown>
         )}
-      />
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 1: Family Basics
-// ---------------------------------------------------------------------------
-
-function StepFamilyBasics({
-  familyName,
-  setFamilyName,
-  timezone,
-  setTimezone,
-  onNext,
-}: {
-  familyName: string;
-  setFamilyName: (v: string) => void;
-  timezone: string;
-  setTimezone: (v: string) => void;
-  onNext: () => void;
-}) {
-  return (
-    <div className="space-y-6">
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold tracking-tight">
-          Welcome to CarsonOS
-        </h2>
-        <p className="text-muted-foreground mt-2">
-          Your family's values, your family's AI.
-        </p>
-      </div>
-
-      <Card>
-        <CardContent className="p-6 space-y-5">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Family Name</label>
-            <Input
-              placeholder="The Daws Family"
-              value={familyName}
-              onChange={(e) => setFamilyName(e.target.value)}
-              autoFocus
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Timezone</label>
-            <Select value={timezone} onValueChange={setTimezone}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select timezone" />
-              </SelectTrigger>
-              <SelectContent>
-                {TIMEZONES.map((tz) => (
-                  <SelectItem key={tz.value} value={tz.value}>
-                    {tz.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="flex justify-end">
-        <Button
-          onClick={onNext}
-          disabled={!familyName.trim() || !timezone}
-        >
-          Next
-        </Button>
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Step 2: Family Values & Constitution
-// ---------------------------------------------------------------------------
+// ── Interview Phase ────────────────────────────────────────────────
 
-function StepConstitution({
-  rules,
-  setRules,
-  worldview,
-  setWorldview,
-  budgetCap,
-  setBudgetCap,
-  onBack,
-  onNext,
+function InterviewPhase({
+  messages,
+  onSend,
+  isPending,
 }: {
-  rules: TemplateRule[];
-  setRules: (rules: TemplateRule[]) => void;
-  worldview: string;
-  setWorldview: (v: string) => void;
-  budgetCap: string;
-  setBudgetCap: (v: string) => void;
-  onBack: () => void;
-  onNext: () => void;
+  messages: ChatMessage[];
+  onSend: (text: string) => void;
+  isPending: boolean;
 }) {
-  const toggleRule = useCallback(
-    (id: string) => {
-      setRules(
-        rules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r)),
-      );
-    },
-    [rules, setRules],
-  );
+  const [input, setInput] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  return (
-    <div className="space-y-6">
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold tracking-tight">
-          What matters to your family?
-        </h2>
-        <p className="text-muted-foreground mt-2">
-          Set the ground rules for how AI agents interact with your family.
-        </p>
-      </div>
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-      <Card>
-        <CardContent className="p-6 space-y-5">
-          {/* Template rules */}
-          <div className="space-y-3">
-            {rules.map((rule) => (
-              <div
-                key={rule.id}
-                className="flex items-start gap-3 py-3 border-b border-dashed border-border/50 last:border-0"
-              >
-                <div className="pt-0.5">
-                  <Toggle
-                    checked={rule.enabled}
-                    onChange={() => toggleRule(rule.id)}
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-sm font-medium">{rule.label}</span>
-                    <span
-                      className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded",
-                        rule.enforcementLevel === "hard"
-                          ? "bg-red-100 text-red-700"
-                          : rule.enforcementLevel === "soft"
-                            ? "bg-orange-100 text-orange-700"
-                            : "bg-secondary text-muted-foreground",
-                      )}
-                    >
-                      {rule.enforcementLevel}
-                    </span>
-                  </div>
-                  <p
-                    className={cn(
-                      "text-xs",
-                      rule.enabled
-                        ? "text-muted-foreground"
-                        : "text-muted-foreground/50",
-                    )}
-                  >
-                    {rule.ruleText}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground/60 mt-1">
-                    Applies to:{" "}
-                    {rule.appliesToRoles
-                      .map((r) => r.charAt(0).toUpperCase() + r.slice(1))
-                      .join(", ")}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Worldview */}
-          <div className="space-y-2 pt-2 border-t">
-            <label className="text-sm font-medium">
-              Family Worldview{" "}
-              <span className="text-muted-foreground font-normal">
-                (optional)
-              </span>
-            </label>
-            <Textarea
-              placeholder="e.g., Reformed Christian worldview"
-              value={worldview}
-              onChange={(e) => setWorldview(e.target.value)}
-              rows={2}
-            />
-            <p className="text-[10px] text-muted-foreground">
-              This frames how agents approach questions of values, ethics, and
-              worldview.
-            </p>
-          </div>
-
-          {/* Budget cap */}
-          <div className="space-y-2 pt-2 border-t">
-            <label className="text-sm font-medium">
-              Monthly Budget Cap
-            </label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">$</span>
-              <Input
-                type="number"
-                min={1}
-                max={10000}
-                value={budgetCap}
-                onChange={(e) => setBudgetCap(e.target.value)}
-                className="w-32"
-              />
-              <span className="text-sm text-muted-foreground">/ month</span>
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              Total spending limit across all agents. Individual agent budgets
-              are assigned by role.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="flex justify-between">
-        <Button variant="outline" onClick={onBack}>
-          Back
-        </Button>
-        <Button onClick={onNext}>Next</Button>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 3: Family Members
-// ---------------------------------------------------------------------------
-
-function StepMembers({
-  members,
-  setMembers,
-  onBack,
-  onSubmit,
-  isSubmitting,
-  error,
-}: {
-  members: OnboardingMember[];
-  setMembers: (members: OnboardingMember[]) => void;
-  onBack: () => void;
-  onSubmit: () => void;
-  isSubmitting: boolean;
-  error: Error | null;
-}) {
-  const [name, setName] = useState("");
-  const [role, setRole] = useState<MemberRole>("parent");
-  const [age, setAge] = useState("");
-
-  function handleAdd(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !age) return;
-    setMembers([...members, { name: name.trim(), role, age }]);
-    setName("");
-    setRole("parent");
-    setAge("");
-  }
-
-  function handleRemove(index: number) {
-    setMembers(members.filter((_, i) => i !== index));
+    if (!input.trim() || isPending) return;
+    onSend(input.trim());
+    setInput("");
   }
 
   return (
-    <div className="space-y-6">
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold tracking-tight">
-          Who's in the family?
-        </h2>
-        <p className="text-muted-foreground mt-2">
-          Add each family member. Each gets their own AI agent.
-        </p>
+    <div className="flex flex-col h-full">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-6">
+        {messages.map((msg, i) => (
+          <ChatBubble key={i} message={msg} />
+        ))}
+        {isPending && (
+          <div className="flex items-center gap-2 mb-4">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            >
+              C
+            </div>
+            <div
+              className="rounded-lg px-4 py-3"
+              style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+            >
+              <Loader2 className="h-4 w-4 animate-spin" style={{ color: "#8a8070" }} />
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Add member form */}
-      <Card>
-        <CardContent className="p-6">
-          <form onSubmit={handleAdd} className="space-y-3">
-            <span className="text-sm font-medium">Add a Member</span>
-            <div className="grid grid-cols-3 gap-3">
-              <Input
-                placeholder="Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <Select
-                value={role}
-                onValueChange={(v) => setRole(v as MemberRole)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ROLE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                type="number"
-                placeholder="Age"
-                min={1}
-                max={99}
-                value={age}
-                onChange={(e) => setAge(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">
-                Model: {modelForRole(role)} / Budget: {budgetForRole(role)}
-              </p>
-              <Button
-                type="submit"
-                size="sm"
-                disabled={!name.trim() || !age}
-              >
-                <Plus className="h-3.5 w-3.5 mr-1" />
-                Add
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-
-      {/* Member list */}
-      {members.length > 0 && (
-        <Card>
-          <CardContent className="p-4">
-            <div className="space-y-0">
-              {members.map((member, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 py-3 border-b border-dashed border-border/50 last:border-0"
-                >
-                  <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-xs font-semibold text-muted-foreground">
-                    {member.name.charAt(0)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium">{member.name}</span>
-                    <p className="text-xs text-muted-foreground">
-                      {member.role.charAt(0).toUpperCase() +
-                        member.role.slice(1)}{" "}
-                      ({member.age}) / {modelForRole(member.role)} /{" "}
-                      {budgetForRole(member.role)}
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0"
-                    onClick={() => handleRemove(i)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {members.length === 0 && (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <Users className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">
-              No members yet. Add at least one family member to continue.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Telegram info */}
-      <div className="rounded-md bg-secondary/50 px-4 py-3">
-        <p className="text-xs text-muted-foreground">
-          After setup, each member can connect their Telegram account from the
-          dashboard. Telegram is how family members talk to their agents day to
-          day.
-        </p>
-      </div>
-
-      {error && (
-        <p className="text-sm text-destructive text-center">
-          {error.message || "Something went wrong. Please try again."}
-        </p>
-      )}
-
-      <div className="flex justify-between">
-        <Button variant="outline" onClick={onBack}>
-          Back
-        </Button>
+      {/* Input */}
+      <form
+        onSubmit={handleSubmit}
+        className="px-4 py-3 border-t flex gap-2 items-end"
+        style={{ borderColor: "#ddd5c8" }}
+      >
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit(e);
+            }
+          }}
+          placeholder="Type your answer..."
+          className="flex-1 min-h-[44px] max-h-[160px] resize-none"
+          style={{ borderColor: "#ddd5c8" }}
+          rows={2}
+          disabled={isPending}
+          autoFocus
+        />
         <Button
-          onClick={onSubmit}
-          disabled={members.length === 0 || isSubmitting}
+          type="submit"
+          disabled={!input.trim() || isPending}
+          style={{ background: "#1a1f2e", color: "#e8dfd0" }}
         >
-          {isSubmitting ? (
+          <Send className="h-4 w-4" />
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+// ── Review Phase ───────────────────────────────────────────────────
+
+function ReviewPhase({
+  constitution,
+  onApprove,
+  onEdit,
+  isPending,
+}: {
+  constitution: string;
+  onApprove: () => void;
+  onEdit: (text: string) => void;
+  isPending: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(constitution);
+
+  return (
+    <div className="flex flex-col h-full p-6 overflow-y-auto">
+      <div className="max-w-2xl mx-auto w-full">
+        <h3
+          className="text-xl font-normal mb-2"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          Your Family Constitution
+        </h3>
+        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+          Carson generated this based on your interview. Review it, edit if needed, then approve.
+        </p>
+
+        {editing ? (
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="min-h-[300px] mb-4 text-sm leading-relaxed"
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              background: "#faf8f4",
+              borderColor: "#ddd5c8",
+            }}
+          />
+        ) : (
+          <div
+            className="rounded-lg p-6 mb-4 text-sm leading-relaxed whitespace-pre-wrap"
+            style={{
+              background: "#ffffff",
+              border: "1px solid #ddd5c8",
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              color: "#2c2c2c",
+            }}
+          >
+            {constitution}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          {editing ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin mr-1" />
-              Setting up...
+              <Button
+                onClick={() => {
+                  onEdit(draft);
+                  setEditing(false);
+                }}
+                disabled={isPending}
+                style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              >
+                Save Changes
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDraft(constitution);
+                  setEditing(false);
+                }}
+                style={{ borderColor: "#ddd5c8" }}
+              >
+                Cancel
+              </Button>
             </>
           ) : (
-            "Complete Setup"
+            <>
+              <Button
+                onClick={onApprove}
+                disabled={isPending}
+                style={{ background: "#2e7d32", color: "#fff" }}
+              >
+                {isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Processing...
+                  </>
+                ) : (
+                  <>
+                    <Check className="h-4 w-4 mr-1" /> Approve Constitution
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setEditing(true)}
+                style={{ borderColor: "#ddd5c8" }}
+              >
+                Edit
+              </Button>
+            </>
           )}
-        </Button>
+        </div>
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+// ── Staff Setup Phase ──────────────────────────────────────────────
+
+const STAFF_OPTIONS = [
+  {
+    id: "tutor",
+    name: "Tutor",
+    description: "Helps with homework, study plans, and academic coaching.",
+  },
+  {
+    id: "coach",
+    name: "Coach",
+    description: "Manages sports, activities, fitness, and personal development.",
+  },
+  {
+    id: "scheduler",
+    name: "Scheduler",
+    description: "Handles calendar, reminders, and household logistics.",
+  },
+];
+
+function StaffSetupPhase({
+  selections,
+  onToggle,
+  onContinue,
+  isPending,
+}: {
+  selections: string[];
+  onToggle: (id: string) => void;
+  onContinue: () => void;
+  isPending: boolean;
+}) {
+  return (
+    <div className="flex flex-col h-full p-6 overflow-y-auto">
+      <div className="max-w-2xl mx-auto w-full">
+        <h3
+          className="text-xl font-normal mb-2"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          Choose Your Staff
+        </h3>
+        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+          Carson (Head Butler) is always included. Select additional staff for your household.
+        </p>
+
+        {/* Carson - always selected */}
+        <div
+          className="rounded-lg p-4 mb-3 flex items-center gap-4"
+          style={{ background: "#f5f0e8", border: "2px solid #8b6f4e" }}
+        >
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center font-bold"
+            style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+          >
+            C
+          </div>
+          <div className="flex-1">
+            <span className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+              Carson
+            </span>
+            <span className="text-[10px] ml-2" style={{ color: "#8b6f4e" }}>HEAD BUTLER</span>
+            <p className="text-xs mt-0.5" style={{ color: "#8a8070" }}>
+              Oversees all staff. Handles parent requests, governance, and administration.
+            </p>
+          </div>
+          <Check className="h-5 w-5" style={{ color: "#8b6f4e" }} />
+        </div>
+
+        {/* Optional staff */}
+        {STAFF_OPTIONS.map((staff) => {
+          const selected = selections.includes(staff.id);
+          return (
+            <button
+              key={staff.id}
+              onClick={() => onToggle(staff.id)}
+              className="w-full text-left rounded-lg p-4 mb-3 flex items-center gap-4 transition-colors"
+              style={{
+                background: selected ? "#faf8f4" : "#ffffff",
+                border: selected ? "2px solid #8b6f4e" : "1px solid #ddd5c8",
+              }}
+            >
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm"
+                style={{
+                  background: selected ? "#f5f0e8" : "#f0ede6",
+                  color: "#8b6f4e",
+                }}
+              >
+                {staff.name.charAt(0)}
+              </div>
+              <div className="flex-1">
+                <span className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+                  {staff.name}
+                </span>
+                <p className="text-xs mt-0.5" style={{ color: "#8a8070" }}>
+                  {staff.description}
+                </p>
+              </div>
+              {selected && <Check className="h-5 w-5" style={{ color: "#8b6f4e" }} />}
+            </button>
+          );
+        })}
+
+        <div className="mt-6">
+          <Button
+            onClick={onContinue}
+            disabled={isPending}
+            style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+          >
+            {isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Setting up...
+              </>
+            ) : (
+              <>
+                Continue <ArrowRight className="h-4 w-4 ml-1" />
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Telegram Config Phase ──────────────────────────────────────────
+
+function TelegramConfigPhase({
+  onComplete,
+  isPending,
+}: {
+  onComplete: (token: string) => void;
+  isPending: boolean;
+}) {
+  const [token, setToken] = useState("");
+
+  return (
+    <div className="flex flex-col h-full p-6 overflow-y-auto">
+      <div className="max-w-2xl mx-auto w-full">
+        <h3
+          className="text-xl font-normal mb-2"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          Connect Telegram
+        </h3>
+        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+          Family members will talk to their agents through Telegram. Enter your bot token to enable this.
+        </p>
+
+        <div
+          className="rounded-lg p-5 mb-6"
+          style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+        >
+          <label className="text-xs font-medium block mb-2" style={{ color: "#1a1f2e" }}>
+            Telegram Bot Token
+          </label>
+          <Input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="123456:ABC-DEF..."
+            className="mb-3"
+            style={{ borderColor: "#ddd5c8" }}
+          />
+          <p className="text-[11px]" style={{ color: "#a09080" }}>
+            Create a bot via @BotFather on Telegram, then paste the token here.
+          </p>
+        </div>
+
+        <div className="flex gap-3">
+          <Button
+            onClick={() => onComplete(token.trim())}
+            disabled={isPending}
+            style={{ background: "#2e7d32", color: "#fff" }}
+          >
+            {isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Finishing...
+              </>
+            ) : (
+              <>
+                <Check className="h-4 w-4 mr-1" /> Complete Setup
+              </>
+            )}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => onComplete("")}
+            disabled={isPending}
+            style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+          >
+            Skip for Now
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Onboarding Page ────────────────────────────────────────────────
 
 export function OnboardingPage() {
   const navigate = useNavigate();
-  const [step, setStep] = useState(0);
 
-  // Step 1 state
-  const [familyName, setFamilyName] = useState("");
-  const [timezone, setTimezone] = useState("America/New_York");
+  // Local state
+  const [phase, setPhase] = useState<OnboardingPhase>("interview");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [constitution, setConstitution] = useState("");
+  const [staffSelections, setStaffSelections] = useState<string[]>(["tutor"]);
+  const [initialized, setInitialized] = useState(false);
 
-  // Step 2 state
-  const [rules, setRules] = useState<TemplateRule[]>(DEFAULT_TEMPLATE_RULES);
-  const [worldview, setWorldview] = useState("");
-  const [budgetCap, setBudgetCap] = useState("50");
+  // Fetch existing onboarding state from server
+  const { data: serverState, isLoading: stateLoading } = useQuery<{
+    phase: OnboardingPhase;
+    hasHousehold: boolean;
+    householdId?: string;
+    interviewMessages?: ChatMessage[];
+    extractedClauses?: unknown[];
+    selectedStaff?: string[];
+  }>({
+    queryKey: ["onboarding"],
+    queryFn: () => api.get("/onboarding/state"),
+    retry: false,
+  });
 
-  // Step 3 state
-  const [members, setMembers] = useState<OnboardingMember[]>([]);
+  // Hydrate local state from server (once)
+  useEffect(() => {
+    if (serverState && !initialized) {
+      setInitialized(true);
+      if (serverState.phase) setPhase(serverState.phase);
+      if (serverState.selectedStaff) setStaffSelections(serverState.selectedStaff as string[]);
 
-  // Submit mutation
-  const submitMutation = useMutation({
-    mutationFn: (payload: OnboardingPayload) =>
-      api.post("/onboarding", payload),
+      // Hydrate conversation history from server
+      const serverMessages = serverState.interviewMessages || [];
+      if (serverMessages.length > 0) {
+        setMessages(serverMessages);
+      }
+    }
+  }, [serverState, initialized]);
+
+  // Auto-start: only if the server has NO interview messages (truly fresh start)
+  useEffect(() => {
+    if (!initialized || stateLoading) return;
+    const serverMessages = serverState?.interviewMessages || [];
+    if (phase === "interview" && serverMessages.length === 0 && messages.length === 0) {
+      // Send the initial greeting
+      sendMessage.mutate("Hello, I'd like to set up my family household.");
+    }
+  }, [initialized, stateLoading]);
+
+  const householdId = serverState?.householdId;
+
+  // Send message during interview
+  const sendMessage = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase?: OnboardingPhase; constitutionDocument?: string; householdId?: string }>(
+        "/onboarding/message",
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setMessages((prev) => [...prev, { role: "assistant", content: data.response }]);
+      if (data.phase && data.phase !== phase) setPhase(data.phase);
+      if (data.constitutionDocument) setConstitution(data.constitutionDocument);
+    },
+  });
+
+  // Complete onboarding
+  const completeMutation = useMutation({
+    mutationFn: (data: {
+      constitution?: string;
+      staffSelections?: string[];
+      botToken?: string;
+    }) => {
+      // Build staff array from selections
+      const staffToCreate = [
+        { name: "Mr. Carson", staffRole: "head_butler", isHeadButler: true, autonomyLevel: "autonomous", specialty: "Household oversight and governance", soulContent: "You are Mr. Carson, the head butler. You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal." },
+        ...(data.staffSelections?.includes("tutor") ? [{ name: "Ms. Hughes", staffRole: "tutor", specialty: "Education, homework coaching, study plans", autonomyLevel: "trusted", soulContent: "You are Ms. Hughes, the household tutor. Coach students through problems using scaffolding. Never give direct answers. Ask what they know, break into steps, give hints." }] : []),
+        ...(data.staffSelections?.includes("coach") ? [{ name: "Mr. Barrow", staffRole: "coach", specialty: "Sports, fitness, activity planning", autonomyLevel: "trusted", soulContent: "You are Mr. Barrow, the household coach. Create workout plans, practice schedules, and track fitness goals." }] : []),
+        ...(data.staffSelections?.includes("scheduler") ? [{ name: "Mrs. Patmore", staffRole: "scheduler", specialty: "Calendar management, family scheduling", autonomyLevel: "supervised", soulContent: "You are Mrs. Patmore, the household scheduler. Manage the family calendar and coordinate events." }] : []),
+      ];
+
+      return api.post("/onboarding/complete", {
+        householdId,
+        constitutionDocument: data.constitution,
+        staff: staffToCreate,
+      });
+    },
     onSuccess: () => {
       navigate("/");
     },
   });
 
-  function handleSubmit() {
-    // Build enabled rules
-    const enabledRules = rules
-      .filter((r) => r.enabled)
-      .map((r) => ({
-        category: r.category,
-        ruleText: r.ruleText,
-        enforcementLevel: r.enforcementLevel,
-        evaluationType: r.evaluationType,
-        appliesToRoles: r.appliesToRoles,
-      }));
+  function handleSendMessage(text: string) {
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    sendMessage.mutate(text);
+  }
 
-    // Add worldview rule if provided
-    if (worldview.trim()) {
-      enabledRules.push({
-        category: "content-governance",
-        ruleText: worldview.trim(),
-        enforcementLevel: "soft",
-        evaluationType: "behavioral",
-        appliesToRoles: ["parent", "student", "child"],
-      });
-    }
+  function handleApproveConstitution() {
+    setPhase("staff_setup");
+  }
 
-    // Add budget rule
-    if (budgetCap) {
-      enabledRules.push({
-        category: "budget",
-        ruleText: `Monthly family budget cap: $${budgetCap}`,
-        enforcementLevel: "hard",
-        evaluationType: "periodic",
-        appliesToRoles: ["parent", "student", "child"],
-      });
-    }
+  function handleEditConstitution(text: string) {
+    setConstitution(text);
+  }
 
-    submitMutation.mutate({
-      familyName: familyName.trim(),
-      timezone,
-      members: members.map((m) => ({
-        name: m.name,
-        role: m.role,
-        age: parseInt(m.age, 10),
-      })),
-      rules: enabledRules,
+  function handleToggleStaff(id: string) {
+    setStaffSelections((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
+    );
+  }
+
+  function handleStaffContinue() {
+    setPhase("telegram_config");
+  }
+
+  function handleComplete(token: string) {
+    completeMutation.mutate({
+      constitution,
+      staffSelections,
+      botToken: token || undefined,
     });
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 py-12">
-      <div className="w-full max-w-[600px]">
-        {/* Logo */}
-        <div className="text-center mb-6">
-          <h1 className="text-base font-bold tracking-tight">CarsonOS</h1>
+    <div
+      className="min-h-screen flex flex-col"
+      style={{ background: "#f5f1eb" }}
+    >
+      {/* Header */}
+      <div className="py-6 px-6 text-center border-b" style={{ borderColor: "#ddd5c8" }}>
+        <h1
+          className="text-lg font-bold tracking-wide"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          CarsonOS
+        </h1>
+        <p className="text-[11px] uppercase tracking-[2px] mt-1" style={{ color: "#8a8070" }}>
+          Household Setup
+        </p>
+        <div className="mt-4">
+          <PhaseIndicator current={phase} />
         </div>
+      </div>
 
-        {/* Step indicator */}
-        <StepIndicator current={step} total={3} />
-
-        {/* Steps */}
-        {step === 0 && (
-          <StepFamilyBasics
-            familyName={familyName}
-            setFamilyName={setFamilyName}
-            timezone={timezone}
-            setTimezone={setTimezone}
-            onNext={() => setStep(1)}
+      {/* Content */}
+      <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto">
+        {phase === "interview" && (
+          <InterviewPhase
+            messages={messages}
+            onSend={handleSendMessage}
+            isPending={sendMessage.isPending}
           />
         )}
 
-        {step === 1 && (
-          <StepConstitution
-            rules={rules}
-            setRules={setRules}
-            worldview={worldview}
-            setWorldview={setWorldview}
-            budgetCap={budgetCap}
-            setBudgetCap={setBudgetCap}
-            onBack={() => setStep(0)}
-            onNext={() => setStep(2)}
+        {phase === "review" && (
+          <ReviewPhase
+            constitution={constitution}
+            onApprove={handleApproveConstitution}
+            onEdit={handleEditConstitution}
+            isPending={sendMessage.isPending}
           />
         )}
 
-        {step === 2 && (
-          <StepMembers
-            members={members}
-            setMembers={setMembers}
-            onBack={() => setStep(1)}
-            onSubmit={handleSubmit}
-            isSubmitting={submitMutation.isPending}
-            error={
-              submitMutation.isError
-                ? (submitMutation.error as Error)
-                : null
-            }
+        {phase === "staff_setup" && (
+          <StaffSetupPhase
+            selections={staffSelections}
+            onToggle={handleToggleStaff}
+            onContinue={handleStaffContinue}
+            isPending={sendMessage.isPending}
           />
+        )}
+
+        {phase === "telegram_config" && (
+          <TelegramConfigPhase
+            onComplete={handleComplete}
+            isPending={completeMutation.isPending}
+          />
+        )}
+
+        {phase === "complete" && (
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+            <div
+              className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
+              style={{ background: "#e8f5e9" }}
+            >
+              <Check className="h-8 w-8" style={{ color: "#2e7d32" }} />
+            </div>
+            <h3
+              className="text-xl font-normal mb-2"
+              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+            >
+              Setup Complete
+            </h3>
+            <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+              Your household is ready. Carson and your staff are standing by.
+            </p>
+            <Button
+              onClick={() => navigate("/")}
+              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            >
+              Go to Dashboard
+            </Button>
+          </div>
         )}
       </div>
     </div>

@@ -1,14 +1,35 @@
-import { Router } from "express";
-import type { Db } from "@carsonos/db";
+/**
+ * Health routes -- server health + adapter health check.
+ */
 
-export function createHealthRoutes(_db: Db): Router {
+import { Router } from "express";
+import type { Adapter } from "../services/subprocess-adapter.js";
+
+export interface HealthRouteDeps {
+  adapter: Adapter;
+}
+
+export function createHealthRoutes(deps: HealthRouteDeps): Router {
+  const { adapter } = deps;
   const router = Router();
 
-  router.get("/", (_req, res) => {
+  // GET / -- server health + adapter status
+  router.get("/", async (_req, res) => {
+    let adapterHealthy = false;
+    try {
+      adapterHealthy = await adapter.healthCheck();
+    } catch {
+      adapterHealthy = false;
+    }
+
     res.json({
       status: "ok",
       timestamp: Date.now(),
-      version: "0.1.0",
+      version: "0.3.0",
+      adapter: {
+        name: adapter.name,
+        healthy: adapterHealthy,
+      },
     });
   });
 
