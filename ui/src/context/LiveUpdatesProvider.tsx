@@ -47,22 +47,28 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           setLastEvent(event);
 
           switch (event.type) {
-            case "message.created":
+            case "conversation.message":
               queryClient.invalidateQueries({ queryKey: ["messages"] });
               queryClient.invalidateQueries({ queryKey: ["conversations"] });
               queryClient.invalidateQueries({ queryKey: ["dashboard"] });
               break;
-            case "policy_event.created":
+            case "policy.enforced":
+            case "policy.escalated":
               queryClient.invalidateQueries({ queryKey: ["policyEvents"] });
               queryClient.invalidateQueries({ queryKey: ["dashboard"] });
               break;
-            case "agent.status_changed":
-              queryClient.invalidateQueries({ queryKey: ["agents"] });
+            case "task.created":
+            case "task.approved":
+            case "task.completed":
+              queryClient.invalidateQueries({ queryKey: ["tasks"] });
               queryClient.invalidateQueries({ queryKey: ["dashboard"] });
               break;
-            case "budget.updated":
-              queryClient.invalidateQueries({ queryKey: ["budget"] });
-              queryClient.invalidateQueries({ queryKey: ["agents"] });
+            case "staff.status_changed":
+              queryClient.invalidateQueries({ queryKey: ["staff"] });
+              queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+              break;
+            case "activity.new":
+              queryClient.invalidateQueries({ queryKey: ["activity"] });
               queryClient.invalidateQueries({ queryKey: ["dashboard"] });
               break;
           }

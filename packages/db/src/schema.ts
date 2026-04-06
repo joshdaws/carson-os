@@ -1,12 +1,11 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-// Helper: current epoch-seconds default
 const nowEpoch = sql`(unixepoch())`;
 
-// ── 1. families ─────────────────────────────────────────────────────
+// ── 1. households ───────────────────────────────────────────────────
 
-export const families = sqliteTable("families", {
+export const households = sqliteTable("households", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
@@ -24,61 +23,90 @@ export const familyMembers = sqliteTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    familyId: text("family_id")
+    householdId: text("household_id")
       .notNull()
-      .references(() => families.id),
+      .references(() => households.id),
     name: text("name").notNull(),
     role: text("role").notNull(), // parent | student | child
     age: integer("age").notNull(),
     telegramUserId: text("telegram_user_id").unique(),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("family_members_family_idx").on(t.familyId)]
+  (t) => [index("family_members_household_idx").on(t.householdId)]
 );
 
-// ── 3. agents ───────────────────────────────────────────────────────
+// ── 3. staffAgents ──────────────────────────────────────────────────
 
-export const agents = sqliteTable(
-  "agents",
+export const staffAgents = sqliteTable(
+  "staff_agents",
   {
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    familyId: text("family_id")
+    householdId: text("household_id")
       .notNull()
-      .references(() => families.id),
+      .references(() => households.id),
+    name: text("name").notNull(),
+    staffRole: text("staff_role").notNull(), // head_butler | personal | tutor | coach | scheduler | custom
+    specialty: text("specialty"),
+    roleContent: text("role_content").notNull().default(""), // Job description: responsibilities, capabilities
+    soulContent: text("soul_content"), // Personality: voice, tone, values. NULL for internal agents.
+    visibility: text("visibility").notNull().default("family"), // family | internal
+    telegramBotToken: text("telegram_bot_token"), // Bot token for family-visible agents. NULL for internal.
+    model: text("model").notNull().default("claude-sonnet-4-20250514"),
+    status: text("status").notNull().default("active"), // active | paused | idle
+    isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),
+    autonomyLevel: text("autonomy_level").notNull().default("supervised"), // supervised | trusted | autonomous
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [index("staff_agents_household_idx").on(t.householdId)]
+);
+
+// ── 4. staffAssignments ─────────────────────────────────────────────
+
+export const staffAssignments = sqliteTable(
+  "staff_assignments",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
     memberId: text("member_id")
       .notNull()
       .references(() => familyMembers.id),
-    model: text("model").notNull(),
-    status: text("status").notNull().default("idle"), // active | paused | idle
-    soulContent: text("soul_content"),
-    budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
-    spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    relationship: text("relationship").notNull().default("primary"), // primary | secondary | oversight
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("agents_family_idx").on(t.familyId)]
+  (t) => [
+    index("staff_assignments_agent_idx").on(t.agentId),
+    index("staff_assignments_member_idx").on(t.memberId),
+    uniqueIndex("staff_assignments_unique").on(t.agentId, t.memberId),
+  ]
 );
 
-// ── 4. constitutions ────────────────────────────────────────────────
+// ── 5. constitutions ────────────────────────────────────────────────
 
 export const constitutions = sqliteTable("constitutions", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  familyId: text("family_id")
+  householdId: text("household_id")
     .notNull()
-    .references(() => families.id),
-  version: integer("version").notNull(),
-  content: text("content").notNull(),
+    .references(() => households.id),
+  version: integer("version").notNull().default(1),
+  document: text("document").notNull().default(""),
+  interviewTranscript: text("interview_transcript", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
 });
 
-// ── 5. constitutionRules ────────────────────────────────────────────
+// ── 6. constitutionClauses ──────────────────────────────────────────
 
-export const constitutionRules = sqliteTable(
-  "constitution_rules",
+export const constitutionClauses = sqliteTable(
+  "constitution_clauses",
   {
     id: text("id")
       .primaryKey()
@@ -86,24 +114,132 @@ export const constitutionRules = sqliteTable(
     constitutionId: text("constitution_id")
       .notNull()
       .references(() => constitutions.id),
-    familyId: text("family_id")
+    householdId: text("household_id")
       .notNull()
-      .references(() => families.id),
-    category: text("category").notNull(), // RuleCategory
-    ruleText: text("rule_text").notNull(),
-    enforcementLevel: text("enforcement_level").notNull(), // hard | soft | advisory
-    evaluationType: text("evaluation_type").notNull(), // keyword_block | age_gate | budget_cap | role_restrict | behavioral
+      .references(() => households.id),
+    category: text("category").notNull(),
+    clauseText: text("clause_text").notNull(),
+    enforcementLevel: text("enforcement_level").notNull().default("soft"), // hard | soft | advisory
+    evaluationType: text("evaluation_type").notNull().default("behavioral"), // keyword_block | age_gate | role_restrict | behavioral
     evaluationConfig: text("evaluation_config", { mode: "json" }),
     appliesToRoles: text("applies_to_roles", { mode: "json" }), // MemberRole[] | null
+    appliesToAgents: text("applies_to_agents", { mode: "json" }), // string[] (staff agent IDs) | null
     appliesToMinAge: integer("applies_to_min_age"),
     appliesToMaxAge: integer("applies_to_max_age"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("constitution_rules_constitution_idx").on(t.constitutionId)]
+  (t) => [index("constitution_clauses_constitution_idx").on(t.constitutionId)]
 );
 
-// ── 6. conversations ────────────────────────────────────────────────
+// ── 7. tasks ────────────────────────────────────────────────────────
+
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    parentTaskId: text("parent_task_id"), // FK to tasks.id. NULL = top-level / standalone.
+    requestedBy: text("requested_by").references(() => familyMembers.id),
+    assignedToMembers: text("assigned_to_members", { mode: "json" }), // string[] member IDs
+    title: text("title").notNull(),
+    description: text("description"),
+    status: text("status").notNull().default("pending"), // pending | approved | in_progress | completed | failed | cancelled
+    requiresApproval: integer("requires_approval", { mode: "boolean" }).notNull().default(true),
+    approvedBy: text("approved_by"),
+    governingClauses: text("governing_clauses", { mode: "json" }), // string[] clause IDs
+    delegationDepth: integer("delegation_depth").notNull().default(0), // tracks delegation nesting
+    result: text("result"),
+    report: text("report"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    completedAt: integer("completed_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    index("tasks_household_idx").on(t.householdId),
+    index("tasks_agent_idx").on(t.agentId),
+    index("tasks_status_idx").on(t.status),
+    index("tasks_parent_idx").on(t.parentTaskId),
+  ]
+);
+
+// ── 8. taskEvents ───────────────────────────────────────────────────
+
+export const taskEvents = sqliteTable(
+  "task_events",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id),
+    agentId: text("agent_id").references(() => staffAgents.id),
+    eventType: text("event_type").notNull(), // created | assigned | approved | rejected | started | progress_update | delegated | completed | failed | synthesis_requested
+    message: text("message"), // Human-readable description
+    payload: text("payload", { mode: "json" }), // event-type-specific data
+    clauseIds: text("clause_ids", { mode: "json" }), // governing clause IDs
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [index("task_events_task_idx").on(t.taskId)]
+);
+
+// ── 8b. delegationEdges ────────────────────────────────────────────
+
+export const delegationEdges = sqliteTable(
+  "delegation_edges",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    fromAgentId: text("from_agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    toAgentId: text("to_agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    allowedTaskTypes: text("allowed_task_types", { mode: "json" }), // string[] | null = all types
+    relayProgress: integer("relay_progress", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    uniqueIndex("delegation_edges_unique").on(t.fromAgentId, t.toAgentId),
+    index("delegation_edges_from_idx").on(t.fromAgentId),
+  ]
+);
+
+// ── 9. policyEvents ─────────────────────────────────────────────────
+
+export const policyEvents = sqliteTable(
+  "policy_events",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    conversationId: text("conversation_id"),
+    taskId: text("task_id"),
+    clauseId: text("clause_id"),
+    eventType: text("event_type").notNull(), // enforced | coached | escalated | allowed
+    context: text("context", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [index("policy_events_household_ts_idx").on(t.householdId, t.createdAt)]
+);
+
+// ── 10. conversations ───────────────────────────────────────────────
 
 export const conversations = sqliteTable(
   "conversations",
@@ -111,21 +247,27 @@ export const conversations = sqliteTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    familyId: text("family_id")
+    householdId: text("household_id")
       .notNull()
-      .references(() => families.id),
+      .references(() => households.id),
     agentId: text("agent_id")
       .notNull()
-      .references(() => agents.id),
-    channel: text("channel").notNull(), // telegram | web
-    startedAt: text("started_at").notNull(), // ISO datetime
+      .references(() => staffAgents.id),
+    memberId: text("member_id")
+      .notNull()
+      .references(() => familyMembers.id),
+    channel: text("channel").notNull().default("telegram"), // telegram | web
+    startedAt: text("started_at").notNull(),
     lastMessageAt: text("last_message_at"),
     sessionContext: text("session_context", { mode: "json" }),
   },
-  (t) => [index("conversations_agent_idx").on(t.agentId)]
+  (t) => [
+    index("conversations_agent_idx").on(t.agentId),
+    index("conversations_member_idx").on(t.memberId),
+  ]
 );
 
-// ── 7. messages ─────────────────────────────────────────────────────
+// ── 11. messages ────────────────────────────────────────────────────
 
 export const messages = sqliteTable(
   "messages",
@@ -139,56 +281,14 @@ export const messages = sqliteTable(
     role: text("role").notNull(), // user | assistant | system
     content: text("content").notNull(),
     tokenCount: integer("token_count"),
-    costCents: integer("cost_cents"),
     metadata: text("metadata", { mode: "json" }),
+    status: text("status").notNull().default("delivered"), // delivered | pending
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
   (t) => [index("messages_conversation_ts_idx").on(t.conversationId, t.createdAt)]
 );
 
-// ── 8. policyEvents ─────────────────────────────────────────────────
-
-export const policyEvents = sqliteTable(
-  "policy_events",
-  {
-    id: text("id")
-      .primaryKey()
-      .$defaultFn(() => crypto.randomUUID()),
-    familyId: text("family_id")
-      .notNull()
-      .references(() => families.id),
-    agentId: text("agent_id")
-      .notNull()
-      .references(() => agents.id),
-    conversationId: text("conversation_id").references(() => conversations.id),
-    ruleId: text("rule_id").references(() => constitutionRules.id),
-    eventType: text("event_type").notNull(), // PolicyEventType
-    context: text("context", { mode: "json" }),
-    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
-  },
-  (t) => [index("policy_events_family_ts_idx").on(t.familyId, t.createdAt)]
-);
-
-// ── 9. budgetLedger ─────────────────────────────────────────────────
-
-export const budgetLedger = sqliteTable("budget_ledger", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  familyId: text("family_id")
-    .notNull()
-    .references(() => families.id),
-  agentId: text("agent_id")
-    .notNull()
-    .references(() => agents.id),
-  amountCents: integer("amount_cents").notNull(),
-  balanceAfterCents: integer("balance_after_cents").notNull(),
-  eventType: text("event_type").notNull(), // charge | reset | adjustment
-  description: text("description"),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
-});
-
-// ── 10. activityLog ─────────────────────────────────────────────────
+// ── 12. activityLog ─────────────────────────────────────────────────
 
 export const activityLog = sqliteTable(
   "activity_log",
@@ -196,33 +296,35 @@ export const activityLog = sqliteTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    familyId: text("family_id")
+    householdId: text("household_id")
       .notNull()
-      .references(() => families.id),
-    agentId: text("agent_id").references(() => agents.id),
+      .references(() => households.id),
+    agentId: text("agent_id").references(() => staffAgents.id),
     action: text("action").notNull(),
     details: text("details", { mode: "json" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("activity_log_family_ts_idx").on(t.familyId, t.createdAt)]
+  (t) => [index("activity_log_household_ts_idx").on(t.householdId, t.createdAt)]
 );
 
-// ── 11. onboardingState ─────────────────────────────────────────────
+// ── 13. onboardingState ─────────────────────────────────────────────
 
 export const onboardingState = sqliteTable("onboarding_state", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  familyId: text("family_id")
+  householdId: text("household_id")
     .notNull()
-    .references(() => families.id),
-  step: integer("step").notNull(),
-  answers: text("answers", { mode: "json" }).notNull(),
+    .references(() => households.id),
+  phase: text("phase").notNull().default("interview"), // interview | review | staff_setup | telegram_config | complete
+  interviewMessages: text("interview_messages", { mode: "json" }),
+  extractedClauses: text("extracted_clauses", { mode: "json" }),
+  selectedStaff: text("selected_staff", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
 });
 
-// ── 12. instanceSettings ────────────────────────────────────────────
+// ── 14. instanceSettings ────────────────────────────────────────────
 
 export const instanceSettings = sqliteTable("instance_settings", {
   id: text("id").primaryKey(),

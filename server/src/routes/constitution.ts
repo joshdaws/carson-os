@@ -1,21 +1,47 @@
+/**
+ * Constitution routes -- manage the household constitution + clauses.
+ *
+ * Version management: updating the document creates a new version
+ * and deactivates the old one.
+ */
+
 import { Router } from "express";
 import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { constitutions, constitutionRules } from "@carsonos/db";
+import { constitutions, constitutionClauses, households } from "@carsonos/db";
+import type { ConstitutionEngine } from "../services/constitution-engine.js";
 
-export function createConstitutionRoutes(db: Db): Router {
+export interface ConstitutionRouteDeps {
+  db: Db;
+  constitutionEngine: ConstitutionEngine;
+}
+
+export function createConstitutionRoutes(deps: ConstitutionRouteDeps): Router {
+  const { db, constitutionEngine } = deps;
   const router = Router();
 
-  // GET /:familyId/constitution — return active constitution with its rules
-  router.get("/:familyId/constitution", async (req, res) => {
+  // Helper: get the single household ID (MVP: one household)
+  async function getHouseholdId(): Promise<string | null> {
+    const household = await db.select().from(households).limit(1).get();
+    return household?.id ?? null;
+  }
+
+  // GET / -- active constitution with clauses
+  router.get("/", async (_req, res) => {
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
     const constitution = await db
       .select()
       .from(constitutions)
       .where(
         and(
-          eq(constitutions.familyId, req.params.familyId),
-          eq(constitutions.isActive, true)
-        )
+          eq(constitutions.householdId, householdId),
+          eq(constitutions.isActive, true),
+        ),
       )
       .orderBy(desc(constitutions.version))
       .get();
@@ -25,23 +51,28 @@ export function createConstitutionRoutes(db: Db): Router {
       return;
     }
 
-    const rules = await db
+    const clauses = await db
       .select()
-      .from(constitutionRules)
-      .where(eq(constitutionRules.constitutionId, constitution.id))
-      .orderBy(constitutionRules.sortOrder)
+      .from(constitutionClauses)
+      .where(eq(constitutionClauses.constitutionId, constitution.id))
+      .orderBy(constitutionClauses.sortOrder)
       .all();
 
-    res.json({ constitution, rules });
+    res.json({ constitution, clauses });
   });
 
-  // PUT /:familyId/constitution/rules — bulk update rules (creates new version)
-  router.put("/:familyId/constitution/rules", async (req, res) => {
-    const { rules } = req.body;
-    const { familyId } = req.params;
+  // PUT /document -- update the constitution document (creates new version)
+  router.put("/document", async (req, res) => {
+    const { document } = req.body;
+    const householdId = await getHouseholdId();
 
-    if (!Array.isArray(rules) || rules.length === 0) {
-      res.status(400).json({ error: "rules array is required" });
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
+    if (!document || typeof document !== "string") {
+      res.status(400).json({ error: "document (string) is required" });
       return;
     }
 
@@ -51,9 +82,9 @@ export function createConstitutionRoutes(db: Db): Router {
       .from(constitutions)
       .where(
         and(
-          eq(constitutions.familyId, familyId),
-          eq(constitutions.isActive, true)
-        )
+          eq(constitutions.householdId, householdId),
+          eq(constitutions.isActive, true),
+        ),
       )
       .get();
 
@@ -66,49 +97,76 @@ export function createConstitutionRoutes(db: Db): Router {
         .where(eq(constitutions.id, current.id));
     }
 
-    // Create new constitution
+    // Create new constitution version
     const [constitution] = await db
       .insert(constitutions)
       .values({
-        familyId,
+        householdId,
         version: newVersion,
-        content: `Constitution v${newVersion}`,
+        document,
         isActive: true,
       })
       .returning();
 
-    // Insert all rules
-    const insertedRules = await db
-      .insert(constitutionRules)
-      .values(
-        rules.map((rule: any, idx: number) => ({
-          constitutionId: constitution.id,
-          familyId,
-          category: rule.category,
-          ruleText: rule.ruleText,
-          enforcementLevel: rule.enforcementLevel,
-          evaluationType: rule.evaluationType,
-          evaluationConfig: rule.evaluationConfig ?? null,
-          appliesToRoles: rule.appliesToRoles ?? null,
-          appliesToMinAge: rule.appliesToMinAge ?? null,
-          appliesToMaxAge: rule.appliesToMaxAge ?? null,
-          sortOrder: rule.sortOrder ?? idx,
-        }))
-      )
-      .returning();
+    // Copy existing clauses to new version if upgrading
+    if (current) {
+      const existingClauses = await db
+        .select()
+        .from(constitutionClauses)
+        .where(eq(constitutionClauses.constitutionId, current.id))
+        .all();
 
-    res.status(201).json({ constitution, rules: insertedRules });
+      if (existingClauses.length > 0) {
+        await db.insert(constitutionClauses).values(
+          existingClauses.map((c) => ({
+            constitutionId: constitution.id,
+            householdId,
+            category: c.category,
+            clauseText: c.clauseText,
+            enforcementLevel: c.enforcementLevel,
+            evaluationType: c.evaluationType,
+            evaluationConfig: c.evaluationConfig,
+            appliesToRoles: c.appliesToRoles,
+            appliesToAgents: c.appliesToAgents,
+            appliesToMinAge: c.appliesToMinAge,
+            appliesToMaxAge: c.appliesToMaxAge,
+            sortOrder: c.sortOrder,
+          })),
+        );
+      }
+    }
+
+    // Invalidate engine cache
+    constitutionEngine.invalidateCache(householdId);
+
+    res.json({ constitution });
   });
 
-  // POST /:familyId/constitution/rules — add a single rule to active constitution
-  router.post("/:familyId/constitution/rules", async (req, res) => {
-    const { familyId } = req.params;
-    const rule = req.body;
+  // GET /versions -- version history
+  router.get("/versions", async (_req, res) => {
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
 
-    if (!rule.category || !rule.ruleText || !rule.enforcementLevel || !rule.evaluationType) {
-      res.status(400).json({
-        error: "category, ruleText, enforcementLevel, and evaluationType are required",
-      });
+    const versions = await db
+      .select()
+      .from(constitutions)
+      .where(eq(constitutions.householdId, householdId))
+      .orderBy(desc(constitutions.version))
+      .all();
+
+    res.json({ versions });
+  });
+
+  // -- Clause CRUD ---------------------------------------------------
+
+  // POST /clauses -- add a clause to the active constitution
+  router.post("/clauses", async (req, res) => {
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
       return;
     }
 
@@ -117,9 +175,9 @@ export function createConstitutionRoutes(db: Db): Router {
       .from(constitutions)
       .where(
         and(
-          eq(constitutions.familyId, familyId),
-          eq(constitutions.isActive, true)
-        )
+          eq(constitutions.householdId, householdId),
+          eq(constitutions.isActive, true),
+        ),
       )
       .get();
 
@@ -128,96 +186,128 @@ export function createConstitutionRoutes(db: Db): Router {
       return;
     }
 
+    const clause = req.body;
+    if (!clause.category || !clause.clauseText) {
+      res
+        .status(400)
+        .json({ error: "category and clauseText are required" });
+      return;
+    }
+
     const [inserted] = await db
-      .insert(constitutionRules)
+      .insert(constitutionClauses)
       .values({
         constitutionId: constitution.id,
-        familyId,
-        category: rule.category,
-        ruleText: rule.ruleText,
-        enforcementLevel: rule.enforcementLevel,
-        evaluationType: rule.evaluationType,
-        evaluationConfig: rule.evaluationConfig ?? null,
-        appliesToRoles: rule.appliesToRoles ?? null,
-        appliesToMinAge: rule.appliesToMinAge ?? null,
-        appliesToMaxAge: rule.appliesToMaxAge ?? null,
-        sortOrder: rule.sortOrder ?? 0,
+        householdId,
+        category: clause.category,
+        clauseText: clause.clauseText,
+        enforcementLevel: clause.enforcementLevel ?? "soft",
+        evaluationType: clause.evaluationType ?? "behavioral",
+        evaluationConfig: clause.evaluationConfig ?? null,
+        appliesToRoles: clause.appliesToRoles ?? null,
+        appliesToAgents: clause.appliesToAgents ?? null,
+        appliesToMinAge: clause.appliesToMinAge ?? null,
+        appliesToMaxAge: clause.appliesToMaxAge ?? null,
+        sortOrder: clause.sortOrder ?? 0,
       })
       .returning();
 
-    res.status(201).json({ rule: inserted });
+    // Invalidate engine cache
+    constitutionEngine.invalidateCache(householdId);
+
+    res.status(201).json({ clause: inserted });
   });
 
-  // PATCH /:familyId/constitution/rules/:ruleId — update a single rule
-  router.patch("/:familyId/constitution/rules/:ruleId", async (req, res) => {
+  // PUT /clauses/:id -- update a clause
+  router.put("/clauses/:id", async (req, res) => {
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
     const existing = await db
       .select()
-      .from(constitutionRules)
+      .from(constitutionClauses)
       .where(
         and(
-          eq(constitutionRules.id, req.params.ruleId),
-          eq(constitutionRules.familyId, req.params.familyId)
-        )
+          eq(constitutionClauses.id, req.params.id),
+          eq(constitutionClauses.householdId, householdId),
+        ),
       )
       .get();
 
     if (!existing) {
-      res.status(404).json({ error: "Rule not found" });
+      res.status(404).json({ error: "Clause not found" });
       return;
     }
 
     const {
       category,
-      ruleText,
+      clauseText,
       enforcementLevel,
       evaluationType,
       evaluationConfig,
       appliesToRoles,
+      appliesToAgents,
       appliesToMinAge,
       appliesToMaxAge,
       sortOrder,
     } = req.body;
 
     const [updated] = await db
-      .update(constitutionRules)
+      .update(constitutionClauses)
       .set({
         ...(category !== undefined && { category }),
-        ...(ruleText !== undefined && { ruleText }),
+        ...(clauseText !== undefined && { clauseText }),
         ...(enforcementLevel !== undefined && { enforcementLevel }),
         ...(evaluationType !== undefined && { evaluationType }),
         ...(evaluationConfig !== undefined && { evaluationConfig }),
         ...(appliesToRoles !== undefined && { appliesToRoles }),
+        ...(appliesToAgents !== undefined && { appliesToAgents }),
         ...(appliesToMinAge !== undefined && { appliesToMinAge }),
         ...(appliesToMaxAge !== undefined && { appliesToMaxAge }),
         ...(sortOrder !== undefined && { sortOrder }),
       })
-      .where(eq(constitutionRules.id, req.params.ruleId))
+      .where(eq(constitutionClauses.id, req.params.id))
       .returning();
 
-    res.json({ rule: updated });
+    // Invalidate engine cache
+    constitutionEngine.invalidateCache(householdId);
+
+    res.json({ clause: updated });
   });
 
-  // DELETE /:familyId/constitution/rules/:ruleId — delete a rule
-  router.delete("/:familyId/constitution/rules/:ruleId", async (req, res) => {
+  // DELETE /clauses/:id -- delete a clause
+  router.delete("/clauses/:id", async (req, res) => {
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
     const existing = await db
       .select()
-      .from(constitutionRules)
+      .from(constitutionClauses)
       .where(
         and(
-          eq(constitutionRules.id, req.params.ruleId),
-          eq(constitutionRules.familyId, req.params.familyId)
-        )
+          eq(constitutionClauses.id, req.params.id),
+          eq(constitutionClauses.householdId, householdId),
+        ),
       )
       .get();
 
     if (!existing) {
-      res.status(404).json({ error: "Rule not found" });
+      res.status(404).json({ error: "Clause not found" });
       return;
     }
 
     await db
-      .delete(constitutionRules)
-      .where(eq(constitutionRules.id, req.params.ruleId));
+      .delete(constitutionClauses)
+      .where(eq(constitutionClauses.id, req.params.id));
+
+    // Invalidate engine cache
+    constitutionEngine.invalidateCache(householdId);
 
     res.json({ deleted: true });
   });

@@ -11,9 +11,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": `http://127.0.0.1:${process.env.API_PORT || 3200}`,
+      "/api": `http://127.0.0.1:${process.env.API_PORT || 3300}`,
       "/ws": {
-        target: `ws://127.0.0.1:${process.env.API_PORT || 3200}`,
+        target: `ws://127.0.0.1:${process.env.API_PORT || 3300}`,
         ws: true,
       },
     },

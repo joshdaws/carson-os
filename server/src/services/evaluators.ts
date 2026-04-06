@@ -11,17 +11,16 @@ import type {
   AgeGateConfig,
   RoleRestrictConfig,
   MemberRole,
-  RuleCategory,
   EvaluationType,
 } from "@carsonos/shared";
 
-// ── Extended result type (adds matchedContent for keyword hits) ─────
+// -- Extended result type (adds matchedContent for keyword hits) -----
 
 export interface EvaluationResult extends BaseEvaluationResult {
   matchedContent?: string;
 }
 
-// ── Hard rule evaluators ────────────────────────────────────────────
+// -- Hard rule evaluators --------------------------------------------
 
 /**
  * Evaluate a message against a list of blocked keyword patterns.
@@ -121,37 +120,6 @@ export function evaluateAgeGate(
 }
 
 /**
- * Budget cap check.
- *
- * - Zero budget means no budget assigned -- always block.
- * - Spent >= budget means over cap -- block.
- * - Otherwise allow.
- */
-export function evaluateBudgetCap(
-  spentCents: number,
-  budgetCents: number,
-  ruleId: string,
-): EvaluationResult {
-  if (budgetCents <= 0) {
-    return {
-      allowed: false,
-      ruleId,
-      reason: "No budget assigned",
-    };
-  }
-
-  if (spentCents >= budgetCents) {
-    return {
-      allowed: false,
-      ruleId,
-      reason: `Budget exceeded (spent ${spentCents}c of ${budgetCents}c)`,
-    };
-  }
-
-  return { allowed: true, ruleId };
-}
-
-/**
  * Role-based access control.
  *
  * If the member's role is in the allowed list, allow. Otherwise block.
@@ -174,12 +142,13 @@ export function evaluateRoleRestrict(
   };
 }
 
-// ── Soft rule prompt compiler ───────────────────────────────────────
+// -- Soft rule prompt compiler ---------------------------------------
 
 interface SoftRule {
   ruleText: string;
   category: string;
   appliesToRoles: MemberRole[] | null;
+  appliesToAgents: string[] | null;
   appliesToMinAge: number | null;
   appliesToMaxAge: number | null;
 }
@@ -187,18 +156,25 @@ interface SoftRule {
 /**
  * Compile applicable soft rules into a prompt string for the LLM.
  *
- * Filters rules by role and age, then groups by category.
+ * Filters rules by role, age, and optionally agent ID, then groups by category.
  * Rules with null appliesToRoles apply to everyone.
+ * Rules with null appliesToAgents apply to all agents.
  * Age boundaries are inclusive on both ends.
  */
 export function compileSoftRules(
   allRules: SoftRule[],
   memberRole: MemberRole,
   memberAge: number,
+  agentId?: string,
 ): string {
   const applicable = allRules.filter((rule) => {
     // Role check: null means applies to everyone
     if (rule.appliesToRoles !== null && !rule.appliesToRoles.includes(memberRole)) {
+      return false;
+    }
+
+    // Agent check: null means applies to all agents; non-null means only listed agents
+    if (agentId && rule.appliesToAgents !== null && !rule.appliesToAgents.includes(agentId)) {
       return false;
     }
 
@@ -238,7 +214,7 @@ export function compileSoftRules(
   return sections.join("\n").trim();
 }
 
-// ── Post-execution response scanner ────────────────────────────────
+// -- Post-execution response scanner --------------------------------
 
 interface ScanRule {
   ruleId: string;

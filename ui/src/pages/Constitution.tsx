@@ -1,630 +1,350 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
-import {
-  Plus,
-  Trash2,
-  Shield,
-  Eye,
-  Lock,
-  MessageSquare,
-  DollarSign,
-  KeyRound,
-  AlertTriangle,
-  ScrollText,
-} from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollText, Edit3, Save, X, Clock, Loader2 } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type EnforcementLevel = "hard" | "soft" | "advisory";
-type RuleCategory =
-  | "content-governance"
-  | "interaction-mode"
-  | "privacy"
-  | "budget"
-  | "access"
-  | "escalation";
-type MemberRole = "parent" | "student" | "child";
-
-interface ConstitutionRule {
-  id: string;
-  ruleText: string;
-  enforcementLevel: EnforcementLevel;
-  evaluationType: string;
-  category: RuleCategory;
-  roleScope?: MemberRole[];
-  ageScope?: { min?: number; max?: number };
-}
+// ── Types ──────────────────────────────────────────────────────────
 
 interface Constitution {
   id: string;
   version: number;
-  rules: ConstitutionRule[];
+  document: string;
+  createdAt: string;
 }
 
 interface ConstitutionData {
   constitution: Constitution;
+  clauses: unknown[];
 }
 
-interface FamilyData {
-  family: { id: string; name: string; timezone: string };
-  members: { id: string; name: string; role: string; age: number }[];
+interface VersionEntry {
+  id: string;
+  version: number;
+  createdAt: string;
+  documentPreview: string;
 }
 
-interface CreateRulePayload {
-  ruleText: string;
-  enforcementLevel: EnforcementLevel;
-  evaluationType: string;
-  category: RuleCategory;
-  roleScope?: MemberRole[];
-}
-
-interface UpdateRulePayload {
-  ruleText?: string;
-  enforcementLevel?: EnforcementLevel;
-  roleScope?: MemberRole[];
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const CATEGORIES: { value: RuleCategory; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { value: "content-governance", label: "Content Governance", icon: Shield },
-  { value: "interaction-mode", label: "Interaction Mode", icon: MessageSquare },
-  { value: "privacy", label: "Privacy", icon: Eye },
-  { value: "budget", label: "Budget", icon: DollarSign },
-  { value: "access", label: "Access", icon: KeyRound },
-  { value: "escalation", label: "Escalation", icon: AlertTriangle },
-];
-
-const ENFORCEMENT_OPTIONS: { value: EnforcementLevel; label: string }[] = [
-  { value: "hard", label: "Hard" },
-  { value: "soft", label: "Soft" },
-  { value: "advisory", label: "Advisory" },
-];
-
-const EVALUATION_OPTIONS = [
-  { value: "pre-response", label: "Pre-response" },
-  { value: "post-response", label: "Post-response" },
-  { value: "periodic", label: "Periodic" },
-  { value: "on-demand", label: "On-demand" },
-];
-
-const ROLE_OPTIONS: MemberRole[] = ["parent", "student", "child"];
-
-function enforcementVariant(level: EnforcementLevel) {
-  if (level === "hard") return "destructive" as const;
-  if (level === "soft") return "warning" as const;
-  return "secondary" as const;
-}
-
-// ---------------------------------------------------------------------------
-// Inline Editable Rule Text
-// ---------------------------------------------------------------------------
-
-function EditableRuleText({
-  text,
-  onSave,
-  disabled,
-}: {
-  text: string;
-  onSave: (newText: string) => void;
-  disabled: boolean;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(text);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  function handleBlur() {
-    const trimmed = draft.trim();
-    if (trimmed && trimmed !== text) {
-      onSave(trimmed);
-    } else {
-      setDraft(text);
-    }
-    setEditing(false);
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter") {
-      (e.target as HTMLInputElement).blur();
-    }
-    if (e.key === "Escape") {
-      setDraft(text);
-      setEditing(false);
-    }
-  }
-
-  if (editing) {
-    return (
-      <Input
-        ref={inputRef}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={handleBlur}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        className="h-7 text-sm"
-      />
-    );
-  }
-
-  return (
-    <span
-      className="text-sm cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 transition-colors"
-      onClick={() => {
-        setDraft(text);
-        setEditing(true);
-      }}
-    >
-      {text}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Role Scope Checkboxes
-// ---------------------------------------------------------------------------
-
-function RoleScopeSelector({
-  selected,
-  onChange,
-}: {
-  selected: MemberRole[];
-  onChange: (roles: MemberRole[]) => void;
-}) {
-  function toggle(role: MemberRole) {
-    if (selected.includes(role)) {
-      onChange(selected.filter((r) => r !== role));
-    } else {
-      onChange([...selected, role]);
-    }
-  }
-
-  return (
-    <div className="flex gap-2">
-      {ROLE_OPTIONS.map((role) => (
-        <label key={role} className="flex items-center gap-1 text-xs text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={selected.includes(role)}
-            onChange={() => toggle(role)}
-            className="rounded border-input h-3 w-3"
-          />
-          {role.charAt(0).toUpperCase() + role.slice(1)}
-        </label>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Single Rule Row
-// ---------------------------------------------------------------------------
-
-function RuleRow({
-  rule,
-  familyId,
-  constitutionId,
-}: {
-  rule: ConstitutionRule;
-  familyId: string;
-  constitutionId: string;
-}) {
-  const queryClient = useQueryClient();
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const updateMutation = useMutation({
-    mutationFn: (payload: UpdateRulePayload) =>
-      api.patch(`/families/${familyId}/constitution/rules/${rule.id}`, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["constitution"] });
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: () =>
-      api.delete(`/families/${familyId}/constitution/rules/${rule.id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["constitution"] });
-    },
-  });
-
-  function handleDelete() {
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      return;
-    }
-    deleteMutation.mutate();
-  }
-
-  return (
-    <div className="flex gap-3 py-3 border-b border-dashed border-border/50 last:border-0 group">
-      <span className="text-muted-foreground/50 pt-0.5 select-none font-serif">
-        &#167;
-      </span>
-
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <EditableRuleText
-          text={rule.ruleText}
-          onSave={(newText) => updateMutation.mutate({ ruleText: newText })}
-          disabled={updateMutation.isPending}
-        />
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={rule.enforcementLevel}
-            onValueChange={(v) =>
-              updateMutation.mutate({ enforcementLevel: v as EnforcementLevel })
-            }
-          >
-            <SelectTrigger className="h-6 w-[90px] text-[10px] border-none shadow-none px-0">
-              <Badge
-                variant={enforcementVariant(rule.enforcementLevel)}
-                className="text-[10px] pointer-events-none"
-              >
-                {rule.enforcementLevel}
-              </Badge>
-            </SelectTrigger>
-            <SelectContent>
-              {ENFORCEMENT_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          {rule.evaluationType && (
-            <span className="text-[10px] text-muted-foreground">
-              {rule.evaluationType}
-            </span>
-          )}
-
-          <div className="ml-auto">
-            <RoleScopeSelector
-              selected={rule.roleScope || []}
-              onChange={(roles) => updateMutation.mutate({ roleScope: roles })}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-start pt-0.5">
-        {confirmDelete ? (
-          <div className="flex gap-1">
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-6 text-[10px] px-2"
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "..." : "Confirm"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-[10px] px-2"
-              onClick={() => setConfirmDelete(false)}
-            >
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={handleDelete}
-          >
-            <Trash2 className="h-3 w-3 text-muted-foreground" />
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Add Rule Form (inline at bottom of category)
-// ---------------------------------------------------------------------------
-
-function AddRuleForm({
-  familyId,
-  category,
-  onClose,
-}: {
-  familyId: string;
-  category: RuleCategory;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [ruleText, setRuleText] = useState("");
-  const [enforcement, setEnforcement] = useState<EnforcementLevel>("soft");
-  const [evaluationType, setEvaluationType] = useState("pre-response");
-  const [roleScope, setRoleScope] = useState<MemberRole[]>([]);
-
-  const createMutation = useMutation({
-    mutationFn: (payload: CreateRulePayload) =>
-      api.post(`/families/${familyId}/constitution/rules`, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["constitution"] });
-      onClose();
-    },
-  });
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!ruleText.trim()) return;
-    createMutation.mutate({
-      ruleText: ruleText.trim(),
-      enforcementLevel: enforcement,
-      evaluationType,
-      category,
-      ...(roleScope.length > 0 ? { roleScope } : {}),
-    });
-  }
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="mt-3 p-3 rounded-md border border-dashed border-border space-y-3"
-    >
-      <Input
-        placeholder="Rule text..."
-        value={ruleText}
-        onChange={(e) => setRuleText(e.target.value)}
-        autoFocus
-      />
-
-      <div className="flex flex-wrap gap-3 items-end">
-        <div className="space-y-1">
-          <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            Enforcement
-          </label>
-          <Select value={enforcement} onValueChange={(v) => setEnforcement(v as EnforcementLevel)}>
-            <SelectTrigger className="h-8 w-[110px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {ENFORCEMENT_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            Evaluation
-          </label>
-          <Select value={evaluationType} onValueChange={setEvaluationType}>
-            <SelectTrigger className="h-8 w-[130px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {EVALUATION_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            Applies to
-          </label>
-          <RoleScopeSelector selected={roleScope} onChange={setRoleScope} />
-        </div>
-      </div>
-
-      <div className="flex gap-2 pt-1">
-        <Button type="submit" size="sm" disabled={createMutation.isPending || !ruleText.trim()}>
-          {createMutation.isPending ? "Adding..." : "Add Rule"}
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-          Cancel
-        </Button>
-      </div>
-
-      {createMutation.isError && (
-        <p className="text-xs text-destructive">
-          {(createMutation.error as Error).message || "Failed to add rule."}
-        </p>
-      )}
-    </form>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Category Section
-// ---------------------------------------------------------------------------
-
-function CategorySection({
-  category,
-  rules,
-  familyId,
-  constitutionId,
-}: {
-  category: (typeof CATEGORIES)[number];
-  rules: ConstitutionRule[];
-  familyId: string;
-  constitutionId: string;
-}) {
-  const [showAddForm, setShowAddForm] = useState(false);
-  const Icon = category.icon;
-
-  return (
-    <div className="mb-6">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold">{category.label}</h3>
-          <span className="text-xs text-muted-foreground">
-            {rules.length} rule{rules.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-        {!showAddForm && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-xs"
-            onClick={() => setShowAddForm(true)}
-          >
-            <Plus className="h-3 w-3 mr-1" />
-            Add
-          </Button>
-        )}
-      </div>
-
-      <Card>
-        <CardContent className="p-4">
-          {rules.length === 0 && !showAddForm && (
-            <p className="text-sm text-muted-foreground py-2">
-              No rules yet. Add your first {category.label.toLowerCase()} rule.
-            </p>
-          )}
-
-          {rules.map((rule) => (
-            <RuleRow
-              key={rule.id}
-              rule={rule}
-              familyId={familyId}
-              constitutionId={constitutionId}
-            />
-          ))}
-
-          {showAddForm && (
-            <AddRuleForm
-              familyId={familyId}
-              category={category.value}
-              onClose={() => setShowAddForm(false)}
-            />
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+// ── Page ───────────────────────────────────────────────────────────
 
 export function ConstitutionPage() {
-  const { data: familyData } = useQuery<FamilyData>({
-    queryKey: ["family"],
-    queryFn: () => api.get("/families/current"),
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
+  const [viewingVersion, setViewingVersion] = useState<VersionEntry | null>(null);
+
+  const { data, isLoading } = useQuery<ConstitutionData>({
+    queryKey: ["constitution"],
+    queryFn: () => api.get("/constitution"),
     retry: false,
   });
 
-  const familyId = familyData?.family?.id;
-
-  const {
-    data: constitutionData,
-    isLoading,
-  } = useQuery<ConstitutionData>({
-    queryKey: ["constitution", familyId],
-    queryFn: () => api.get(`/families/${familyId}/constitution`),
-    enabled: !!familyId,
+  const { data: versionsData } = useQuery<{ versions: VersionEntry[] }>({
+    queryKey: ["constitution", "versions"],
+    queryFn: () => api.get("/constitution/versions"),
+    enabled: showHistory,
   });
 
-  const constitution = constitutionData?.constitution;
-  const rules = constitution?.rules || [];
-
-  // Group rules by category, preserving category order
-  const rulesByCategory = CATEGORIES.reduce(
-    (acc, cat) => {
-      acc[cat.value] = rules.filter((r) => r.category === cat.value);
-      return acc;
+  const saveMutation = useMutation({
+    mutationFn: (document: string) =>
+      api.put("/constitution/document", { document }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["constitution"] });
+      setEditing(false);
     },
-    {} as Record<RuleCategory, ConstitutionRule[]>,
-  );
+  });
 
-  const totalRules = rules.length;
+  const constitution = data?.constitution;
 
-  return (
-    <div className="p-6 max-w-4xl">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <div className="flex items-center gap-2">
-            <ScrollText className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-xl font-semibold">Family Constitution</h2>
-          </div>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            {constitution
-              ? `Version ${constitution.version} · ${totalRules} rule${totalRules !== 1 ? "s" : ""}`
-              : "Governance rules for your family's AI agents"}
+  if (isLoading) {
+    return (
+      <div className="p-6 lg:p-8 max-w-4xl">
+        <p className="text-sm" style={{ color: "#8a8070" }}>Loading constitution...</p>
+      </div>
+    );
+  }
+
+  if (!constitution) {
+    return (
+      <div className="p-6 lg:p-8 max-w-4xl">
+        <div className="flex items-center gap-2 mb-6">
+          <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
+          <h1
+            className="text-xl font-normal"
+            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          >
+            Family Constitution
+          </h1>
+        </div>
+        <div
+          className="rounded-lg p-8 text-center"
+          style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+        >
+          <ScrollText className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
+          <p className="text-sm" style={{ color: "#8a8070" }}>
+            No constitution found. Complete onboarding to set up your family constitution.
           </p>
         </div>
       </div>
+    );
+  }
 
-      {isLoading && (
-        <p className="text-sm text-muted-foreground">Loading constitution...</p>
-      )}
+  function startEditing() {
+    setDraft(constitution!.document);
+    setEditing(true);
+    setViewingVersion(null);
+  }
 
-      {!isLoading && !familyId && (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <ScrollText className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">
-              No family configured yet. Complete onboarding to set up your constitution.
-            </p>
-          </CardContent>
-        </Card>
-      )}
+  function cancelEditing() {
+    setEditing(false);
+    setDraft("");
+  }
 
-      {familyId && constitution && (
-        <div>
-          {CATEGORIES.map((category) => (
-            <CategorySection
-              key={category.value}
-              category={category}
-              rules={rulesByCategory[category.value]}
-              familyId={familyId}
-              constitutionId={constitution.id}
-            />
-          ))}
+  function handleSave() {
+    if (draft.trim()) {
+      saveMutation.mutate(draft);
+    }
+  }
+
+  return (
+    <div className="p-6 lg:p-8 max-w-4xl">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-2">
+          <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
+          <h1
+            className="text-xl font-normal"
+            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          >
+            Family Constitution
+          </h1>
+          <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+            v{constitution.version}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowHistory(!showHistory)}
+            style={{ borderColor: "#ddd5c8", color: showHistory ? "#1a1f2e" : "#8a8070" }}
+          >
+            <Clock className="h-3.5 w-3.5 mr-1" />
+            History
+          </Button>
+
+          {!editing && !viewingVersion && (
+            <Button
+              size="sm"
+              onClick={startEditing}
+              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            >
+              <Edit3 className="h-3.5 w-3.5 mr-1" />
+              Edit
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+        This document governs how all AI staff interact with your family.
+      </p>
+
+      {/* Version History Sidebar */}
+      {showHistory && versionsData && (
+        <div
+          className="rounded-lg p-4 mb-6"
+          style={{ background: "#faf8f4", border: "1px solid #ddd5c8" }}
+        >
+          <h3 className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: "#8a8070" }}>
+            Version History
+          </h3>
+          <div className="space-y-2">
+            {versionsData.versions.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => {
+                  setViewingVersion(v);
+                  setEditing(false);
+                }}
+                className="w-full text-left rounded px-3 py-2 text-sm transition-colors hover:bg-white"
+                style={{
+                  background: viewingVersion?.id === v.id ? "#ffffff" : "transparent",
+                  border: viewingVersion?.id === v.id ? "1px solid #ddd5c8" : "1px solid transparent",
+                }}
+              >
+                <span className="font-medium" style={{ color: "#1a1f2e" }}>Version {v.version}</span>
+                <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                  {new Date(v.createdAt).toLocaleDateString()}
+                </span>
+              </button>
+            ))}
+          </div>
+          {viewingVersion && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={() => setViewingVersion(null)}
+              style={{ borderColor: "#ddd5c8" }}
+            >
+              Back to current
+            </Button>
+          )}
         </div>
       )}
 
-      {familyId && !isLoading && !constitution && (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <ScrollText className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">
-              No constitution found. The constitution is created during family onboarding.
-            </p>
-          </CardContent>
-        </Card>
-      )}
+      {/* Document View */}
+      <div
+        className="rounded-lg"
+        style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+      >
+        {editing ? (
+          <>
+            <div
+              className="px-4 py-3 border-b flex items-center justify-between"
+              style={{ borderColor: "#eee8dd" }}
+            >
+              <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
+                Editing Constitution
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={saveMutation.isPending}
+                  style={{ background: "#2e7d32", color: "#fff" }}
+                >
+                  {saveMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  Save (new version)
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelEditing}
+                  style={{ borderColor: "#ddd5c8" }}
+                >
+                  <X className="h-3.5 w-3.5 mr-1" />
+                  Cancel
+                </Button>
+              </div>
+            </div>
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="min-h-[600px] border-0 rounded-none rounded-b-lg text-sm leading-relaxed p-6 resize-none focus-visible:ring-0"
+              style={{
+                fontFamily: "ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace",
+                background: "#faf8f4",
+                color: "#2c2c2c",
+              }}
+            />
+          </>
+        ) : (
+          <div className="p-6 lg:p-8">
+            <div className="prose prose-sm max-w-none">
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({ children }) => (
+                    <h1
+                      className="text-xl font-normal mb-4 pb-2 border-b"
+                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif", borderColor: "#ddd5c8" }}
+                    >
+                      {children}
+                    </h1>
+                  ),
+                  h2: ({ children }) => (
+                    <h2
+                      className="text-lg font-normal mt-8 mb-3"
+                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+                    >
+                      {children}
+                    </h2>
+                  ),
+                  h3: ({ children }) => (
+                    <h3
+                      className="text-base font-semibold mt-6 mb-2"
+                      style={{ color: "#1a1f2e" }}
+                    >
+                      {children}
+                    </h3>
+                  ),
+                  p: ({ children }) => (
+                    <p className="mb-3 text-sm leading-relaxed" style={{ color: "#2c2c2c" }}>
+                      {children}
+                    </p>
+                  ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc ml-5 mb-3 space-y-1 text-sm" style={{ color: "#2c2c2c" }}>
+                      {children}
+                    </ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal ml-5 mb-3 space-y-1 text-sm" style={{ color: "#2c2c2c" }}>
+                      {children}
+                    </ol>
+                  ),
+                  li: ({ children }) => (
+                    <li className="leading-relaxed">{children}</li>
+                  ),
+                  strong: ({ children }) => (
+                    <strong className="font-semibold" style={{ color: "#1a1f2e" }}>{children}</strong>
+                  ),
+                  em: ({ children }) => (
+                    <em style={{ color: "#6a6050" }}>{children}</em>
+                  ),
+                  hr: () => (
+                    <hr className="my-6" style={{ borderColor: "#ddd5c8" }} />
+                  ),
+                  blockquote: ({ children }) => (
+                    <blockquote
+                      className="border-l-2 pl-4 my-4 italic text-sm"
+                      style={{ borderColor: "#8b6f4e", color: "#6a6050" }}
+                    >
+                      {children}
+                    </blockquote>
+                  ),
+                  table: ({ children }) => (
+                    <div className="overflow-x-auto mb-4">
+                      <table className="w-full text-sm border-collapse" style={{ borderColor: "#ddd5c8" }}>
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  th: ({ children }) => (
+                    <th
+                      className="text-left px-3 py-2 border-b font-semibold text-xs uppercase tracking-wider"
+                      style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+                    >
+                      {children}
+                    </th>
+                  ),
+                  td: ({ children }) => (
+                    <td
+                      className="px-3 py-2 border-b"
+                      style={{ borderColor: "#eee8dd", color: "#2c2c2c" }}
+                    >
+                      {children}
+                    </td>
+                  ),
+                }}
+              >
+                {viewingVersion ? viewingVersion.documentPreview : constitution.document}
+              </Markdown>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
