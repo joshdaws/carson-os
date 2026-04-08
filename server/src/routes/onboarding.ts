@@ -7,7 +7,7 @@
  */
 
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   households,
@@ -46,6 +46,14 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
 
     try {
       const state = await interviewEngine.getOrCreateState(household.id);
+
+      // Check if members already confirmed for this household
+      const existingMembers = await db
+        .select()
+        .from(familyMembers)
+        .where(eq(familyMembers.householdId, household.id))
+        .all();
+
       res.json({
         phase: state.phase,
         hasHousehold: true,
@@ -53,6 +61,7 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
         interviewMessages: state.interviewMessages,
         extractedClauses: state.extractedClauses,
         selectedStaff: state.selectedStaff,
+        membersConfirmed: existingMembers.length > 0,
       });
     } catch {
       res.json({
@@ -98,9 +107,69 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
     res.json({
       response: result.response,
       phase: result.phase,
+      interviewPhase: result.interviewPhase,
       constitutionDocument: result.constitutionDocument ?? null,
+      members: result.members ?? null,
+      richContent: result.richContent ?? null,
+      questionNumber: result.questionNumber ?? null,
+      totalQuestions: result.totalQuestions ?? null,
       householdId: effectiveHouseholdId,
     });
+  });
+
+  // POST /confirm-members -- create family members during Phase 1 (interview)
+  router.post("/confirm-members", async (req, res) => {
+    const { householdId, members } = req.body;
+
+    if (!householdId) {
+      res.status(400).json({ error: "householdId is required" });
+      return;
+    }
+
+    if (!members || !Array.isArray(members) || members.length === 0) {
+      res.status(400).json({ error: "members array is required and must not be empty" });
+      return;
+    }
+
+    // Verify household exists
+    const [household] = await db
+      .select()
+      .from(households)
+      .where(eq(households.id, householdId))
+      .limit(1);
+
+    if (!household) {
+      res.status(404).json({ error: "Household not found" });
+      return;
+    }
+
+    // Delete any existing members for this household (re-confirmation replaces)
+    await db
+      .delete(familyMembers)
+      .where(eq(familyMembers.householdId, householdId));
+
+    // Create new members
+    const createdMembers = [];
+    for (const m of members) {
+      if (!m.name || !m.role || m.age === undefined) continue;
+
+      const validRole = (["parent", "kid"] as const).find((r) => r === m.role);
+      if (!validRole) continue;
+
+      const [member] = await db
+        .insert(familyMembers)
+        .values({
+          householdId,
+          name: m.name,
+          role: validRole,
+          age: m.age,
+        })
+        .returning();
+
+      createdMembers.push(member);
+    }
+
+    res.status(201).json({ members: createdMembers });
   });
 
   // POST /complete -- finalize onboarding
@@ -132,26 +201,13 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
         .where(eq(households.id, householdId));
     }
 
-    // Create members if provided
-    const createdMembers = [];
-    if (members && Array.isArray(members)) {
-      for (const m of members) {
-        if (!m.name || !m.role || m.age === undefined) continue;
-
-        const [member] = await db
-          .insert(familyMembers)
-          .values({
-            householdId,
-            name: m.name,
-            role: m.role,
-            age: m.age,
-            telegramUserId: m.telegramUserId ?? null,
-          })
-          .returning();
-
-        createdMembers.push(member);
-      }
-    }
+    // Members are created during the interview via POST /confirm-members.
+    // Fetch existing members for the response.
+    const createdMembers = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.householdId, householdId))
+      .all();
 
     // Create staff agents if provided
     const createdStaff = [];

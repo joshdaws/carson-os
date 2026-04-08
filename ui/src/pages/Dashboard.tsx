@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, Link as LinkIcon } from "lucide-react";
 import { Link } from "react-router-dom";
+import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -33,9 +34,23 @@ interface HouseholdMember {
   age?: number;
 }
 
+interface ChecklistItem {
+  key: string;
+  label: string;
+  required: boolean;
+  complete: boolean;
+}
+
+interface ChecklistData {
+  items: ChecklistItem[];
+  completedCount: number;
+  totalCount: number;
+}
+
 interface HouseholdData {
   household: { id: string; name: string; timezone?: string };
   members: HouseholdMember[];
+  checklist?: ChecklistData;
 }
 
 interface Task {
@@ -78,9 +93,9 @@ const C = {
   cardBg: "#faf8f4",
   headButlerBg: "#f5f0e8",
   headButlerBorder: "#8b6f4e",
-  statusActive: "#22c55e",
-  statusPaused: "#eab308",
-  statusIdle: "#6b7280",
+  statusActive: "#4a7c59",
+  statusPaused: "#b8860b",
+  statusIdle: "#8a8070",
   serif: "Georgia, 'Times New Roman', serif",
 } as const;
 
@@ -176,11 +191,7 @@ function FamilyMemberCard({
             color: isParent ? C.burgundy : C.textMuted,
           }}
         >
-          {member.role === "parent"
-            ? "Parent"
-            : member.role === "student"
-              ? "Student"
-              : "Child"}
+          {member.role === "parent" ? "Parent" : "Kid"}
         </Badge>
         {member.age && (
           <span
@@ -721,6 +732,7 @@ export function DashboardPage() {
   const activity = activityData?.activity || [];
   const householdName = householdData?.household?.name || "Household";
 
+  const checklist = householdData?.checklist;
   const familyAgents = staff.filter((s) => s.visibility === "family");
   const internalAgents = staff.filter((s) => s.visibility === "internal");
   const memberAgentMap = buildMemberAgentMap(familyAgents);
@@ -745,6 +757,9 @@ export function DashboardPage() {
           {internalAgents.length} internal staff
         </p>
       </div>
+
+      {/* Onboarding checklist */}
+      {checklist && <OnboardingChecklist checklist={checklist} />}
 
       {/* Main layout: zones left, sidebar right */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">

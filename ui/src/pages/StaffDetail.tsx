@@ -28,6 +28,8 @@ import {
   UserMinus,
   Users,
 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/components/Toast";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -158,13 +160,17 @@ export function StaffDetailPage() {
     enabled: !!staffId,
   });
 
+  const toast = useToast();
+
   // Mutations
   const patchStaff = useMutation({
     mutationFn: (data: Partial<StaffAgent>) => api.put(`/staff/${staffId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      toast.success("Saved");
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 
   const addAssignment = useMutation({
@@ -194,7 +200,16 @@ export function StaffDetailPage() {
   if (isLoading) {
     return (
       <div className="p-6 lg:p-8 max-w-4xl">
-        <p className="text-sm" style={{ color: "#8a8070" }}>Loading staff agent...</p>
+        <Skeleton className="h-4 w-20 mb-6" />
+        <div className="flex items-center gap-4 mb-6">
+          <Skeleton className="w-14 h-14 rounded-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-40" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+        </div>
+        <Skeleton className="h-40 w-full rounded-lg mb-6" />
+        <Skeleton className="h-40 w-full rounded-lg" />
       </div>
     );
   }

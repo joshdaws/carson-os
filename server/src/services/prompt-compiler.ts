@@ -20,6 +20,10 @@ export interface CompilePromptParams {
   memberName?: string;
   memberRole?: string;
   memberAge?: number;
+  memberProfile?: string | null;
+  // First-contact onboarding (no profile + new conversation)
+  firstContact?: boolean;
+  conversationTurnCount?: number;
   // Task mode fields
   taskTitle?: string;
   taskDescription?: string;
@@ -35,6 +39,67 @@ export interface DelegationEdge {
 }
 
 // -- Constants -------------------------------------------------------
+
+// Threshold: after this many assistant turns in onboarding, ask agent to compile
+const ONBOARDING_COMPILE_THRESHOLD = 3;
+
+// -- First-contact onboarding ----------------------------------------
+
+function buildOnboardingInstructions(
+  memberName: string,
+  memberAge: number,
+  turnCount: number,
+): string {
+  const readyToCompile = turnCount >= ONBOARDING_COMPILE_THRESHOLD;
+
+  const parts: string[] = [
+    `This is your FIRST conversation with ${memberName}. You don't have a profile for them yet.`,
+    "",
+    "Your job right now is to get to know them. Be warm and casual. Match their age.",
+    `${memberName} is ${memberAge} years old, so talk to them at that level.`,
+    "",
+    "Naturally learn about:",
+    "- What they're into (hobbies, games, subjects, activities)",
+    "- How they like to learn or be helped",
+    "- What they're working on or excited about",
+    "- What frustrates them or what they'd rather not deal with",
+    "",
+    "Don't interrogate. Have a real conversation. Share a bit about yourself too.",
+    "Ask one or two questions at a time, not a list.",
+  ];
+
+  if (readyToCompile) {
+    parts.push(
+      "",
+      "You've had enough conversation to build a basic profile now.",
+      `At the END of your next response, compile what you've learned about ${memberName} into a profile document.`,
+      "Place it between these exact markers (the user won't see this part):",
+      "",
+      "[PROFILE_START]",
+      `# About ${memberName}`,
+      "",
+      "## Personality & Temperament",
+      "(what you've observed)",
+      "",
+      "## Interests & Passions",
+      "(what they told you about)",
+      "",
+      "## Goals & Aspirations",
+      "(what they're working toward, if mentioned)",
+      "",
+      "## Learning Style",
+      "(how they seem to prefer help)",
+      "",
+      "## What the Agent Should Do",
+      "(your best guess at how to help them, based on the conversation)",
+      "[PROFILE_END]",
+      "",
+      "Keep chatting normally above the markers. The profile is extracted automatically.",
+    );
+  }
+
+  return parts.join("\n");
+}
 
 const TASK_COMPLETION_INSTRUCTIONS = [
   "Complete the task and provide a clear result.",
@@ -108,6 +173,9 @@ function compileChatPrompt(params: CompilePromptParams): string {
     memberName,
     memberRole,
     memberAge,
+    memberProfile,
+    firstContact,
+    conversationTurnCount,
     delegationInstructions,
   } = params;
 
@@ -126,6 +194,18 @@ function compileChatPrompt(params: CompilePromptParams): string {
     sections.push(
       `# Who You're Talking To\n\n${memberName} is a ${memberAge}-year-old ${memberRole}.`,
     );
+  }
+
+  // 3b. First-contact onboarding (no profile yet, new conversation)
+  if (firstContact && !memberProfile && memberName && memberAge != null) {
+    sections.push(
+      `# Getting to Know ${memberName}\n\n${buildOnboardingInstructions(memberName, memberAge, conversationTurnCount ?? 0)}`,
+    );
+  }
+
+  // 3c. Member profile (detailed knowledge about this person)
+  if (memberProfile) {
+    sections.push(`# About ${memberName ?? "This Person"}\n\n${memberProfile}`);
   }
 
   // 4. Constitution document

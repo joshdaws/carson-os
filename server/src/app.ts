@@ -1,7 +1,14 @@
 /**
  * Express application factory -- mounts all v3 routes with middleware.
+ *
+ * In development: Vite dev middleware is mounted on the same Express server.
+ * One process, one port, no proxy. HMR still works.
+ *
+ * In production: serves the built UI from ../ui/dist as static files.
  */
 
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import express, {
   type Request,
   type Response,
@@ -13,6 +20,7 @@ import type { ConstitutionEngine } from "./services/constitution-engine.js";
 import type { TaskEngine } from "./services/task-engine.js";
 import type { CarsonOversight } from "./services/carson-oversight.js";
 import type { InterviewEngine } from "./services/interview.js";
+import type { ProfileInterviewEngine } from "./services/profile-interview.js";
 
 import { createHealthRoutes } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
@@ -24,6 +32,9 @@ import { createConversationRoutes } from "./routes/conversations.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
 import { createActivityRoutes } from "./routes/activity.js";
 import { createSettingsRoutes } from "./routes/settings.js";
+import { createProfileRoutes } from "./routes/profiles.js";
+
+const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 
 export interface AppDeps {
   db: Db;
@@ -32,6 +43,7 @@ export interface AppDeps {
   taskEngine: TaskEngine;
   oversight: CarsonOversight;
   interviewEngine: InterviewEngine;
+  profileInterviewEngine: ProfileInterviewEngine;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -42,34 +54,18 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     taskEngine,
     oversight,
     interviewEngine,
+    profileInterviewEngine,
   } = deps;
   const app = express();
 
   // --------------- middleware ---------------
 
   // JSON body parsing (Express 5 built-in, 1 MB limit)
-  app.use(express.json({ limit: "1mb" }));
+  // Must come before Vite middleware so API routes parse JSON bodies
+  app.use("/api", express.json({ limit: "1mb" }));
 
-  // CORS for localhost dev
-  app.use((_req: Request, res: Response, next: NextFunction) => {
-    res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
-    res.setHeader(
-      "Access-Control-Allow-Methods",
-      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    );
-    res.setHeader(
-      "Access-Control-Allow-Headers",
-      "Content-Type, Authorization",
-    );
-    if (_req.method === "OPTIONS") {
-      res.status(204).end();
-      return;
-    }
-    next();
-  });
-
-  // Request logging
-  app.use((req: Request, _res: Response, next: NextFunction) => {
+  // Request logging (API only)
+  app.use("/api", (req: Request, _res: Response, next: NextFunction) => {
     console.log(`[http] ${req.method} ${req.url}`);
     next();
   });
@@ -95,10 +91,34 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   );
   app.use("/api/activity", createActivityRoutes(db));
   app.use("/api/settings", createSettingsRoutes(db));
+  app.use(
+    "/api/members",
+    createProfileRoutes({ db, profileInterviewEngine }),
+  );
 
-  // --------------- Vite dev middleware / static serving ---------------
-  if (process.env.NODE_ENV === "production") {
-    app.use(express.static("../ui/dist"));
+  // --------------- UI serving ---------------
+
+  const isProd = process.env.NODE_ENV === "production";
+  const uiRoot = resolve(__dirname, "../../ui");
+
+  if (isProd) {
+    // Production: serve pre-built static files
+    app.use(express.static(resolve(uiRoot, "dist")));
+    // SPA fallback: serve index.html for any non-API route
+    app.get("*", (_req: Request, res: Response) => {
+      res.sendFile(resolve(uiRoot, "dist/index.html"));
+    });
+  } else {
+    // Development: mount Vite dev server as middleware (HMR, no proxy needed)
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
+      root: uiRoot,
+      configFile: resolve(uiRoot, "vite.config.ts"),
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+    console.log("[vite] Dev middleware mounted");
   }
 
   // --------------- error handler ---------------

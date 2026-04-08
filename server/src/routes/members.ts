@@ -34,7 +34,7 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
-    const validRoles: MemberRole[] = ["parent", "student", "child"];
+    const validRoles: MemberRole[] = ["parent", "kid"];
     if (!validRoles.includes(role)) {
       res
         .status(400)

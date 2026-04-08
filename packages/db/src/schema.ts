@@ -30,6 +30,8 @@ export const familyMembers = sqliteTable(
     role: text("role").notNull(), // parent | student | child
     age: integer("age").notNull(),
     telegramUserId: text("telegram_user_id").unique(),
+    profileContent: text("profile_content"), // Per-person profile document (member.md)
+    profileUpdatedAt: integer("profile_updated_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
   (t) => [index("family_members_household_idx").on(t.householdId)]
@@ -320,6 +322,21 @@ export const onboardingState = sqliteTable("onboarding_state", {
   interviewMessages: text("interview_messages", { mode: "json" }),
   extractedClauses: text("extracted_clauses", { mode: "json" }),
   selectedStaff: text("selected_staff", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+});
+
+// ── 13b. profileInterviewState ──────────────────────────────────────
+
+export const profileInterviewState = sqliteTable("profile_interview_state", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  memberId: text("member_id")
+    .notNull()
+    .references(() => familyMembers.id),
+  phase: text("phase").notNull().default("intro"), // intro | personality | interests | learning | boundaries | review_complete
+  interviewMessages: text("interview_messages", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
 });

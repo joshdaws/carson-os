@@ -22,6 +22,18 @@
     --input: 0 0% 89.8%;
     --ring: 0 0% 3.9%;
     --radius: 0.5rem;
+
+    /* CarsonOS design tokens */
+    --carson-navy:     #1a1f2e;
+    --carson-cream:    #e8dfd0;
+    --carson-ivory:    #faf7f2;
+    --carson-white:    #ffffff;
+    --carson-border:   #ddd5c8;
+    --carson-text:     #2d2a26;
+    --carson-muted:    #6b6358;
+    --carson-success:  #3d7a5f;
+    --carson-warning:  #c4882f;
+    --carson-error:    #b54a4a;
   }
 }
 
@@ -31,6 +43,6 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   }
 }

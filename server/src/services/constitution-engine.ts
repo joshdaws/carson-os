@@ -265,6 +265,21 @@ export class ConstitutionEngine {
       }
     }
 
+    // -- 5. Load conversation history ---------------------------------
+    const conversationId = await this.getOrCreateConversation(
+      agentId,
+      memberId,
+      householdId,
+      channel,
+    );
+
+    const history = await this.getConversationHistory(conversationId);
+
+    // Detect first-contact onboarding: no profile + member is not a parent
+    const hasProfile = !!(member.profileContent && member.profileContent.trim());
+    const assistantTurnCount = history.filter((m) => m.role === "assistant").length;
+    const isFirstContact = !hasProfile && member.role !== "parent";
+
     const systemPrompt = compileSystemPrompt({
       mode: "chat",
       roleContent: agent.roleContent ?? "",
@@ -274,18 +289,11 @@ export class ConstitutionEngine {
       memberName: member.name,
       memberRole: member.role,
       memberAge: member.age,
+      memberProfile: member.profileContent ?? null,
+      firstContact: isFirstContact,
+      conversationTurnCount: assistantTurnCount,
       delegationInstructions: delegationInstr,
     });
-
-    // -- 5. Load conversation history + execute ----------------------
-    const conversationId = await this.getOrCreateConversation(
-      agentId,
-      memberId,
-      householdId,
-      channel,
-    );
-
-    const history = await this.getConversationHistory(conversationId);
 
     // Add the current user message to history for the LLM call
     const messagesForLlm = [
@@ -353,7 +361,32 @@ export class ConstitutionEngine {
       llmResponse = FRIENDLY_SCAN_REPLACEMENT;
     }
 
-    // -- 7. Record conversation --------------------------------------
+    // -- 7. Extract onboarding profile if present ---------------------
+    const profileMatch = llmResponse.match(
+      /\[PROFILE_START\]([\s\S]*?)\[PROFILE_END\]/,
+    );
+    if (profileMatch) {
+      const profileDoc = profileMatch[1].trim();
+      if (profileDoc) {
+        await this.db
+          .update(familyMembers)
+          .set({
+            profileContent: profileDoc,
+            profileUpdatedAt: new Date(),
+          })
+          .where(eq(familyMembers.id, memberId));
+
+        console.log(
+          `[engine] First-contact profile saved for ${member.name} (${memberId})`,
+        );
+      }
+      // Strip the profile markers from the response the user sees
+      llmResponse = llmResponse
+        .replace(/\[PROFILE_START\][\s\S]*?\[PROFILE_END\]/, "")
+        .trim();
+    }
+
+    // -- 8. Record conversation --------------------------------------
     await this.recordMessages(conversationId, message, llmResponse);
 
     // Broadcast the new message

@@ -27,7 +27,7 @@ export function getConfig(): Config {
   }
 
   return {
-    port: Number(process.env.PORT) || 3100,
+    port: Number(process.env.PORT) || 3300,
     dataDir,
     nodeEnv: process.env.NODE_ENV ?? "development",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,

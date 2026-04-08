@@ -25,6 +25,7 @@ import { ConstitutionEngine } from "./services/constitution-engine.js";
 import { TaskEngine } from "./services/task-engine.js";
 import { CarsonOversight } from "./services/carson-oversight.js";
 import { InterviewEngine } from "./services/interview.js";
+import { ProfileInterviewEngine } from "./services/profile-interview.js";
 import { createTelegramRelay } from "./services/telegram-relay.js";
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
@@ -87,6 +88,13 @@ async function main() {
   });
   console.log("[engine] Interview engine ready");
 
+  // 6a. Profile interview engine
+  const profileInterviewEngine = new ProfileInterviewEngine({
+    db,
+    adapter,
+  });
+  console.log("[engine] Profile interview engine ready");
+
   // 6b. Dispatcher (on-demand spawn for internal agent tasks)
   const dispatcher = new Dispatcher({
     db,
@@ -113,6 +121,7 @@ async function main() {
     taskEngine,
     oversight,
     interviewEngine,
+    profileInterviewEngine,
   });
 
   // 8. Create HTTP server and attach WebSocket

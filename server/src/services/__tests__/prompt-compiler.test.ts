@@ -87,6 +87,125 @@ describe("compileSystemPrompt", () => {
 
       expect(prompt).not.toContain("Delegation");
     });
+
+    it("includes member profile between member intro and constitution", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Claire's personal assistant.",
+        soulContent: "Warm and playful.",
+        softRules: "",
+        constitutionDocument: "Family values: kindness first.",
+        memberName: "Claire",
+        memberRole: "child",
+        memberAge: 6,
+        memberProfile: "Claire loves art and dinosaurs. She learns best through stories.",
+      });
+
+      expect(prompt).toContain("About Claire");
+      expect(prompt).toContain("loves art and dinosaurs");
+      // Profile should come after member intro, before constitution
+      const profileIdx = prompt.indexOf("About Claire");
+      const introIdx = prompt.indexOf("Who You're Talking To");
+      const constitutionIdx = prompt.indexOf("Family Constitution");
+      expect(profileIdx).toBeGreaterThan(introIdx);
+      expect(profileIdx).toBeLessThan(constitutionIdx);
+    });
+
+    it("omits profile section when memberProfile is null", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are a tutor.",
+        soulContent: "Patient.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Grant",
+        memberRole: "student",
+        memberAge: 17,
+        memberProfile: null,
+      });
+
+      expect(prompt).not.toContain("About Grant");
+    });
+
+    it("injects first-contact onboarding when no profile and firstContact is true", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Claire's personal assistant.",
+        soulContent: "Warm and playful.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Claire",
+        memberRole: "child",
+        memberAge: 6,
+        memberProfile: null,
+        firstContact: true,
+        conversationTurnCount: 0,
+      });
+
+      expect(prompt).toContain("Getting to Know Claire");
+      expect(prompt).toContain("FIRST conversation");
+      expect(prompt).toContain("6 years old");
+      // Should NOT include profile compilation instructions yet (0 turns)
+      expect(prompt).not.toContain("PROFILE_START");
+    });
+
+    it("includes profile compilation markers after enough onboarding turns", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Ethan's personal assistant.",
+        soulContent: "Chill and direct.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Ethan",
+        memberRole: "student",
+        memberAge: 12,
+        memberProfile: null,
+        firstContact: true,
+        conversationTurnCount: 4,
+      });
+
+      expect(prompt).toContain("Getting to Know Ethan");
+      expect(prompt).toContain("PROFILE_START");
+      expect(prompt).toContain("PROFILE_END");
+      expect(prompt).toContain("compile what you've learned");
+    });
+
+    it("skips onboarding when member already has a profile", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Grant's personal assistant.",
+        soulContent: "Friendly.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Grant",
+        memberRole: "student",
+        memberAge: 17,
+        memberProfile: "Grant loves coding and basketball.",
+        firstContact: true,
+        conversationTurnCount: 0,
+      });
+
+      expect(prompt).not.toContain("Getting to Know");
+      expect(prompt).toContain("About Grant");
+      expect(prompt).toContain("loves coding");
+    });
+
+    it("skips onboarding when firstContact is false", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Claire's personal assistant.",
+        soulContent: "Warm.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Claire",
+        memberRole: "child",
+        memberAge: 6,
+        memberProfile: null,
+        firstContact: false,
+      });
+
+      expect(prompt).not.toContain("Getting to Know");
+    });
   });
 
   describe("task mode", () => {

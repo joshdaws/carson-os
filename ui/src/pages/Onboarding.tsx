@@ -9,22 +9,20 @@ import { cn } from "@/lib/utils";
 import { Send, Loader2, Check, ArrowRight } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatBubble } from "@/components/ChatBubble";
+import type { ChatMessage } from "@/components/ChatBubble";
+import { MemberConfirmationCard } from "@/components/MemberConfirmationCard";
+import { StepCounter } from "@/components/StepCounter";
+import { MissionRevealCard } from "@/components/MissionRevealCard";
+import { ConstitutionLoading } from "@/components/ConstitutionLoading";
+import type { RichContent } from "@carsonos/shared";
 
 // ── Types ──────────────────────────────────────────────────────────
 
 type OnboardingPhase = "interview" | "review" | "staff_setup" | "telegram_config" | "complete";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface OnboardingState {
-  phase: OnboardingPhase;
-  messages: ChatMessage[];
-  constitution?: string;
-  staffSelections?: string[];
-  botToken?: string;
+interface OnboardingMessage extends ChatMessage {
+  serverRichContent?: RichContent | null;
 }
 
 // ── Phase Indicator ────────────────────────────────────────────────
@@ -48,22 +46,22 @@ function PhaseIndicator({ current }: { current: OnboardingPhase }) {
               "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors",
             )}
             style={{
-              background: i <= currentIndex ? "#1a1f2e" : "#eee8dd",
-              color: i <= currentIndex ? "#e8dfd0" : "#8a8070",
+              background: i <= currentIndex ? "var(--carson-navy)" : "#eee8dd",
+              color: i <= currentIndex ? "var(--carson-cream)" : "var(--carson-muted)",
             }}
           >
             {i < currentIndex ? <Check className="h-4 w-4" /> : i + 1}
           </div>
           <span
             className="text-[10px] ml-1.5 mr-3 hidden sm:inline"
-            style={{ color: i <= currentIndex ? "#1a1f2e" : "#8a8070" }}
+            style={{ color: i <= currentIndex ? "var(--carson-navy)" : "var(--carson-muted)" }}
           >
             {phase.label}
           </span>
           {i < PHASES.length - 1 && (
             <div
               className="w-8 h-px mx-1"
-              style={{ background: i < currentIndex ? "#1a1f2e" : "#ddd5c8" }}
+              style={{ background: i < currentIndex ? "var(--carson-navy)" : "var(--carson-border)" }}
             />
           )}
         </div>
@@ -72,51 +70,42 @@ function PhaseIndicator({ current }: { current: OnboardingPhase }) {
   );
 }
 
-// ── Chat Bubble ────────────────────────────────────────────────────
+// ── Rich Content Renderer ─────────────────────────────────────────
 
-function ChatBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === "user";
+function renderRichContent(
+  rc: RichContent | null | undefined,
+  opts: {
+    householdId?: string;
+    membersConfirmed?: boolean;
+    onMembersConfirmed?: (members: Array<{ name: string; age: number; role: string }>) => void;
+  },
+): React.ReactNode {
+  if (!rc) return null;
 
-  return (
-    <div className={cn("flex mb-4", isUser ? "justify-end" : "justify-start")}>
-      {!isUser && (
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mr-3"
-          style={{ background: "#1a1f2e", color: "#e8dfd0" }}
-        >
-          C
-        </div>
-      )}
-      <div
-        className={cn("max-w-[70%] rounded-lg px-4 py-3 text-sm leading-relaxed")}
-        style={
-          isUser
-            ? { background: "#1a1f2e", color: "#e8dfd0" }
-            : { background: "#ffffff", color: "#2c2c2c", border: "1px solid #ddd5c8" }
-        }
-      >
-        {isUser ? (
-          message.content
-        ) : (
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-              ol: ({ children }) => <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>,
-              ul: ({ children }) => <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>,
-              li: ({ children }) => <li>{children}</li>,
-              h1: ({ children }) => <h1 className="text-lg font-semibold mb-2">{children}</h1>,
-              h2: ({ children }) => <h2 className="text-base font-semibold mb-2">{children}</h2>,
-              h3: ({ children }) => <h3 className="text-sm font-semibold mb-1">{children}</h3>,
-            }}
-          >
-            {message.content}
-          </Markdown>
-        )}
-      </div>
-    </div>
-  );
+  switch (rc.type) {
+    case "member_confirmation":
+      return (
+        <MemberConfirmationCard
+          initialMembers={rc.members}
+          confirmed={rc.confirmed || opts.membersConfirmed || false}
+          householdId={opts.householdId || ""}
+          onConfirmed={opts.onMembersConfirmed}
+        />
+      );
+    case "step_counter":
+      return (
+        <StepCounter
+          questionNumber={rc.questionNumber}
+          totalQuestions={rc.totalQuestions}
+        />
+      );
+    case "mission_reveal":
+      return <MissionRevealCard missionStatement={rc.missionStatement} />;
+    case "constitution_loading":
+      return <ConstitutionLoading />;
+    default:
+      return null;
+  }
 }
 
 // ── Interview Phase ────────────────────────────────────────────────
@@ -125,10 +114,16 @@ function InterviewPhase({
   messages,
   onSend,
   isPending,
+  householdId,
+  membersConfirmed,
+  onMembersConfirmed,
 }: {
-  messages: ChatMessage[];
+  messages: OnboardingMessage[];
   onSend: (text: string) => void;
   isPending: boolean;
+  householdId?: string;
+  membersConfirmed: boolean;
+  onMembersConfirmed: (members: Array<{ name: string; age: number; role: string }>) => void;
 }) {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -149,21 +144,34 @@ function InterviewPhase({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-6">
         {messages.map((msg, i) => (
-          <ChatBubble key={i} message={msg} />
+          <div key={i}>
+            <ChatBubble
+              message={msg}
+              richContent={
+                msg.serverRichContent
+                  ? renderRichContent(msg.serverRichContent, {
+                      householdId,
+                      membersConfirmed,
+                      onMembersConfirmed,
+                    })
+                  : undefined
+              }
+            />
+          </div>
         ))}
         {isPending && (
           <div className="flex items-center gap-2 mb-4">
             <div
               className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
             >
               C
             </div>
             <div
               className="rounded-lg px-4 py-3"
-              style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+              style={{ background: "var(--carson-white)", border: "1px solid var(--carson-border)" }}
             >
-              <Loader2 className="h-4 w-4 animate-spin" style={{ color: "#8a8070" }} />
+              <Loader2 className="h-4 w-4 animate-spin" style={{ color: "var(--carson-muted)" }} />
             </div>
           </div>
         )}
@@ -174,7 +182,7 @@ function InterviewPhase({
       <form
         onSubmit={handleSubmit}
         className="px-4 py-3 border-t flex gap-2 items-end"
-        style={{ borderColor: "#ddd5c8" }}
+        style={{ borderColor: "var(--carson-border)" }}
       >
         <Textarea
           value={input}
@@ -187,7 +195,7 @@ function InterviewPhase({
           }}
           placeholder="Type your answer..."
           className="flex-1 min-h-[44px] max-h-[160px] resize-none"
-          style={{ borderColor: "#ddd5c8" }}
+          style={{ borderColor: "var(--carson-border)" }}
           rows={2}
           disabled={isPending}
           autoFocus
@@ -195,7 +203,7 @@ function InterviewPhase({
         <Button
           type="submit"
           disabled={!input.trim() || isPending}
-          style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+          style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
         >
           <Send className="h-4 w-4" />
         </Button>
@@ -225,11 +233,11 @@ function ReviewPhase({
       <div className="max-w-2xl mx-auto w-full">
         <h3
           className="text-xl font-normal mb-2"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
         >
           Your Family Constitution
         </h3>
-        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
           Carson generated this based on your interview. Review it, edit if needed, then approve.
         </p>
 
@@ -240,21 +248,22 @@ function ReviewPhase({
             className="min-h-[300px] mb-4 text-sm leading-relaxed"
             style={{
               fontFamily: "Georgia, 'Times New Roman', serif",
-              background: "#faf8f4",
-              borderColor: "#ddd5c8",
+              background: "var(--carson-ivory)",
+              borderColor: "var(--carson-border)",
             }}
           />
         ) : (
           <div
-            className="rounded-lg p-6 mb-4 text-sm leading-relaxed whitespace-pre-wrap"
+            className="rounded-lg p-6 mb-4 text-sm leading-relaxed prose prose-sm max-w-none"
             style={{
-              background: "#ffffff",
-              border: "1px solid #ddd5c8",
-              fontFamily: "Georgia, 'Times New Roman', serif",
-              color: "#2c2c2c",
+              background: "var(--carson-white)",
+              border: "1px solid var(--carson-border)",
+              color: "var(--carson-text)",
             }}
           >
-            {constitution}
+            <Markdown remarkPlugins={[remarkGfm]}>
+              {constitution}
+            </Markdown>
           </div>
         )}
 
@@ -267,7 +276,7 @@ function ReviewPhase({
                   setEditing(false);
                 }}
                 disabled={isPending}
-                style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+                style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
               >
                 Save Changes
               </Button>
@@ -277,7 +286,7 @@ function ReviewPhase({
                   setDraft(constitution);
                   setEditing(false);
                 }}
-                style={{ borderColor: "#ddd5c8" }}
+                style={{ borderColor: "var(--carson-border)" }}
               >
                 Cancel
               </Button>
@@ -287,7 +296,7 @@ function ReviewPhase({
               <Button
                 onClick={onApprove}
                 disabled={isPending}
-                style={{ background: "#2e7d32", color: "#fff" }}
+                style={{ background: "var(--carson-success)", color: "#fff" }}
               >
                 {isPending ? (
                   <>
@@ -302,7 +311,7 @@ function ReviewPhase({
               <Button
                 variant="outline"
                 onClick={() => setEditing(true)}
-                style={{ borderColor: "#ddd5c8" }}
+                style={{ borderColor: "var(--carson-border)" }}
               >
                 Edit
               </Button>
@@ -350,11 +359,11 @@ function StaffSetupPhase({
       <div className="max-w-2xl mx-auto w-full">
         <h3
           className="text-xl font-normal mb-2"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
         >
           Choose Your Staff
         </h3>
-        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
           Carson (Head Butler) is always included. Select additional staff for your household.
         </p>
 
@@ -365,16 +374,16 @@ function StaffSetupPhase({
         >
           <div
             className="w-10 h-10 rounded-full flex items-center justify-center font-bold"
-            style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
           >
             C
           </div>
           <div className="flex-1">
-            <span className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+            <span className="text-sm font-semibold" style={{ color: "var(--carson-navy)" }}>
               Carson
             </span>
             <span className="text-[10px] ml-2" style={{ color: "#8b6f4e" }}>HEAD BUTLER</span>
-            <p className="text-xs mt-0.5" style={{ color: "#8a8070" }}>
+            <p className="text-xs mt-0.5" style={{ color: "var(--carson-muted)" }}>
               Oversees all staff. Handles parent requests, governance, and administration.
             </p>
           </div>
@@ -390,8 +399,8 @@ function StaffSetupPhase({
               onClick={() => onToggle(staff.id)}
               className="w-full text-left rounded-lg p-4 mb-3 flex items-center gap-4 transition-colors"
               style={{
-                background: selected ? "#faf8f4" : "#ffffff",
-                border: selected ? "2px solid #8b6f4e" : "1px solid #ddd5c8",
+                background: selected ? "var(--carson-ivory)" : "var(--carson-white)",
+                border: selected ? "2px solid #8b6f4e" : "1px solid var(--carson-border)",
               }}
             >
               <div
@@ -404,10 +413,10 @@ function StaffSetupPhase({
                 {staff.name.charAt(0)}
               </div>
               <div className="flex-1">
-                <span className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+                <span className="text-sm font-semibold" style={{ color: "var(--carson-navy)" }}>
                   {staff.name}
                 </span>
-                <p className="text-xs mt-0.5" style={{ color: "#8a8070" }}>
+                <p className="text-xs mt-0.5" style={{ color: "var(--carson-muted)" }}>
                   {staff.description}
                 </p>
               </div>
@@ -420,7 +429,7 @@ function StaffSetupPhase({
           <Button
             onClick={onContinue}
             disabled={isPending}
-            style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
           >
             {isPending ? (
               <>
@@ -454,19 +463,19 @@ function TelegramConfigPhase({
       <div className="max-w-2xl mx-auto w-full">
         <h3
           className="text-xl font-normal mb-2"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
         >
           Connect Telegram
         </h3>
-        <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
           Family members will talk to their agents through Telegram. Enter your bot token to enable this.
         </p>
 
         <div
           className="rounded-lg p-5 mb-6"
-          style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+          style={{ background: "var(--carson-white)", border: "1px solid var(--carson-border)" }}
         >
-          <label className="text-xs font-medium block mb-2" style={{ color: "#1a1f2e" }}>
+          <label className="text-xs font-medium block mb-2" style={{ color: "var(--carson-navy)" }}>
             Telegram Bot Token
           </label>
           <Input
@@ -475,7 +484,7 @@ function TelegramConfigPhase({
             onChange={(e) => setToken(e.target.value)}
             placeholder="123456:ABC-DEF..."
             className="mb-3"
-            style={{ borderColor: "#ddd5c8" }}
+            style={{ borderColor: "var(--carson-border)" }}
           />
           <p className="text-[11px]" style={{ color: "#a09080" }}>
             Create a bot via @BotFather on Telegram, then paste the token here.
@@ -486,7 +495,7 @@ function TelegramConfigPhase({
           <Button
             onClick={() => onComplete(token.trim())}
             disabled={isPending}
-            style={{ background: "#2e7d32", color: "#fff" }}
+            style={{ background: "var(--carson-success)", color: "#fff" }}
           >
             {isPending ? (
               <>
@@ -502,7 +511,7 @@ function TelegramConfigPhase({
             variant="outline"
             onClick={() => onComplete("")}
             disabled={isPending}
-            style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+            style={{ borderColor: "var(--carson-border)", color: "var(--carson-muted)" }}
           >
             Skip for Now
           </Button>
@@ -519,19 +528,22 @@ export function OnboardingPage() {
 
   // Local state
   const [phase, setPhase] = useState<OnboardingPhase>("interview");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<OnboardingMessage[]>([]);
   const [constitution, setConstitution] = useState("");
   const [staffSelections, setStaffSelections] = useState<string[]>(["tutor"]);
+  const [membersConfirmed, setMembersConfirmed] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const [activeHouseholdId, setActiveHouseholdId] = useState<string | undefined>();
 
   // Fetch existing onboarding state from server
   const { data: serverState, isLoading: stateLoading } = useQuery<{
     phase: OnboardingPhase;
     hasHousehold: boolean;
     householdId?: string;
-    interviewMessages?: ChatMessage[];
+    interviewMessages?: Array<{ role: "user" | "assistant"; content: string; richContent?: RichContent }>;
     extractedClauses?: unknown[];
     selectedStaff?: string[];
+    membersConfirmed?: boolean;
   }>({
     queryKey: ["onboarding"],
     queryFn: () => api.get("/onboarding/state"),
@@ -544,38 +556,62 @@ export function OnboardingPage() {
       setInitialized(true);
       if (serverState.phase) setPhase(serverState.phase);
       if (serverState.selectedStaff) setStaffSelections(serverState.selectedStaff as string[]);
+      if (serverState.membersConfirmed) setMembersConfirmed(true);
+      if (serverState.householdId) setActiveHouseholdId(serverState.householdId);
 
-      // Hydrate conversation history from server
+      // Hydrate conversation history from server (with richContent for resume)
       const serverMessages = serverState.interviewMessages || [];
       if (serverMessages.length > 0) {
-        setMessages(serverMessages);
+        setMessages(
+          serverMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+            serverRichContent: m.richContent || null,
+          })),
+        );
+
       }
     }
   }, [serverState, initialized]);
 
-  // Auto-start: only if the server has NO interview messages (truly fresh start)
+  // Auto-start: pre-populate Carson's greeting instantly (no LLM call)
   useEffect(() => {
     if (!initialized || stateLoading) return;
     const serverMessages = serverState?.interviewMessages || [];
     if (phase === "interview" && serverMessages.length === 0 && messages.length === 0) {
-      // Send the initial greeting
-      sendMessage.mutate("Hello, I'd like to set up my family household.");
+      setMessages([{
+        role: "assistant",
+        content: "Welcome. I'm Carson, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.",
+      }]);
     }
   }, [initialized, stateLoading]);
 
-  const householdId = serverState?.householdId;
+  const householdId = activeHouseholdId || serverState?.householdId;
 
   // Send message during interview
   const sendMessage = useMutation({
     mutationFn: (text: string) =>
-      api.post<{ response: string; phase?: OnboardingPhase; constitutionDocument?: string; householdId?: string }>(
-        "/onboarding/message",
-        { message: text },
-      ),
+      api.post<{
+        response: string;
+        phase?: OnboardingPhase;
+        interviewPhase?: string;
+        constitutionDocument?: string;
+        members?: Array<{ name: string; age: number; role: string }>;
+        richContent?: RichContent | null;
+        questionNumber?: number | null;
+        totalQuestions?: number | null;
+        householdId?: string;
+      }>("/onboarding/message", { message: text }),
     onSuccess: (data) => {
-      setMessages((prev) => [...prev, { role: "assistant", content: data.response }]);
+      const newMsg: OnboardingMessage = {
+        role: "assistant",
+        content: data.response,
+        serverRichContent: data.richContent || null,
+      };
+      setMessages((prev) => [...prev, newMsg]);
       if (data.phase && data.phase !== phase) setPhase(data.phase);
       if (data.constitutionDocument) setConstitution(data.constitutionDocument);
+      if (data.householdId) setActiveHouseholdId(data.householdId);
     },
   });
 
@@ -586,7 +622,6 @@ export function OnboardingPage() {
       staffSelections?: string[];
       botToken?: string;
     }) => {
-      // Build staff array from selections
       const staffToCreate = [
         { name: "Mr. Carson", staffRole: "head_butler", isHeadButler: true, autonomyLevel: "autonomous", specialty: "Household oversight and governance", soulContent: "You are Mr. Carson, the head butler. You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal." },
         ...(data.staffSelections?.includes("tutor") ? [{ name: "Ms. Hughes", staffRole: "tutor", specialty: "Education, homework coaching, study plans", autonomyLevel: "trusted", soulContent: "You are Ms. Hughes, the household tutor. Coach students through problems using scaffolding. Never give direct answers. Ask what they know, break into steps, give hints." }] : []),
@@ -608,6 +643,13 @@ export function OnboardingPage() {
   function handleSendMessage(text: string) {
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     sendMessage.mutate(text);
+  }
+
+  function handleMembersConfirmed(_members: Array<{ name: string; age: number; role: string }>) {
+    setMembersConfirmed(true);
+    // Send a behind-the-scenes message so the LLM transitions to values
+    // (no visible user bubble -- we call mutate directly, not handleSendMessage)
+    sendMessage.mutate("Family confirmed.");
   }
 
   function handleApproveConstitution() {
@@ -639,17 +681,17 @@ export function OnboardingPage() {
   return (
     <div
       className="min-h-screen flex flex-col"
-      style={{ background: "#f5f1eb" }}
+      style={{ background: "var(--carson-ivory)" }}
     >
       {/* Header */}
-      <div className="py-6 px-6 text-center border-b" style={{ borderColor: "#ddd5c8" }}>
+      <div className="py-6 px-6 text-center border-b" style={{ borderColor: "var(--carson-border)" }}>
         <h1
           className="text-lg font-bold tracking-wide"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
         >
           CarsonOS
         </h1>
-        <p className="text-[11px] uppercase tracking-[2px] mt-1" style={{ color: "#8a8070" }}>
+        <p className="text-[11px] uppercase tracking-[2px] mt-1" style={{ color: "var(--carson-muted)" }}>
           Household Setup
         </p>
         <div className="mt-4">
@@ -664,6 +706,9 @@ export function OnboardingPage() {
             messages={messages}
             onSend={handleSendMessage}
             isPending={sendMessage.isPending}
+            householdId={householdId}
+            membersConfirmed={membersConfirmed}
+            onMembersConfirmed={handleMembersConfirmed}
           />
         )}
 
@@ -698,20 +743,20 @@ export function OnboardingPage() {
               className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
               style={{ background: "#e8f5e9" }}
             >
-              <Check className="h-8 w-8" style={{ color: "#2e7d32" }} />
+              <Check className="h-8 w-8" style={{ color: "var(--carson-success)" }} />
             </div>
             <h3
               className="text-xl font-normal mb-2"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+              style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
             >
               Setup Complete
             </h3>
-            <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+            <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
               Your household is ready. Carson and your staff are standing by.
             </p>
             <Button
               onClick={() => navigate("/")}
-              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
             >
               Go to Dashboard
             </Button>

@@ -1,6 +1,6 @@
 // ── Enums as union types ────────────────────────────────────────────
 
-export type MemberRole = "parent" | "student" | "child";
+export type MemberRole = "parent" | "kid";
 
 export type StaffRole = "head_butler" | "personal" | "tutor" | "coach" | "scheduler" | "custom";
 
@@ -58,6 +58,65 @@ export type Channel = "telegram" | "web";
 export type OnboardingPhase = "interview" | "review" | "staff_setup" | "telegram_config" | "complete";
 
 export type AssignmentRelationship = "primary" | "secondary" | "oversight";
+
+// ── Interview phase (granular) ────────────────────────────────────
+
+export type InterviewPhase =
+  | "family_basics"
+  | "values"
+  | "education"
+  | "boundaries"
+  | "interaction_style"
+  | "privacy"
+  | "schedule"
+  | "escalation"
+  | "mission"
+  | "review_complete";
+
+// ── Rich content types for onboarding chat ────────────────────────
+
+export type RichContentType =
+  | "member_confirmation"
+  | "step_counter"
+  | "mission_reveal"
+  | "constitution_loading";
+
+export interface MemberConfirmationContent {
+  type: "member_confirmation";
+  members: Array<{ name: string; age: number; role: MemberRole }>;
+  confirmed: boolean;
+}
+
+export interface StepCounterContent {
+  type: "step_counter";
+  questionNumber: number;
+  totalQuestions: number;
+}
+
+export interface MissionRevealContent {
+  type: "mission_reveal";
+  missionStatement: string;
+}
+
+export interface ConstitutionLoadingContent {
+  type: "constitution_loading";
+  stage: 1 | 2 | 3;
+  message: string;
+}
+
+export type RichContent =
+  | MemberConfirmationContent
+  | StepCounterContent
+  | MissionRevealContent
+  | ConstitutionLoadingContent;
+
+export type ProfileInterviewPhase =
+  | "intro"
+  | "personality"
+  | "interests"
+  | "learning"
+  | "boundaries"
+  | "review_complete";
 
 // ── Evaluation config shapes ────────────────────────────────────────
 

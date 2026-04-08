@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { SkeletonCard } from "@/components/ui/skeleton";
 import {
   Plus,
   Pencil,
@@ -23,12 +24,15 @@ import {
   Users,
   UserCog,
   Shield,
+  FileUser,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { ProfileInterview } from "@/components/ProfileInterview";
+import { useToast } from "@/components/Toast";
 
 // ── Types ──────────────────────────────────────────────────────────
 
-type MemberRole = "parent" | "student" | "child";
+type MemberRole = "parent" | "kid";
 type StaffRole = "head_butler" | "personal" | "tutor" | "coach" | "scheduler" | "custom";
 type AgentStatus = "active" | "paused" | "idle";
 type AutonomyLevel = "supervised" | "trusted" | "autonomous";
@@ -56,6 +60,8 @@ interface HouseholdMember {
   role: MemberRole;
   age?: number;
   telegramUserId?: string | null;
+  profileContent?: string | null;
+  profileUpdatedAt?: string | null;
 }
 
 interface HouseholdData {
@@ -67,8 +73,7 @@ interface HouseholdData {
 
 const ROLE_OPTIONS: { value: MemberRole; label: string }[] = [
   { value: "parent", label: "Parent" },
-  { value: "student", label: "Student" },
-  { value: "child", label: "Child" },
+  { value: "kid", label: "Kid" },
 ];
 
 const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
@@ -87,9 +92,9 @@ const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string }[] = [
 ];
 
 function statusColor(s: AgentStatus): string {
-  if (s === "active") return "bg-green-500";
-  if (s === "paused") return "bg-orange-400";
-  return "bg-gray-300";
+  if (s === "active") return "bg-[#4a7c59]";
+  if (s === "paused") return "bg-[#b8860b]";
+  return "bg-[#8a8070]";
 }
 
 function roleLabel(r: StaffRole): string {
@@ -106,8 +111,9 @@ function AddMemberForm({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [name, setName] = useState("");
-  const [role, setRole] = useState<MemberRole>("child");
+  const [role, setRole] = useState<MemberRole>("kid");
   const [age, setAge] = useState("");
   const [telegramUserId, setTelegramUserId] = useState("");
 
@@ -116,12 +122,19 @@ function AddMemberForm({
       api.post(`/households/${householdId}/members`, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["household"] });
+      toast.success("Member added");
       onClose();
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
     },
   });
 
+  const [submitted, setSubmitted] = useState(false);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitted(true);
     if (!name.trim() || !age) return;
     mutation.mutate({
       name: name.trim(),
@@ -130,6 +143,9 @@ function AddMemberForm({
       ...(telegramUserId.trim() ? { telegramUserId: telegramUserId.trim() } : {}),
     });
   }
+
+  const nameError = submitted && !name.trim();
+  const ageError = submitted && !age;
 
   return (
     <Card className="border" style={{ borderColor: "#ddd5c8" }}>
@@ -144,7 +160,16 @@ function AddMemberForm({
             </Button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <div>
+              <Input
+                placeholder="Name *"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                style={nameError ? { borderColor: "#c62828" } : undefined}
+              />
+              {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
+            </div>
             <Select value={role} onValueChange={(v) => setRole(v as MemberRole)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -155,11 +180,22 @@ function AddMemberForm({
             </Select>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input type="number" placeholder="Age" min={1} max={99} value={age} onChange={(e) => setAge(e.target.value)} />
+            <div>
+              <Input
+                type="number"
+                placeholder="Age *"
+                min={1}
+                max={99}
+                value={age}
+                onChange={(e) => setAge(e.target.value)}
+                style={ageError ? { borderColor: "#c62828" } : undefined}
+              />
+              {ageError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Age is required</p>}
+            </div>
             <Input placeholder="Telegram ID (optional)" value={telegramUserId} onChange={(e) => setTelegramUserId(e.target.value)} />
           </div>
           <div className="flex items-center justify-end pt-1">
-            <Button type="submit" size="sm" disabled={mutation.isPending || !name.trim() || !age}>
+            <Button type="submit" size="sm" disabled={mutation.isPending}>
               {mutation.isPending ? "Adding..." : "Add Member"}
             </Button>
           </div>
@@ -186,6 +222,7 @@ function EditMemberForm({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [name, setName] = useState(member.name);
   const [role, setRole] = useState<MemberRole>(member.role);
   const [age, setAge] = useState(String(member.age || ""));
@@ -196,16 +233,20 @@ function EditMemberForm({
       api.put(`/households/${householdId}/members/${member.id}`, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["household"] });
+      toast.success("Member updated");
       onClose();
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 
   const deleteMutation = useMutation({
     mutationFn: () => api.delete(`/households/${householdId}/members/${member.id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["household"] });
+      toast.success("Member removed");
       onClose();
     },
+    onError: (err: Error) => toast.error(err.message),
   });
 
   function handleSave() {
@@ -295,6 +336,8 @@ function MemberCard({
   staffAssignments: { staffName: string; staffRole: string }[];
 }) {
   const [editing, setEditing] = useState(false);
+  const [showInterview, setShowInterview] = useState(false);
+  const queryClient = useQueryClient();
 
   if (editing) {
     return (
@@ -306,6 +349,23 @@ function MemberCard({
       />
     );
   }
+
+  if (showInterview) {
+    return (
+      <div className="col-span-full max-w-2xl">
+        <ProfileInterview
+          memberId={member.id}
+          memberName={member.name}
+          onClose={() => setShowInterview(false)}
+          onComplete={() => {
+            queryClient.invalidateQueries({ queryKey: ["household"] });
+          }}
+        />
+      </div>
+    );
+  }
+
+  const hasProfile = !!member.profileContent;
 
   return (
     <Card className="border hover:shadow-sm transition-shadow" style={{ borderColor: "#ddd5c8" }}>
@@ -330,7 +390,7 @@ function MemberCard({
             <Pencil className="h-3.5 w-3.5" style={{ color: "#8a8070" }} />
           </Button>
         </div>
-        <div className="flex flex-wrap gap-1.5 text-xs">
+        <div className="flex flex-wrap gap-1.5 text-xs mb-2">
           {member.telegramUserId && (
             <span style={{ color: "#8a8070" }}>TG: {member.telegramUserId}</span>
           )}
@@ -339,6 +399,25 @@ function MemberCard({
               Staff: {staffAssignments.map((s) => s.staffName).join(", ")}
             </span>
           )}
+        </div>
+        {/* Profile status + interview button */}
+        <div className="flex items-center justify-between pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
+          <div className="flex items-center gap-1.5">
+            <FileUser className="h-3.5 w-3.5" style={{ color: hasProfile ? "#2e7d32" : "#ddd5c8" }} />
+            <span className="text-[11px]" style={{ color: hasProfile ? "#2e7d32" : "#a09080" }}>
+              {hasProfile ? "Profile set" : "No profile"}
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[11px]"
+            style={{ color: "#8b6f4e" }}
+            onClick={() => setShowInterview(true)}
+          >
+            <FileUser className="h-3 w-3 mr-1" />
+            {hasProfile ? "Re-interview" : "Build Profile"}
+          </Button>
         </div>
       </CardContent>
     </Card>
@@ -365,21 +444,21 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
   const [specialty, setSpecialty] = useState("");
   const [autonomyLevel, setAutonomyLevel] = useState<AutonomyLevel>("supervised");
   const [visibility, setVisibility] = useState<"family" | "internal">("family");
+  const [submitted, setSubmitted] = useState(false);
 
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.post("/staff", payload) as Promise<{ agent: { id: string } }>,
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
-      // Redirect to StaffDetail so the parent can complete setup
       navigate(`/staff/${data.agent.id}`);
     },
   });
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitted(true);
     if (!name.trim()) return;
 
-    // Pre-fill roleContent from template
     const template = ROLE_TEMPLATES[staffRole] || "";
     const roleContent = template.replace(/\{name\}/g, name.trim());
 
@@ -394,6 +473,8 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
     });
   }
 
+  const nameError = submitted && !name.trim();
+
   return (
     <Card className="border" style={{ borderColor: "#ddd5c8" }}>
       <CardContent className="p-4">
@@ -405,7 +486,16 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
             </Button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Input placeholder="Name (e.g., Ms. Hughes)" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <div>
+              <Input
+                placeholder="Name (e.g., Ms. Hughes) *"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                style={nameError ? { borderColor: "#c62828" } : undefined}
+              />
+              {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
+            </div>
             <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -453,7 +543,7 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
             </Select>
           </div>
           <div className="flex items-center justify-end pt-1">
-            <Button type="submit" size="sm" disabled={mutation.isPending || !name.trim()}>
+            <Button type="submit" size="sm" disabled={mutation.isPending}>
               {mutation.isPending ? "Adding..." : "Add Staff"}
             </Button>
           </div>
@@ -637,7 +727,11 @@ export function HouseholdPage() {
         </div>
 
         {loadingHousehold && (
-          <p className="text-sm" style={{ color: "#8a8070" }}>Loading household data...</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         )}
 
         {!loadingHousehold && !householdId && (
@@ -693,7 +787,7 @@ export function HouseholdPage() {
               {children.length > 0 && (
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "#8a8070" }}>
-                    Children
+                    Kids
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {children.map((m) => (
@@ -744,7 +838,10 @@ export function HouseholdPage() {
         </div>
 
         {loadingStaff && (
-          <p className="text-sm" style={{ color: "#8a8070" }}>Loading staff...</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

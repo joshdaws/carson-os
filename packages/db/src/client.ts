@@ -39,6 +39,8 @@ CREATE TABLE family_members (
   role TEXT NOT NULL,
   age INTEGER NOT NULL,
   telegram_user_id TEXT UNIQUE,
+  profile_content TEXT,
+  profile_updated_at INTEGER,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX family_members_household_idx ON family_members(household_id);
@@ -208,6 +210,15 @@ CREATE TABLE onboarding_state (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+CREATE TABLE profile_interview_state (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL REFERENCES family_members(id),
+  phase TEXT NOT NULL DEFAULT 'intro',
+  interview_messages TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE TABLE instance_settings (
   id TEXT PRIMARY KEY,
   key TEXT NOT NULL UNIQUE,
@@ -310,8 +321,32 @@ function upgradeTables(sqlite: Database.Database) {
       upgraded = true;
     }
 
+    // family_members: add profile columns
+    const memberCols = cols("family_members");
+    if (!memberCols.has("profile_content")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN profile_content TEXT").run();
+      upgraded = true;
+    }
+    if (!memberCols.has("profile_updated_at")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN profile_updated_at INTEGER").run();
+      upgraded = true;
+    }
+
+    // Create profile_interview_state table
+    if (!tableExists("profile_interview_state")) {
+      sqlite.prepare(`CREATE TABLE profile_interview_state (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES family_members(id),
+        phase TEXT NOT NULL DEFAULT 'intro',
+        interview_messages TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded to v4 (delegation support)");
+      console.log("[db] Schema upgraded to v5 (profile support)");
     }
   });
 

@@ -4,6 +4,7 @@ import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollText, Edit3, Save, X, Clock, Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -63,7 +64,15 @@ export function ConstitutionPage() {
   if (isLoading) {
     return (
       <div className="p-6 lg:p-8 max-w-4xl">
-        <p className="text-sm" style={{ color: "#8a8070" }}>Loading constitution...</p>
+        <Skeleton className="h-7 w-48 mb-4" />
+        <Skeleton className="h-4 w-32 mb-6" />
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-5/6" />
+          <Skeleton className="h-4 w-4/6" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-3/4" />
+        </div>
       </div>
     );
   }

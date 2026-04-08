@@ -13,7 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Send, User, Bot } from "lucide-react";
+import { MessageSquare, Send, User, Bot, ArrowLeft } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -282,10 +283,17 @@ export function ConversationsPage() {
         </p>
       </div>
 
-      {/* Main split view */}
+      {/* Main split view -- responsive: mobile shows one panel at a time */}
       <div className="flex gap-4 h-[calc(100%-80px)] min-h-[500px]">
-        {/* Left: conversation list */}
-        <Card className="w-80 shrink-0 flex flex-col overflow-hidden border" style={{ borderColor: "#ddd5c8" }}>
+        {/* Left: conversation list (hidden on mobile when a conversation is selected) */}
+        <Card
+          className={cn(
+            "flex flex-col overflow-hidden border",
+            selectedId ? "hidden md:flex" : "flex",
+            "w-full md:w-80 md:shrink-0",
+          )}
+          style={{ borderColor: "#ddd5c8" }}
+        >
           {/* Filters */}
           <div className="p-3 border-b space-y-2" style={{ borderColor: "#eee8dd" }}>
             <Select value={memberFilter} onValueChange={setMemberFilter}>
@@ -317,8 +325,10 @@ export function ConversationsPage() {
           {/* Conversation list */}
           <div className="flex-1 overflow-y-auto">
             {loadingConvs && (
-              <div className="flex items-center justify-center h-32">
-                <p className="text-sm" style={{ color: "#8a8070" }}>Loading...</p>
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
               </div>
             )}
             {!loadingConvs && conversations.length === 0 && (
@@ -338,8 +348,14 @@ export function ConversationsPage() {
           </div>
         </Card>
 
-        {/* Right: message thread */}
-        <Card className="flex-1 flex flex-col overflow-hidden border" style={{ borderColor: "#ddd5c8" }}>
+        {/* Right: message thread (full-width on mobile when selected) */}
+        <Card
+          className={cn(
+            "flex-1 flex flex-col overflow-hidden border",
+            selectedId ? "flex" : "hidden md:flex",
+          )}
+          style={{ borderColor: "#ddd5c8" }}
+        >
           {!selectedId ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
               <MessageSquare className="h-8 w-8 mb-3" style={{ color: "#ddd5c8" }} />
@@ -354,14 +370,21 @@ export function ConversationsPage() {
                 className="px-4 py-3 border-b flex items-center gap-3"
                 style={{ borderColor: "#eee8dd" }}
               >
+                <button
+                  className="md:hidden shrink-0"
+                  onClick={() => setSelectedId(null)}
+                  aria-label="Back to conversations"
+                >
+                  <ArrowLeft className="h-4 w-4" style={{ color: "#8a8070" }} />
+                </button>
                 <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold shrink-0"
                   style={{ background: "#f0ede6", color: "#8a8070" }}
                 >
                   {selectedConv?.memberName?.charAt(0) || "?"}
                 </div>
-                <div>
-                  <p className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate" style={{ color: "#1a1f2e" }}>
                     {selectedConv?.memberName}
                   </p>
                   <p className="text-[11px]" style={{ color: "#8a8070" }}>
@@ -376,8 +399,10 @@ export function ConversationsPage() {
               {/* Messages */}
               <div className="flex-1 overflow-y-auto p-4">
                 {loadingMessages && (
-                  <div className="flex items-center justify-center h-32">
-                    <p className="text-sm" style={{ color: "#8a8070" }}>Loading...</p>
+                  <div className="space-y-3">
+                    <Skeleton className="h-10 w-3/5" />
+                    <Skeleton className="h-10 w-2/5 ml-auto" />
+                    <Skeleton className="h-10 w-3/5" />
                   </div>
                 )}
                 {!loadingMessages && messages.length === 0 && (
