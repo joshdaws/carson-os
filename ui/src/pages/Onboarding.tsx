@@ -28,10 +28,9 @@ interface OnboardingMessage extends ChatMessage {
 // ── Phase Indicator ────────────────────────────────────────────────
 
 const PHASES: { value: OnboardingPhase; label: string }[] = [
-  { value: "interview", label: "Interview" },
-  { value: "review", label: "Review" },
+  { value: "interview", label: "Family" },
   { value: "staff_setup", label: "Staff" },
-  { value: "telegram_config", label: "Telegram" },
+  { value: "telegram_config", label: "Connect" },
 ];
 
 function PhaseIndicator({ current }: { current: OnboardingPhase }) {
@@ -529,7 +528,6 @@ export function OnboardingPage() {
   // Local state
   const [phase, setPhase] = useState<OnboardingPhase>("interview");
   const [messages, setMessages] = useState<OnboardingMessage[]>([]);
-  const [constitution, setConstitution] = useState("");
   const [staffSelections, setStaffSelections] = useState<string[]>(["tutor"]);
   const [membersConfirmed, setMembersConfirmed] = useState(false);
   const [initialized, setInitialized] = useState(false);
@@ -610,7 +608,6 @@ export function OnboardingPage() {
       };
       setMessages((prev) => [...prev, newMsg]);
       if (data.phase && data.phase !== phase) setPhase(data.phase);
-      if (data.constitutionDocument) setConstitution(data.constitutionDocument);
       if (data.householdId) setActiveHouseholdId(data.householdId);
     },
   });
@@ -618,7 +615,6 @@ export function OnboardingPage() {
   // Complete onboarding
   const completeMutation = useMutation({
     mutationFn: (data: {
-      constitution?: string;
       staffSelections?: string[];
       botToken?: string;
     }) => {
@@ -631,7 +627,6 @@ export function OnboardingPage() {
 
       return api.post("/onboarding/complete", {
         householdId,
-        constitutionDocument: data.constitution,
         staff: staffToCreate,
       });
     },
@@ -647,17 +642,8 @@ export function OnboardingPage() {
 
   function handleMembersConfirmed(_members: Array<{ name: string; age: number; role: string }>) {
     setMembersConfirmed(true);
-    // Send a behind-the-scenes message so the LLM transitions to values
-    // (no visible user bubble -- we call mutate directly, not handleSendMessage)
-    sendMessage.mutate("Family confirmed.");
-  }
-
-  function handleApproveConstitution() {
+    // Go straight to staff setup -- constitution is done later from the dashboard
     setPhase("staff_setup");
-  }
-
-  function handleEditConstitution(text: string) {
-    setConstitution(text);
   }
 
   function handleToggleStaff(id: string) {
@@ -672,7 +658,6 @@ export function OnboardingPage() {
 
   function handleComplete(token: string) {
     completeMutation.mutate({
-      constitution,
       staffSelections,
       botToken: token || undefined,
     });
@@ -709,15 +694,6 @@ export function OnboardingPage() {
             householdId={householdId}
             membersConfirmed={membersConfirmed}
             onMembersConfirmed={handleMembersConfirmed}
-          />
-        )}
-
-        {phase === "review" && (
-          <ReviewPhase
-            constitution={constitution}
-            onApprove={handleApproveConstitution}
-            onEdit={handleEditConstitution}
-            isPending={sendMessage.isPending}
           />
         )}
 
