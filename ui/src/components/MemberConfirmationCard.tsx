@@ -99,8 +99,8 @@ export function MemberConfirmationCard({
           <td className="py-2 pr-3 text-sm" style={{ color: confirmed ? "var(--carson-muted)" : "var(--carson-text)" }}>
             {member.name}
           </td>
-          <td className="py-2 pr-3 text-sm" style={{ color: confirmed ? "var(--carson-muted)" : "var(--carson-text)" }}>
-            {member.age}
+          <td className="py-2 pr-3 text-sm" style={{ color: member.age ? (confirmed ? "var(--carson-muted)" : "var(--carson-text)") : "var(--carson-error)" }}>
+            {member.age || "—"}
           </td>
           <td className="py-2 pr-3 text-sm" style={{ color: confirmed ? "var(--carson-muted)" : "var(--carson-text)" }}>
             {roleLabel}
@@ -138,7 +138,7 @@ export function MemberConfirmationCard({
                 {member.name}
               </div>
               <div className="text-xs mt-0.5" style={{ color: "var(--carson-muted)" }}>
-                Age {member.age} &middot; {roleLabel}
+                {member.age ? `Age ${member.age}` : "Age unknown"} &middot; {roleLabel}
               </div>
             </div>
             {!confirmed && (

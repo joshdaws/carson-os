@@ -204,10 +204,20 @@ name|age|role
 (one line per person, role is "parent" for adults or "kid" for children of any age)
 [MEMBERS_END]
 
+IMPORTANT: Include ALL mentioned family members, even if age is unknown. Use 0 for unknown ages. The confirmation UI lets the parent edit ages, so missing data is fine. Never omit a person just because their age wasn't provided.
+
 Example:
 [MEMBERS_START]
 Josh Daws|48|parent
 Becca Daws|46|parent
+Grant Daws|17|kid
+Claire Daws|6|kid
+[MEMBERS_END]
+
+Example with unknown ages:
+[MEMBERS_START]
+Josh Daws|0|parent
+Becca Daws|0|parent
 Grant Daws|17|kid
 Claire Daws|6|kid
 [MEMBERS_END]
