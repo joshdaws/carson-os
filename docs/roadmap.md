@@ -77,19 +77,36 @@ Projects have `status: active|paused|completed`. Etc.
 
 **2. Knowledge Base (household + per-member, agent-maintained via tools)**
 
-QMD-style flat markdown files with YAML frontmatter. Indexed by FTS5 (vector
-search later). Exposed as Anthropic SDK tools: `search_memory`, `save_memory`,
-`delete_memory`.
+QMD-indexed flat markdown files with YAML frontmatter. One QMD collection per
+scope, all managed by the existing QMD daemon. Exposed as Anthropic SDK tools:
+`search_memory`, `save_memory`, `delete_memory`.
 
-Two scopes:
-- Household (shared) — "Spring break is March 15-22"
-- Per-member — "Grant got 100% on algebra test"
+Default file layout:
+```
+{dataDir}/memory/
+  household/       → qmd collection "household" (shared family memory)
+  josh/            → qmd collection "josh"
+  becca/           → qmd collection "becca"
+  grant/           → qmd collection "grant"
+  claire/          → qmd collection "claire"
+  hudson/          → qmd collection "hudson"
+```
 
-Recent entries loaded into system prompt as ambient context.
+Collections auto-created at boot from the family members table via
+`qmd collection add <path> --name <name>`.
+
+Members can override their memory directory to point at an existing brain.
+For example, Josh can point his at `~/projects/brain` to use his existing
+784-entry knowledge base as-is. No migration or import needed — the files
+are already QMD-compatible markdown with YAML frontmatter.
+
+Recent entries loaded into system prompt as ambient context via
+`qmd search` (vector search by default, same as Mr. Carson).
 
 The knowledge base backend is a pluggable `MemoryProvider` interface (4 methods:
-search, save, delete, list). Default: QMD markdown files. Swappable for
-Perplexity, Mem0, or any system that implements the interface.
+search, save, delete, list). Default: QMD provider (markdown files + QMD
+collections). QMD is a required dependency. Swappable for Perplexity, Mem0,
+or any system that implements the interface.
 
 **3. Operating Instructions (per-agent, self-maintained)**
 
@@ -106,15 +123,18 @@ Injected into the agent's system prompt alongside soul and constitution.
 Deliverables:
 - [ ] SDK adapter tool_use loop (max 10 iterations, per-iteration timeout)
 - [ ] MemoryProvider interface in @carsonos/shared
-- [ ] QmdMemoryProvider (default: markdown files + FTS5 sidecar index)
+- [ ] QmdMemoryProvider (default: markdown files + QMD collections, no FTS5)
 - [ ] Memory schema type + default schema (7 types with frontmatter)
 - [ ] search_memory, save_memory, delete_memory tools
 - [ ] Operating instructions: per-agent self-maintained doc + update tool
 - [ ] Prompt compiler reorder: constitution first, combined member section
 - [ ] Feature-flag hard clause evaluators (off for v1.0)
 - [ ] Ambient memory injection into system prompt
-- [ ] Memory provider config via env vars (kind, rootDir, indexPath)
+- [ ] Memory collections auto-created at boot from family members table
+- [ ] Per-member memoryDir override (point at existing brain directory)
+- [ ] Memory provider config via env vars (kind, rootDir)
 - [ ] Memory provider swappable via module path for third-party backends
+- [ ] Tool-call activity logging (before smoke test)
 - [ ] Pre-populate test household: members, agents with roles/souls/profiles
 
 #### M2: Google Calendar (1-2 days)
