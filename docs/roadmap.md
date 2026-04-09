@@ -30,9 +30,31 @@ on Telegram, and have genuinely useful conversations. Agents remember things
 across sessions, can check the family calendar, and stay within the
 constitution. Parents can see everything in the dashboard.
 
+### System Prompt Order (MVP)
+
+```
+# Family Constitution        ← Agent-formatted (concise, structured). THE FRAME.
+# Your Role                  ← Job description (~200-400 tokens)
+# Your Personality            ← Soul (~200-400 tokens)
+# Operating Instructions      ← Self-maintained behavioral notes (~500 tokens cap)
+# About [Member Name]         ← Combined: intro line + profile (~300-500 tokens)
+# What You Know               ← Recent memories, ambient context (~500-800 tokens)
+# How to Use Memory           ← From memory schema (~200 tokens)
+```
+
+Token budget guideline: ~2,500-3,500 tokens total system prompt. Not enforced,
+just guidance for content length.
+
+Two versions of the constitution:
+- Human-readable (full prose, for dashboard display and editing)
+- Agent-formatted (concise structured version, injected into prompts)
+
+Hard clause evaluators (keyword_block, age_gate, role_restrict) are feature-flagged
+OFF for v1.0. Constitution enforcement is prompt-based only at MVP.
+
 ### Milestones
 
-#### M1: Memory System (1.5-2 days)
+#### M1: Memory System + Adapter tool_use
 
 The memory architecture has three layers:
 
@@ -82,15 +104,18 @@ Size-capped. Periodically compressed (agent consolidates redundant entries).
 Injected into the agent's system prompt alongside soul and constitution.
 
 Deliverables:
+- [ ] SDK adapter tool_use loop (max 10 iterations, per-iteration timeout)
 - [ ] MemoryProvider interface in @carsonos/shared
 - [ ] QmdMemoryProvider (default: markdown files + FTS5 sidecar index)
-- [ ] Memory schema type + default schema
-- [ ] SDK adapter tool_use loop (max 10 iterations, per-iteration timeout)
+- [ ] Memory schema type + default schema (7 types with frontmatter)
 - [ ] search_memory, save_memory, delete_memory tools
-- [ ] Operating instructions: per-agent text field, self-editable via tool
-- [ ] Prompt compiler: inject ambient memory + operating instructions
+- [ ] Operating instructions: per-agent self-maintained doc + update tool
+- [ ] Prompt compiler reorder: constitution first, combined member section
+- [ ] Feature-flag hard clause evaluators (off for v1.0)
+- [ ] Ambient memory injection into system prompt
 - [ ] Memory provider config via env vars (kind, rootDir, indexPath)
 - [ ] Memory provider swappable via module path for third-party backends
+- [ ] Pre-populate test household: members, agents with roles/souls/profiles
 
 #### M2: Google Calendar (1-2 days)
 
