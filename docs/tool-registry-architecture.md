@@ -133,6 +133,22 @@ type ToolSideEffectLevel = "read" | "write" | "external_action";
  */
 type ApprovalPolicy = "never" | "inherit_task" | "always";
 
+/**
+ * How this tool behaves when a task is delegated to a subagent.
+ *   inherit      -- subagent gets this tool if parent had it
+ *   blocked      -- subagent never gets this tool (e.g., send_message, memory writes)
+ *   root_only    -- only the root-level agent can use this tool (no delegation at any depth)
+ */
+type DelegationPolicy = "inherit" | "blocked" | "root_only";
+
+/**
+ * Trust level, independent of source/provenance.
+ *   verified     -- reviewed and approved (core tools, manually vetted extensions)
+ *   reviewed     -- scanned, no known issues (trusted community sources)
+ *   unreviewed   -- not yet reviewed (new imports, agent-generated)
+ */
+type ToolTrustLevel = "verified" | "reviewed" | "unreviewed";
+
 interface CarsonToolSpec<TInput = unknown, TOutput = unknown> {
   /** Stable dotted ID: "calendar.listEvents", "members.getProfile" */
   id: string;
@@ -167,6 +183,9 @@ interface CarsonToolSpec<TInput = unknown, TOutput = unknown> {
   /** Member roles that may trigger this tool (empty = all members) */
   allowedMemberRoles?: MemberRole[];
 
+  /** How this tool behaves in delegated subtasks (default: "inherit") */
+  delegationPolicy?: DelegationPolicy;
+
   // -- Execution metadata --
 
   runtime: ToolRuntime;
@@ -190,8 +209,15 @@ interface CarsonToolSpec<TInput = unknown, TOutput = unknown> {
   /** Extension that owns this tool (e.g. "core/google-calendar") */
   extensionId?: string;
 
-  /** Where the tool came from */
+  /** Where the tool came from (provenance) */
   source?: "core" | "community" | "generated" | "imported";
+
+  /**
+   * Trust level, independent of source. A community tool can be "verified"
+   * after manual review. A generated tool starts "unreviewed" until approved.
+   * Influences approval thresholds and code-mode exposure.
+   */
+  trustLevel?: ToolTrustLevel;
 
   /** Connector this tool depends on (e.g. "google-calendar") */
   connectorId?: string;
@@ -269,12 +295,34 @@ interface ExtensionManifest {
   tools?: CarsonToolSpec[];         // <-- uses the canonical spec, not a separate type
   skills?: SkillManifest[];
 }
+
+interface SkillManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  /**
+   * Tools this skill depends on (advisory, NOT capability-granting).
+   * Skills are prompt context that teaches the agent workflows.
+   * They reference tools but never grant tool access.
+   * Tool access comes only from scope resolution.
+   */
+  dependsOnToolIds?: string[];
+  grantedTo: AgentRole[];
+}
 ```
+
+**Skills are prompt context, not tools.** This is a deliberate design decision
+informed by OpenClaw (which separates skills as markdown documents from
+executable tools) and Hermes (which uses progressive skill disclosure).
+Skills teach agents how to use tools and compose workflows. They do not
+grant tool access — that comes only from the scope resolution pipeline.
 
 This means:
 - Tools defined in code use `CarsonToolSpec` directly.
 - Tools distributed via extensions use the same `CarsonToolSpec`.
-- The registry accepts both. No conversion layer needed.
+- Skills reference tools but never grant them.
+- The registry accepts both core and extension tools. No conversion layer needed.
 
 ## Registry Design
 
@@ -319,6 +367,11 @@ class ToolRegistry {
     memberRoles?: MemberRole[];
     memberAges?: number[];
     executionMode?: "text_only" | "code_mode";
+    /** For delegated subtasks: the parent task's persisted tool scope snapshot.
+     *  Child scope is intersected with this ceiling. */
+    parentScopeSnapshot?: string[];
+    /** Delegation depth (0 = root task). Used for root_only delegation policy. */
+    delegationDepth?: number;
   }): ExecutionToolScope;
 
   /**
@@ -718,7 +771,20 @@ For each registered tool:
      If tool.connectorId is set, verify the connector is installed and enabled.
      Deny reason: "connector_not_configured"
 
-  7. APPROVAL POLICY CHECK
+  7. DELEGATION POLICY CHECK (for subtasks only, when parentScopeSnapshot is provided)
+     If tool.delegationPolicy is "blocked", deny with reason "delegation_blocked".
+     If tool.delegationPolicy is "root_only" and delegationDepth > 0,
+     deny with reason "root_only".
+     If tool.id is not in parentScopeSnapshot,
+     deny with reason "outside_parent_scope".
+
+  8. TRUST LEVEL CHECK (for write/external_action tools from non-core sources)
+     If tool.trustLevel is "unreviewed" and tool.sideEffectLevel is not "read",
+     deny with reason "unreviewed_write_tool".
+     (Unreviewed read-only tools are allowed. Unreviewed write tools
+     require explicit review before they enter any scope.)
+
+  9. APPROVAL POLICY CHECK
      If tool.approvalPolicy is "always" and task is not approved,
      deny with reason "approval_required".
      If tool.approvalPolicy is "inherit_task" and task.requiresApproval
@@ -970,6 +1036,46 @@ Deliverables:
 
    Recommendation: Defer. Version the field, don't version the strategy. Useful
    metadata for future extension packaging but not load-bearing in Phase 1-3.
+
+## Cross-System Analysis
+
+This architecture was informed by analysis of three reference systems:
+OpenClaw, Paperclip, and Hermes Agent. Each was reviewed at the source
+code level and discussed with Codex. Key decisions and their origins:
+
+### Adopted Patterns
+
+| Pattern | Source | How it appears in CarsonOS |
+|---|---|---|
+| Metadata-first tool registry | Claude Code (via Nate Jones), Hermes | `CarsonToolSpec` defines capabilities as data before implementation |
+| Skills are prompt context, not tools | OpenClaw | `SkillManifest.dependsOnToolIds` is advisory, never capability-granting |
+| Parent-child toolset intersection | Hermes | `resolveScope()` accepts `parentScopeSnapshot` as ceiling for subtasks |
+| Delegation-blocked tools | Hermes | `delegationPolicy: "blocked" \| "root_only"` on `CarsonToolSpec` |
+| Trust level separate from source | Codex recommendation | `trustLevel` (verified/reviewed/unreviewed) independent of `source` |
+| Injectable class registry | Codex recommendation | `ToolRegistry` class instance, not module singleton (contra Hermes) |
+| Scope snapshots | Codex recommendation | Approved tool scope persisted on task, enforced at execution time |
+
+### Deliberately Avoided Patterns
+
+| Pattern | Source | Why avoided |
+|---|---|---|
+| 7-layer policy pipeline | OpenClaw | Too much machinery for current stage. 9-filter scope resolution is enough. |
+| Global tool access for all agents | Paperclip | Per-task scope resolution is better for family governance. |
+| Module-level singleton registry | Hermes | Injectable class is better for testing and future extension reload. |
+| Out-of-process plugin isolation | Paperclip | Reserve for Phase 5-6 imported/community extensions. In-process is fine for core. |
+| Agent-editable skills at runtime | Hermes | Should be head-of-household only, gated through CarsonOversight. |
+
+### What CarsonOS Does Differently
+
+None of these systems have a **constitution-governed** tool access layer.
+OpenClaw has deny-lists. Paperclip has capability declarations. Hermes has
+toolset composition and command approval. But none have a household
+constitution that says "this family doesn't allow agents to send external
+messages without parental approval" and a scope snapshot model that prevents
+post-approval scope widening.
+
+The `CarsonOversight` + `toolScopeSnapshot` + `delegationPolicy` combination
+is the unique architectural contribution.
 
 ## Bottom Line
 
