@@ -586,7 +586,7 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
               </Link>
             </div>
             <p className="text-xs" style={{ color: "#8a8070" }}>
-              {roleLabel(agent.staffRole)}
+              {isButler ? "Chief of Staff" : roleLabel(agent.staffRole)}
               {agent.specialty ? ` \u00B7 ${agent.specialty}` : ""}
             </p>
           </div>
