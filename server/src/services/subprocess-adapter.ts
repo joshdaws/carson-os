@@ -340,6 +340,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
       },
     });
 
+    let hasStreamedText = false;
+
     for await (const message of conversation) {
       // Stream text deltas to the caller as they arrive
       if (onTextDelta && message.type === "stream_event") {
@@ -349,7 +351,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
           (event?.delta as Record<string, unknown>)?.type === "text_delta"
         ) {
           onTextDelta((event.delta as { text: string }).text);
+          hasStreamedText = true;
         }
+      }
+
+      // Inject paragraph break when a new assistant turn starts after a tool call
+      // (prevents "Let me check.Here's what I found" with no space)
+      if (message.type === "assistant" && hasStreamedText && onTextDelta) {
+        onTextDelta("\n\n");
       }
 
       // Collect text content blocks from each assistant turn
