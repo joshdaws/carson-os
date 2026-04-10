@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -27,7 +27,8 @@ import {
   FileUser,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { ProfileInterview } from "@/components/ProfileInterview";
+import { InterviewOverlay } from "@/components/InterviewOverlay";
+import type { ChatMessage } from "@/components/ChatBubble";
 import { useToast } from "@/components/Toast";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -330,14 +331,14 @@ function MemberCard({
   member,
   householdId,
   staffAssignments,
+  onStartInterview,
 }: {
   member: HouseholdMember;
   householdId: string;
   staffAssignments: { staffName: string; staffRole: string }[];
+  onStartInterview: (memberId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [showInterview, setShowInterview] = useState(false);
-  const queryClient = useQueryClient();
 
   if (editing) {
     return (
@@ -347,21 +348,6 @@ function MemberCard({
         staffAssignments={staffAssignments}
         onClose={() => setEditing(false)}
       />
-    );
-  }
-
-  if (showInterview) {
-    return (
-      <div className="col-span-full max-w-2xl">
-        <ProfileInterview
-          memberId={member.id}
-          memberName={member.name}
-          onClose={() => setShowInterview(false)}
-          onComplete={() => {
-            queryClient.invalidateQueries({ queryKey: ["household"] });
-          }}
-        />
-      </div>
     );
   }
 
@@ -413,7 +399,7 @@ function MemberCard({
             size="sm"
             className="h-7 text-[11px]"
             style={{ color: "#8b6f4e" }}
-            onClick={() => setShowInterview(true)}
+            onClick={() => onStartInterview(member.id)}
           >
             <FileUser className="h-3 w-3 mr-1" />
             {hasProfile ? "Re-interview" : "Build Profile"}
@@ -672,6 +658,10 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
 export function HouseholdPage() {
   const [showAddMember, setShowAddMember] = useState(false);
   const [showAddStaff, setShowAddStaff] = useState(false);
+  const [interviewMemberId, setInterviewMemberId] = useState<string | null>(null);
+  const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [interviewStarted, setInterviewStarted] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: householdData, isLoading: loadingHousehold } = useQuery<HouseholdData>({
     queryKey: ["household"],
@@ -694,6 +684,52 @@ export function HouseholdPage() {
     return staff
       .filter((s) => s.assignments?.some((a) => a.memberId === memberId))
       .map((s) => ({ staffName: s.name, staffRole: roleLabel(s.staffRole) }));
+  }
+
+  // Profile interview
+  const interviewMember = interviewMemberId
+    ? members.find((m) => m.id === interviewMemberId)
+    : null;
+
+  const profileMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; profileDocument?: string }>(
+        `/members/${interviewMemberId}/profile/interview`,
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.profileDocument) {
+        queryClient.invalidateQueries({ queryKey: ["household"] });
+      }
+    },
+  });
+
+  // Auto-start interview
+  useEffect(() => {
+    if (interviewMemberId && !interviewStarted && interviewMessages.length === 0 && interviewMember) {
+      setInterviewStarted(true);
+      const starter = `I'd like to tell you about ${interviewMember.name}.`;
+      setInterviewMessages([{ role: "user" as const, content: starter }]);
+      profileMutation.mutate(starter);
+    }
+  }, [interviewMemberId, interviewStarted, interviewMember]);
+
+  const isProfileComplete = profileMutation.data?.profileDocument != null;
+
+  function handleStartInterview(memberId: string) {
+    setInterviewMemberId(memberId);
+    setInterviewMessages([]);
+    setInterviewStarted(false);
+  }
+
+  function handleCloseInterview() {
+    setInterviewMemberId(null);
+    setInterviewMessages([]);
+    setInterviewStarted(false);
   }
 
   return (
@@ -770,6 +806,7 @@ export function HouseholdPage() {
                         member={m}
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
+                        onStartInterview={handleStartInterview}
                       />
                     ))}
                   </div>
@@ -796,6 +833,7 @@ export function HouseholdPage() {
                         member={m}
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
+                        onStartInterview={handleStartInterview}
                       />
                     ))}
                   </div>
@@ -811,6 +849,32 @@ export function HouseholdPage() {
           );
         })()}
       </div>
+
+      {/* Profile Interview Overlay */}
+      <InterviewOverlay
+        title={interviewMember ? `Profile: ${interviewMember.name}` : "Profile Interview"}
+        subtitle="Carson will ask questions to build a profile"
+        isOpen={!!interviewMemberId}
+        onClose={handleCloseInterview}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["household"] });
+          handleCloseInterview();
+        }}
+        messages={interviewMessages}
+        isLoading={profileMutation.isPending}
+        isComplete={isProfileComplete}
+        onSendMessage={(text) => {
+          setInterviewMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          profileMutation.mutate(text);
+        }}
+        onReset={() => {
+          setInterviewMessages([]);
+          setInterviewStarted(false);
+        }}
+      />
 
       {/* Staff Agents section */}
       <div>
