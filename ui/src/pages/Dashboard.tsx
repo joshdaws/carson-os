@@ -409,23 +409,23 @@ function PersonalAgentsZone({
         </span>
       </div>
 
-      {/* Upward connection indicators */}
-      <div className="flex justify-center mb-1">
-        <div className="flex gap-3 flex-wrap justify-center">
-          {sorted.map((agent) => (
-            <div key={agent.id} className="flex flex-col items-center">
-              {/* Vertical connector dash */}
+      {/* Agent cards — Chief of Staff at top, others below with connector lines */}
+      <div className="flex flex-col items-center gap-3">
+        {sorted.map((agent) => (
+          <div key={agent.id} className="flex flex-col items-center">
+            {/* Connector line only for non-chief agents (they report to the chief) */}
+            {!agent.isHeadButler && (
               <div
                 className="w-px h-4 mb-1"
                 style={{ background: C.border }}
               />
-              <PersonalAgentCard
-                agent={agent}
-                assignedMembers={agentMemberMap.get(agent.id) || []}
-              />
-            </div>
-          ))}
-        </div>
+            )}
+            <PersonalAgentCard
+              agent={agent}
+              assignedMembers={agentMemberMap.get(agent.id) || []}
+            />
+          </div>
+        ))}
       </div>
 
       {agents.length === 0 && (

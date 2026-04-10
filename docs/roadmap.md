@@ -172,8 +172,12 @@ Deliverables:
 
 ## Post-MVP Roadmap
 
-### v1.1 — Tasks & Activity
+### v1.1 — Memory Scope & Tasks
 
+- Memory scope follows assignment graph:
+  - Chief of Staff (serves whole family) → searches all member collections + household
+  - Personal agents → search only their assigned member's collection + household
+  - "What kids share stays private from other kids. Parents can see everything."
 - Bring back the task system (already built, just hidden)
 - Activity feed showing tool calls, memory saves, calendar actions
 - Parent approval flow for sensitive actions via Telegram
