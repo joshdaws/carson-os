@@ -152,7 +152,7 @@ describe("compileSystemPrompt", () => {
       expect(prompt).not.toContain("PROFILE_START");
     });
 
-    it("includes profile compilation markers after enough onboarding turns", () => {
+    it("suggests profile interview on first contact (does not auto-compile)", () => {
       const prompt = compileSystemPrompt({
         mode: "chat",
         roleContent: "You are Ethan's personal assistant.",
@@ -168,9 +168,9 @@ describe("compileSystemPrompt", () => {
       });
 
       expect(prompt).toContain("Getting to Know Ethan");
-      expect(prompt).toContain("PROFILE_START");
-      expect(prompt).toContain("PROFILE_END");
-      expect(prompt).toContain("compile what you've learned");
+      expect(prompt).toContain("don't have a profile");
+      expect(prompt).not.toContain("PROFILE_START");
+      expect(prompt).not.toContain("PROFILE_END");
     });
 
     it("skips onboarding when member already has a profile", () => {
