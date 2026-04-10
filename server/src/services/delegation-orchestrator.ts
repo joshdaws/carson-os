@@ -21,7 +21,7 @@ import {
 } from "@carsonos/db";
 
 import type { Adapter } from "./subprocess-adapter.js";
-import type { BroadcastFn } from "./constitution-engine.js";
+import type { BroadcastFn } from "./event-bus.js";
 import {
   parseDelegateBlocks,
   validateDelegateBlock,

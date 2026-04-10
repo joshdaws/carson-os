@@ -88,7 +88,7 @@ describe("compileSystemPrompt", () => {
       expect(prompt).not.toContain("Delegation");
     });
 
-    it("includes member profile between member intro and constitution", () => {
+    it("includes member profile in combined About section", () => {
       const prompt = compileSystemPrompt({
         mode: "chat",
         roleContent: "You are Claire's personal assistant.",
@@ -103,15 +103,15 @@ describe("compileSystemPrompt", () => {
 
       expect(prompt).toContain("About Claire");
       expect(prompt).toContain("loves art and dinosaurs");
-      // Profile should come after member intro, before constitution
-      const profileIdx = prompt.indexOf("About Claire");
-      const introIdx = prompt.indexOf("Who You're Talking To");
+      // Constitution should come first (THE FRAME), then role, then about
       const constitutionIdx = prompt.indexOf("Family Constitution");
-      expect(profileIdx).toBeGreaterThan(introIdx);
-      expect(profileIdx).toBeLessThan(constitutionIdx);
+      const roleIdx = prompt.indexOf("Your Role");
+      const aboutIdx = prompt.indexOf("About Claire");
+      expect(constitutionIdx).toBeLessThan(roleIdx);
+      expect(roleIdx).toBeLessThan(aboutIdx);
     });
 
-    it("omits profile section when memberProfile is null", () => {
+    it("shows basic intro when memberProfile is null (no profile details)", () => {
       const prompt = compileSystemPrompt({
         mode: "chat",
         roleContent: "You are a tutor.",
@@ -124,7 +124,9 @@ describe("compileSystemPrompt", () => {
         memberProfile: null,
       });
 
-      expect(prompt).not.toContain("About Grant");
+      // About section exists with just the intro line
+      expect(prompt).toContain("About Grant");
+      expect(prompt).toContain("17-year-old");
     });
 
     it("injects first-contact onboarding when no profile and firstContact is true", () => {
@@ -144,7 +146,8 @@ describe("compileSystemPrompt", () => {
 
       expect(prompt).toContain("Getting to Know Claire");
       expect(prompt).toContain("FIRST conversation");
-      expect(prompt).toContain("6 years old");
+      // Combined intro: age is in the intro line
+      expect(prompt).toContain("6-year-old");
       // Should NOT include profile compilation instructions yet (0 turns)
       expect(prompt).not.toContain("PROFILE_START");
     });
@@ -205,6 +208,85 @@ describe("compileSystemPrompt", () => {
       });
 
       expect(prompt).not.toContain("Getting to Know");
+    });
+
+    it("includes operating instructions when provided", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Josh's personal assistant.",
+        soulContent: "Professional.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Josh",
+        memberRole: "parent",
+        memberAge: 38,
+        operatingInstructions: "- Josh prefers bullet points\n- Never suggest pork recipes",
+      });
+
+      expect(prompt).toContain("Operating Instructions");
+      expect(prompt).toContain("bullet points");
+    });
+
+    it("includes ambient memory in What You Know section", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are Grant's personal assistant.",
+        soulContent: "Friendly.",
+        softRules: "",
+        constitutionDocument: "",
+        memberName: "Grant",
+        memberRole: "kid",
+        memberAge: 17,
+        ambientMemory: "Grant has soccer practice Tuesdays at 5pm.\nGrant's favorite subject is history.",
+      });
+
+      expect(prompt).toContain("What You Know");
+      expect(prompt).toContain("soccer practice");
+    });
+
+    it("includes memory schema instructions", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are a personal assistant.",
+        soulContent: "Helpful.",
+        softRules: "",
+        constitutionDocument: "",
+        memorySchemaInstructions: "Use search_memory to find relevant memories.",
+      });
+
+      expect(prompt).toContain("How to Use Memory");
+      expect(prompt).toContain("search_memory");
+    });
+
+    it("puts constitution before role before about in final order", () => {
+      const prompt = compileSystemPrompt({
+        mode: "chat",
+        roleContent: "You are a personal assistant.",
+        soulContent: "Warm.",
+        softRules: "",
+        constitutionDocument: "We value kindness.",
+        memberName: "Josh",
+        memberRole: "parent",
+        memberAge: 38,
+        operatingInstructions: "Use bullet points.",
+        ambientMemory: "Josh likes coffee.",
+        memorySchemaInstructions: "Use save_memory.",
+      });
+
+      const order = [
+        prompt.indexOf("Family Constitution"),
+        prompt.indexOf("Your Role"),
+        prompt.indexOf("Your Personality"),
+        prompt.indexOf("Operating Instructions"),
+        prompt.indexOf("About Josh"),
+        prompt.indexOf("What You Know"),
+        prompt.indexOf("How to Use Memory"),
+      ];
+
+      // Each section should come after the previous one
+      for (let i = 1; i < order.length; i++) {
+        expect(order[i]).toBeGreaterThan(order[i - 1]);
+      }
     });
   });
 

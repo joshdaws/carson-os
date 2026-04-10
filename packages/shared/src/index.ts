@@ -143,6 +143,88 @@ export interface EvaluationResult {
   reason?: string;
 }
 
+// ── Memory types ───────────────────────────────────────────────────
+
+export type MemoryType =
+  | "fact"
+  | "preference"
+  | "event"
+  | "decision"
+  | "commitment"
+  | "person"
+  | "project";
+
+export interface MemorySchemaField {
+  name: string;
+  type: "string" | "string[]" | "date" | "enum";
+  required?: boolean;
+  enumValues?: string[];
+  description?: string;
+}
+
+export interface MemorySchemaType {
+  type: MemoryType;
+  description: string;
+  fields: MemorySchemaField[];
+}
+
+export interface MemorySchema {
+  types: MemorySchemaType[];
+}
+
+export interface MemoryEntry {
+  id: string;
+  type: MemoryType;
+  title: string;
+  content: string;
+  frontmatter: Record<string, unknown>;
+  filePath: string;
+  collection: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MemorySearchResult {
+  entries: Array<{
+    id: string;
+    title: string;
+    snippet: string;
+    score: number;
+    file: string;
+    collection: string;
+  }>;
+}
+
+export interface MemoryProvider {
+  search(query: string, collection: string, limit?: number): Promise<MemorySearchResult>;
+  save(collection: string, entry: {
+    type: MemoryType;
+    title: string;
+    content: string;
+    frontmatter?: Record<string, unknown>;
+  }): Promise<{ id: string; filePath: string }>;
+  delete(collection: string, id: string): Promise<void>;
+  list(collection: string, limit?: number): Promise<MemoryEntry[]>;
+}
+
+// ── Tool types ─────────────────────────────────────────────────────
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  content: string;
+  is_error?: boolean;
+}
+
+export type ToolExecutor = (
+  name: string,
+  input: Record<string, unknown>,
+) => Promise<ToolResult>;
+
 // ── Subprocess adapter types ────────────────────────────────────────
 
 export type AdapterType = "claude-code" | "codex" | "anthropic-sdk";
@@ -153,9 +235,13 @@ export interface AdapterExecuteParams {
   systemPrompt: string;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
+  model?: string;
+  tools?: ToolDefinition[];
+  toolExecutor?: ToolExecutor;
 }
 
 export interface AdapterExecuteResult {
   content: string;
+  toolCalls?: Array<{ name: string; input: Record<string, unknown>; result: ToolResult }>;
   metadata?: Record<string, unknown>;
 }
