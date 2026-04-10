@@ -47,6 +47,8 @@ import {
   DEFAULT_MEMORY_SCHEMA,
 } from "./memory/index.js";
 import type { ToolRegistry } from "./tool-registry.js";
+import type { GoogleCalendarProvider } from "./google/index.js";
+import { createCalendarToolHandler } from "./google/index.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -76,6 +78,7 @@ export interface EngineConfig {
   adapter: Adapter;
   memoryProvider?: MemoryProvider;
   toolRegistry?: ToolRegistry;
+  calendarProvider?: GoogleCalendarProvider;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
     hardEvaluators?: boolean;
@@ -124,6 +127,7 @@ export class ConstitutionEngine {
   private adapter: Adapter;
   private memoryProvider: MemoryProvider | null;
   private toolRegistry: ToolRegistry | null;
+  private calendarProvider: GoogleCalendarProvider | null;
   private hardEvaluatorsEnabled: boolean;
 
   constructor(config: EngineConfig) {
@@ -132,6 +136,7 @@ export class ConstitutionEngine {
     this.adapter = config.adapter;
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
+    this.calendarProvider = config.calendarProvider ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
   }
 
@@ -351,8 +356,19 @@ export class ConstitutionEngine {
     let toolExecutor = undefined;
     let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
 
-    if (this.toolRegistry && this.memoryProvider) {
+    if (this.toolRegistry) {
       const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
+
+      // Bind per-member calendar handler for this conversation
+      if (this.calendarProvider) {
+        const calHandler = createCalendarToolHandler(this.calendarProvider, memberSlug);
+        for (const toolName of ["list_calendar_events", "create_calendar_event", "get_calendar_event"]) {
+          if (this.toolRegistry.get(toolName)) {
+            this.toolRegistry.handlers.set(toolName, calHandler);
+          }
+        }
+      }
+
       const built = await this.toolRegistry.buildExecutor({
         db: this.db,
         memoryProvider: this.memoryProvider,
