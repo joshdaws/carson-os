@@ -33,7 +33,7 @@ import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
 import { ToolRegistry } from "./services/tool-registry.js";
-import { GoogleCalendarProvider, CALENDAR_TOOLS } from "./services/google/index.js";
+import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
 
 const BANNER = [
   "",
@@ -84,17 +84,22 @@ async function main() {
     // Calendar tools need the member slug at execution time, so we register
     // a handler factory that the constitution engine will call per-message.
     // For now, register the tool definitions so they show up in grants.
+    const googlePlaceholder = async (_name: string, _input: Record<string, unknown>) => ({
+      content: "Google not configured for this member. Run gws auth login.",
+      is_error: true as const,
+    });
+
     toolRegistry.registerAll(
-      CALENDAR_TOOLS.map((def) => ({
-        definition: def,
-        category: "calendar",
-        builtin: true,
-      })),
-      // Placeholder handler — real handler is bound per-member in constitution engine
-      async (_name, _input) => ({
-        content: "Calendar not configured for this member.",
-        is_error: true,
-      }),
+      CALENDAR_TOOLS.map((def) => ({ definition: def, category: "calendar", builtin: true })),
+      googlePlaceholder,
+    );
+    toolRegistry.registerAll(
+      GMAIL_TOOLS.map((def) => ({ definition: def, category: "gmail", builtin: true })),
+      googlePlaceholder,
+    );
+    toolRegistry.registerAll(
+      DRIVE_TOOLS.map((def) => ({ definition: def, category: "drive", builtin: true })),
+      googlePlaceholder,
     );
   }
 
