@@ -334,12 +334,10 @@ function PersonalAgentCard({
         />
       </div>
 
-      {/* Setup incomplete badge */}
-      {incomplete && (
-        <div className="mt-1.5">
-          <Badge variant="warning" className="text-[9px] px-1.5 py-0">
-            Setup incomplete
-          </Badge>
+      {/* Personality not set hint */}
+      {incomplete && !isButler && (
+        <div className="mt-1.5 text-[10px]" style={{ color: C.textFaint }}>
+          Personality not set
         </div>
       )}
 
@@ -753,8 +751,7 @@ export function DashboardPage() {
         </h2>
         <p className="text-[13px] mt-1" style={{ color: C.textSecondary }}>
           {members.length} family member{members.length !== 1 ? "s" : ""} &middot;{" "}
-          {familyAgents.length} personal agent{familyAgents.length !== 1 ? "s" : ""} &middot;{" "}
-          {internalAgents.length} internal staff
+          {familyAgents.length} personal agent{familyAgents.length !== 1 ? "s" : ""}
         </p>
       </div>
 
@@ -782,12 +779,7 @@ export function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Zone 3: Internal Agents (collapsible) */}
-          <Card className="border" style={{ borderColor: C.border }}>
-            <CardContent className="p-5 pb-3">
-              <InternalAgentsZone agents={internalAgents} />
-            </CardContent>
-          </Card>
+          {/* Zone 3: Internal Agents — hidden until delegation MVP */}
         </div>
 
         {/* ── Right column: Activity + Projects ────────────────── */}
@@ -815,28 +807,7 @@ export function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Active projects */}
-          <Card className="border" style={{ borderColor: C.border }}>
-            <CardContent className="p-5">
-              <h3
-                className="text-sm font-semibold mb-3 tracking-wide"
-                style={{ color: C.navy, letterSpacing: "0.5px" }}
-              >
-                Active Projects
-              </h3>
-              {projects.length > 0 ? (
-                <div>
-                  {projects.map((p) => (
-                    <ProjectCard key={p.parentTask.id} project={p} />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm" style={{ color: C.textMuted }}>
-                  Projects appear when agents delegate work to specialists.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          {/* Active Projects — hidden until delegation MVP */}
         </div>
       </div>
     </div>

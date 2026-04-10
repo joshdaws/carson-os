@@ -40,7 +40,24 @@ export function createStaffRoutes(db: Db): Router {
       .orderBy(desc(staffAgents.createdAt))
       .all();
 
-    res.json({ staff: agents });
+    // Include assignments with member names for dashboard display
+    const agentsWithAssignments = await Promise.all(
+      agents.map(async (agent) => {
+        const assignments = await db
+          .select({
+            memberId: staffAssignments.memberId,
+            memberName: familyMembers.name,
+            relationship: staffAssignments.relationship,
+          })
+          .from(staffAssignments)
+          .innerJoin(familyMembers, eq(familyMembers.id, staffAssignments.memberId))
+          .where(eq(staffAssignments.agentId, agent.id))
+          .all();
+        return { ...agent, assignments };
+      }),
+    );
+
+    res.json({ staff: agentsWithAssignments });
   });
 
   // GET /:id -- staff detail with assignments

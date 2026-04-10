@@ -561,49 +561,8 @@ export function StaffDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Delegation edges */}
-      {agent.staffRole === "personal" || agent.staffRole === "head_butler" ? (
-        <DelegationEdgesCard agentId={agent.id} agentName={agent.name} />
-      ) : null}
-
-      {/* Task history */}
-      <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
-        <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
-          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <ListTodo className="h-4 w-4" style={{ color: "#8a8070" }} />
-            Recent Tasks
-          </h3>
-        </div>
-        <div>
-          {tasks.length === 0 && (
-            <p className="text-sm p-4" style={{ color: "#8a8070" }}>Tasks appear when this agent processes requests.</p>
-          )}
-          {tasks.map((task) => {
-            const style = TASK_STATUS_STYLES[task.status] || TASK_STATUS_STYLES.pending;
-            return (
-              <Link
-                key={task.id}
-                to="/tasks"
-                className="flex items-center gap-3 px-4 py-2.5 border-b last:border-0 hover:bg-[#faf8f4] transition-colors"
-                style={{ borderColor: "#eee8dd" }}
-              >
-                <span
-                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase whitespace-nowrap"
-                  style={{ background: style.bg, color: style.text }}
-                >
-                  {task.status.replace(/_/g, " ")}
-                </span>
-                <span className="text-sm flex-1 truncate" style={{ color: "#2c2c2c" }}>
-                  {task.title}
-                </span>
-                <span className="text-xs shrink-0" style={{ color: "#a09080" }}>
-                  {relativeTime(task.createdAt)}
-                </span>
-              </Link>
-            );
-          })}
-        </div>
-      </Card>
+      {/* Delegation edges — hidden until delegation MVP */}
+      {/* Task history — hidden until delegation MVP */}
 
       {/* Recent conversations */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>

@@ -124,7 +124,6 @@ export function Layout() {
         <NavItem to="/" icon={LayoutDashboard} label="Dashboard" end />
         <NavItem to="/household" icon={Users} label="Household" />
         <NavItem to="/constitution" icon={ScrollText} label="Constitution" />
-        <NavItem to="/tasks" icon={ListTodo} label="Tasks" />
 
         {/* Staff section */}
         {staff.length > 0 && (

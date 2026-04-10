@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --ignore '../ui/node_modules/**' --ignore 'node_modules/**' src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
