@@ -369,7 +369,7 @@ export class ConstitutionEngine {
         }
 
         const gmailHandler = createGmailToolHandler(this.calendarProvider, memberSlug);
-        for (const toolName of ["gmail_triage", "gmail_read", "gmail_send", "gmail_reply", "gmail_search"]) {
+        for (const toolName of ["gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search"]) {
           if (this.toolRegistry.get(toolName)) {
             this.toolRegistry.handlers.set(toolName, gmailHandler);
           }

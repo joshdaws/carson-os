@@ -58,13 +58,13 @@ const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
-    "gmail_triage", "gmail_read", "gmail_send", "gmail_reply", "gmail_search",
+    "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
   ],
   personal: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
-    "gmail_triage", "gmail_read", "gmail_send", "gmail_reply", "gmail_search",
+    "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
   ],
   tutor: [
@@ -79,7 +79,7 @@ const DEFAULT_GRANTS: Record<string, string[]> = {
   scheduler: [
     "search_memory", "save_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
-    "gmail_triage", "gmail_read",
+    "gmail_triage", "gmail_read", "gmail_search",
   ],
   custom: [
     "search_memory", "update_instructions",
