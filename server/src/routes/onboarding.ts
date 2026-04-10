@@ -13,6 +13,7 @@ import {
   households,
   familyMembers,
   staffAgents,
+  staffAssignments,
   constitutions,
   constitutionClauses,
   onboardingState,
@@ -172,117 +173,88 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
     res.status(201).json({ members: createdMembers });
   });
 
-  // POST /complete -- finalize onboarding
+  // POST /complete -- simplified onboarding (3-step flow)
   router.post("/complete", async (req, res) => {
-    const {
-      householdId,
-      householdName,
-      timezone,
-      members,
-      staff,
-      constitutionDocument,
-      clauses,
-    } = req.body;
+    const { householdName, members, agent } = req.body;
 
-    if (!householdId) {
-      res.status(400).json({ error: "householdId is required" });
+    if (!householdName || !members || !Array.isArray(members) || members.length === 0) {
+      res.status(400).json({ error: "householdName and members are required" });
       return;
     }
 
-    // Update household name if provided
-    if (householdName) {
-      await db
-        .update(households)
-        .set({
-          name: householdName,
-          ...(timezone && { timezone }),
-          updatedAt: new Date(),
-        })
-        .where(eq(households.id, householdId));
-    }
+    // 1. Create household
+    const [household] = await db
+      .insert(households)
+      .values({ name: householdName })
+      .returning();
 
-    // Members are created during the interview via POST /confirm-members.
-    // Fetch existing members for the response.
-    const createdMembers = await db
-      .select()
-      .from(familyMembers)
-      .where(eq(familyMembers.householdId, householdId))
-      .all();
-
-    // Create staff agents if provided
-    const createdStaff = [];
-    if (staff && Array.isArray(staff)) {
-      for (const s of staff) {
-        if (!s.name || !s.staffRole) continue;
-
-        const [agent] = await db
-          .insert(staffAgents)
-          .values({
-            householdId,
-            name: s.name,
-            staffRole: s.staffRole,
-            specialty: s.specialty ?? null,
-            soulContent: s.soulContent ?? null,
-            model: s.model ?? "claude-sonnet-4-20250514",
-            isHeadButler: s.isHeadButler ?? false,
-            autonomyLevel: s.autonomyLevel ?? "supervised",
-          })
-          .returning();
-
-        createdStaff.push(agent);
-      }
-    }
-
-    // Create constitution if document or clauses provided
-    let constitution = null;
-    let createdClauses: any[] = [];
-
-    if (constitutionDocument || (clauses && clauses.length > 0)) {
-      [constitution] = await db
-        .insert(constitutions)
+    // 2. Create family members
+    const createdMembers = [];
+    for (const m of members) {
+      if (!m.name) continue;
+      const [member] = await db
+        .insert(familyMembers)
         .values({
-          householdId,
-          version: 1,
-          document: constitutionDocument ?? "",
-          isActive: true,
+          householdId: household.id,
+          name: m.name,
+          role: m.role === "parent" ? "parent" : "kid",
+          age: m.age || 0,
+          telegramUserId: m.telegramUserId || null,
         })
         .returning();
+      createdMembers.push(member);
+    }
 
-      if (clauses && Array.isArray(clauses) && clauses.length > 0) {
-        createdClauses = await db
-          .insert(constitutionClauses)
-          .values(
-            clauses.map((clause: any, idx: number) => ({
-              constitutionId: constitution!.id,
-              householdId,
-              category: clause.category,
-              clauseText: clause.clauseText,
-              enforcementLevel: clause.enforcementLevel ?? "soft",
-              evaluationType: clause.evaluationType ?? "behavioral",
-              evaluationConfig: clause.evaluationConfig ?? null,
-              appliesToRoles: clause.appliesToRoles ?? null,
-              appliesToAgents: clause.appliesToAgents ?? null,
-              appliesToMinAge: clause.appliesToMinAge ?? null,
-              appliesToMaxAge: clause.appliesToMaxAge ?? null,
-              sortOrder: clause.sortOrder ?? idx,
-            })),
-          )
-          .returning();
+    // 3. Create the Chief of Staff agent
+    const agentName = agent?.name || "Carson";
+    const [chiefOfStaff] = await db
+      .insert(staffAgents)
+      .values({
+        householdId: household.id,
+        name: agentName,
+        staffRole: "personal",
+        visibility: "family",
+        model: "claude-sonnet-4-20250514",
+        status: "active",
+        isHeadButler: true,
+        autonomyLevel: "trusted",
+        trustLevel: "full",
+        telegramBotToken: agent?.botToken || null,
+        roleContent: [
+          `You are ${agentName}, the family's Chief of Staff.`,
+          "You help every member of the household with whatever they need.",
+          "You're reliable, warm, and practical. You remember things.",
+          "Always be age-appropriate. Match your tone to who you're talking to.",
+        ].join("\n"),
+      })
+      .returning();
+
+    // 4. Create staff assignments
+    if (agent?.assignTo) {
+      // Assign to specific member
+      const targetMember = createdMembers.find((m) => m.name === agent.assignTo);
+      if (targetMember) {
+        await db.insert(staffAssignments).values({
+          agentId: chiefOfStaff.id,
+          memberId: targetMember.id,
+          relationship: "primary",
+        });
+      }
+    } else {
+      // Assign to everyone
+      for (const member of createdMembers) {
+        await db.insert(staffAssignments).values({
+          agentId: chiefOfStaff.id,
+          memberId: member.id,
+          relationship: "primary",
+        });
       }
     }
 
-    // Update onboarding state to complete
-    await db
-      .update(onboardingState)
-      .set({ phase: "complete", updatedAt: new Date() })
-      .where(eq(onboardingState.householdId, householdId));
-
     res.status(201).json({
-      household: { id: householdId },
+      household: { id: household.id, name: household.name },
       members: createdMembers,
-      staff: createdStaff,
-      constitution,
-      clauses: createdClauses,
+      agent: chiefOfStaff,
     });
   });
 

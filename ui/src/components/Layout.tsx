@@ -108,7 +108,7 @@ export function Layout() {
           className="text-[11px] uppercase tracking-[2px] mt-1"
           style={{ color: "#8a8070" }}
         >
-          Household Staff
+          Digital Staff
         </p>
       </div>
 

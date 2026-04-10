@@ -106,10 +106,10 @@ function formatTime(dateStr: string | number): string {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function formatStaffRole(role: string): string {
+function formatStaffRole(role: string, isChief: boolean): string {
+  if (isChief) return "Chief of Staff";
   const map: Record<string, string> = {
-    head_butler: "Head Butler",
-    personal: "Personal",
+    personal: "Personal Assistant",
     tutor: "Tutor",
     coach: "Coach",
     scheduler: "Scheduler",
@@ -325,7 +325,7 @@ function PersonalAgentCard({
             borderColor: isButler ? C.burgundy : undefined,
           }}
         >
-          {formatStaffRole(agent.staffRole)}
+          {formatStaffRole(agent.staffRole, agent.isHeadButler)}
         </Badge>
         <span
           className="w-2 h-2 rounded-full shrink-0"
@@ -349,7 +349,7 @@ function PersonalAgentCard({
           className="text-[10px] mt-1.5 italic"
           style={{ color: C.textFaint }}
         >
-          {isButler ? "Oversees all staff" : assignedMembers.join(", ")}
+          {isButler ? "Manages the household" : assignedMembers.join(", ")}
         </div>
       )}
     </Link>
@@ -463,7 +463,7 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
           className="text-[10px] px-2 py-0"
           style={{ borderColor: C.textFaint, color: C.textSecondary }}
         >
-          {formatStaffRole(agent.staffRole)}
+          {formatStaffRole(agent.staffRole, agent.isHeadButler)}
         </Badge>
         <span
           className="w-2 h-2 rounded-full shrink-0"
