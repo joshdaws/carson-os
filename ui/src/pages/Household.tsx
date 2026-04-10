@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -660,7 +660,6 @@ export function HouseholdPage() {
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [interviewMemberId, setInterviewMemberId] = useState<string | null>(null);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
-  const [interviewStarted, setInterviewStarted] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: householdData, isLoading: loadingHousehold } = useQuery<HouseholdData>({
@@ -708,28 +707,23 @@ export function HouseholdPage() {
     },
   });
 
-  // Auto-start interview
-  useEffect(() => {
-    if (interviewMemberId && !interviewStarted && interviewMessages.length === 0 && interviewMember) {
-      setInterviewStarted(true);
-      const starter = `I'd like to tell you about ${interviewMember.name}.`;
-      setInterviewMessages([{ role: "user" as const, content: starter }]);
-      profileMutation.mutate(starter);
-    }
-  }, [interviewMemberId, interviewStarted, interviewMember]);
-
   const isProfileComplete = profileMutation.data?.profileDocument != null;
 
+  function profileGreeting(name: string): string {
+    return `Good, let's build a profile for ${name}. I'll ask a few questions to understand who they are so their agent can serve them well.\n\nLet's start with personality and temperament — how would you describe ${name}? Are they more energetic or reserved? Outgoing or introspective?`;
+  }
+
   function handleStartInterview(memberId: string) {
+    const member = members.find((m) => m.id === memberId);
     setInterviewMemberId(memberId);
-    setInterviewMessages([]);
-    setInterviewStarted(false);
+    setInterviewMessages([
+      { role: "assistant", content: profileGreeting(member?.name ?? "them") },
+    ]);
   }
 
   function handleCloseInterview() {
     setInterviewMemberId(null);
     setInterviewMessages([]);
-    setInterviewStarted(false);
   }
 
   return (
@@ -871,8 +865,9 @@ export function HouseholdPage() {
           profileMutation.mutate(text);
         }}
         onReset={() => {
-          setInterviewMessages([]);
-          setInterviewStarted(false);
+          setInterviewMessages([
+            { role: "assistant", content: profileGreeting(interviewMember?.name ?? "them") },
+          ]);
         }}
       />
 

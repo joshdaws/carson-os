@@ -176,6 +176,15 @@ export class ProfileInterviewEngine {
 
     // Build conversation history
     const interviewMessages = [...state.interviewMessages];
+
+    // If first message, inject the hardcoded greeting so the LLM has context
+    if (interviewMessages.length === 0) {
+      interviewMessages.push({
+        role: "assistant",
+        content: ProfileInterviewEngine.greeting(member.name),
+      });
+    }
+
     interviewMessages.push({ role: "user", content: message });
 
     const messagesForLlm = interviewMessages.map((m) => ({
@@ -246,6 +255,10 @@ export class ProfileInterviewEngine {
       phase: mappedPhase,
       profileDocument,
     };
+  }
+
+  static greeting(memberName: string): string {
+    return `Good, let's build a profile for ${memberName}. I'll ask a few questions to understand who they are so their agent can serve them well.\n\nLet's start with personality and temperament — how would you describe ${memberName}? Are they more energetic or reserved? Outgoing or introspective?`;
   }
 
   async resetInterview(memberId: string): Promise<void> {

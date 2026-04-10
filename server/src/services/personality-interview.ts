@@ -169,6 +169,15 @@ export class PersonalityInterviewEngine {
 
     // Build conversation history
     const interviewMessages = [...state.interviewMessages];
+
+    // If first message, inject the hardcoded greeting so the LLM has context
+    if (interviewMessages.length === 0) {
+      interviewMessages.push({
+        role: "assistant",
+        content: PersonalityInterviewEngine.greeting(agent.name),
+      });
+    }
+
     interviewMessages.push({ role: "user", content: message });
 
     const messagesForLlm = interviewMessages.map((m) => ({
@@ -239,6 +248,10 @@ export class PersonalityInterviewEngine {
       phase: mappedPhase,
       soulDocument,
     };
+  }
+
+  static greeting(agentName: string): string {
+    return `Let's define ${agentName}'s personality. I'll walk you through five areas: voice & tone, humor, communication style, boundaries, and any special touches.\n\nFirst up — voice and tone. Should ${agentName} be formal or casual? Warm and friendly, or more crisp and professional?`;
   }
 
   async resetInterview(agentId: string): Promise<void> {

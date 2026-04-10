@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -145,7 +145,6 @@ export function StaffDetailPage() {
   const [editingName, setEditingName] = useState(false);
   const [showPersonalityInterview, setShowPersonalityInterview] = useState(false);
   const [personalityMessages, setPersonalityMessages] = useState<ChatMessage[]>([]);
-  const [personalityStarted, setPersonalityStarted] = useState(false);
 
   // Fetch staff agent
   const { data: staffData, isLoading } = useQuery<{ agent: StaffAgent; assignments: Assignment[] }>({
@@ -223,17 +222,11 @@ export function StaffDetailPage() {
     },
   });
 
-  // Auto-start personality interview
-  useEffect(() => {
-    if (showPersonalityInterview && !personalityStarted && personalityMessages.length === 0) {
-      setPersonalityStarted(true);
-      const starter = "I'd like to define this agent's personality.";
-      setPersonalityMessages([{ role: "user" as const, content: starter }]);
-      personalityMutation.mutate(starter);
-    }
-  }, [showPersonalityInterview, personalityStarted]);
-
   const isPersonalityComplete = personalityMutation.data?.soulDocument != null;
+
+  function personalityGreeting(name: string): string {
+    return `Let's define ${name}'s personality. I'll walk you through five areas: voice & tone, humor, communication style, boundaries, and any special touches.\n\nFirst up — voice and tone. Should ${name} be formal or casual? Warm and friendly, or more crisp and professional?`;
+  }
 
   const handleTrustLevelChange = (level: string) => {
     api.put(`/tools/agents/${staffId}/trust-level`, { trustLevel: level }).then(() => {
@@ -504,7 +497,10 @@ export function StaffDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setShowPersonalityInterview(true)}
+              onClick={() => {
+              setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
+              setShowPersonalityInterview(true);
+            }}
               style={{ borderColor: "#ddd5c8" }}
             >
               {agent.soulContent ? "Re-interview" : "Build Personality"}
@@ -539,7 +535,10 @@ export function StaffDetailPage() {
               </p>
               <Button
                 size="sm"
-                onClick={() => setShowPersonalityInterview(true)}
+                onClick={() => {
+              setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
+              setShowPersonalityInterview(true);
+            }}
                 style={{ background: "#1a1f2e", color: "#e8dfd0" }}
               >
                 <Sparkles className="h-4 w-4 mr-2" />
@@ -558,7 +557,6 @@ export function StaffDetailPage() {
         onClose={() => {
           setShowPersonalityInterview(false);
           setPersonalityMessages([]);
-          setPersonalityStarted(false);
         }}
         onComplete={() => {
           queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
@@ -574,8 +572,7 @@ export function StaffDetailPage() {
           personalityMutation.mutate(text);
         }}
         onReset={() => {
-          setPersonalityMessages([]);
-          setPersonalityStarted(false);
+          setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
         }}
       />
 

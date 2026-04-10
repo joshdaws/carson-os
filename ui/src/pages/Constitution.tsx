@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,8 @@ interface VersionEntry {
   documentPreview: string;
 }
 
+const CONSTITUTION_GREETING = "Welcome. I'm Carson, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.";
+
 // ── Page ───────────────────────────────────────────────────────────
 
 export function ConstitutionPage() {
@@ -41,7 +43,6 @@ export function ConstitutionPage() {
   const [viewingVersion, setViewingVersion] = useState<VersionEntry | null>(null);
   const [showInterview, setShowInterview] = useState(false);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
-  const [interviewStarted, setInterviewStarted] = useState(false);
 
   const { data, isLoading } = useQuery<ConstitutionData>({
     queryKey: ["constitution"],
@@ -81,18 +82,6 @@ export function ConstitutionPage() {
       }
     },
   });
-
-  // Auto-start interview when overlay opens
-  useEffect(() => {
-    if (showInterview && !interviewStarted && interviewMessages.length === 0) {
-      setInterviewStarted(true);
-      setInterviewMessages((prev) => [
-        ...prev,
-        { role: "user" as const, content: "I'd like to create our family constitution." },
-      ]);
-      interviewMutation.mutate("I'd like to create our family constitution.");
-    }
-  }, [showInterview, interviewStarted]);
 
   const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
 
@@ -168,7 +157,10 @@ export function ConstitutionPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setShowInterview(true)}
+            onClick={() => {
+              setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
+              setShowInterview(true);
+            }}
             style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
           >
             <RotateCcw className="h-3.5 w-3.5 mr-1" />
@@ -244,7 +236,6 @@ export function ConstitutionPage() {
         onClose={() => {
           setShowInterview(false);
           setInterviewMessages([]);
-          setInterviewStarted(false);
         }}
         onComplete={() => {
           queryClient.invalidateQueries({ queryKey: ["constitution"] });
@@ -260,8 +251,7 @@ export function ConstitutionPage() {
           interviewMutation.mutate(text);
         }}
         onReset={() => {
-          setInterviewMessages([]);
-          setInterviewStarted(false);
+          setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
         }}
       />
 
@@ -421,7 +411,6 @@ function ConstitutionEmptyState() {
   const queryClient = useQueryClient();
   const [showInterview, setShowInterview] = useState(false);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
-  const [interviewStarted, setInterviewStarted] = useState(false);
 
   const interviewMutation = useMutation({
     mutationFn: (text: string) =>
@@ -439,17 +428,6 @@ function ConstitutionEmptyState() {
       }
     },
   });
-
-  useEffect(() => {
-    if (showInterview && !interviewStarted && interviewMessages.length === 0) {
-      setInterviewStarted(true);
-      setInterviewMessages((prev) => [
-        ...prev,
-        { role: "user" as const, content: "I'd like to create our family constitution." },
-      ]);
-      interviewMutation.mutate("I'd like to create our family constitution.");
-    }
-  }, [showInterview, interviewStarted]);
 
   const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
 
@@ -496,7 +474,6 @@ function ConstitutionEmptyState() {
         onClose={() => {
           setShowInterview(false);
           setInterviewMessages([]);
-          setInterviewStarted(false);
         }}
         onComplete={() => {
           queryClient.invalidateQueries({ queryKey: ["constitution"] });
@@ -512,8 +489,7 @@ function ConstitutionEmptyState() {
           interviewMutation.mutate(text);
         }}
         onReset={() => {
-          setInterviewMessages([]);
-          setInterviewStarted(false);
+          setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
         }}
       />
     </div>
