@@ -17,7 +17,8 @@ import {
 } from "@carsonos/db";
 import type { TaskStatus } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
-import type { ConstitutionEngine, BroadcastFn } from "./constitution-engine.js";
+import type { ConstitutionEngine } from "./constitution-engine.js";
+import type { BroadcastFn } from "./event-bus.js";
 
 // -- Types -----------------------------------------------------------
 

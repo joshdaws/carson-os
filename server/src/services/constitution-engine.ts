@@ -29,7 +29,9 @@ import type {
   PolicyEventType,
 } from "@carsonos/shared";
 
+import type { MemoryProvider } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
+import type { BroadcastFn } from "./event-bus.js";
 import {
   evaluateKeywordBlock,
   evaluateAgeGate,
@@ -39,7 +41,12 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt, buildDelegationInstructions } from "./prompt-compiler.js";
-import { delegationEdges } from "@carsonos/db";
+import { delegationEdges, activityLog } from "@carsonos/db";
+import {
+  buildMemorySchemaInstructions,
+  DEFAULT_MEMORY_SCHEMA,
+} from "./memory/index.js";
+import type { ToolRegistry } from "./tool-registry.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -63,12 +70,16 @@ export interface ProcessMessageResult {
   policyEvents: PolicyEvent[];
 }
 
-export type BroadcastFn = (event: { type: string; data?: unknown }) => void;
-
 export interface EngineConfig {
   db: Db;
   broadcast: BroadcastFn;
   adapter: Adapter;
+  memoryProvider?: MemoryProvider;
+  toolRegistry?: ToolRegistry;
+  /** Feature flags — v1.0 ships with hardEvaluators OFF */
+  featureFlags?: {
+    hardEvaluators?: boolean;
+  };
 }
 
 interface CachedConstitution {
@@ -111,11 +122,17 @@ export class ConstitutionEngine {
   private db: Db;
   private broadcast: BroadcastFn;
   private adapter: Adapter;
+  private memoryProvider: MemoryProvider | null;
+  private toolRegistry: ToolRegistry | null;
+  private hardEvaluatorsEnabled: boolean;
 
   constructor(config: EngineConfig) {
     this.db = config.db;
     this.broadcast = config.broadcast;
     this.adapter = config.adapter;
+    this.memoryProvider = config.memoryProvider ?? null;
+    this.toolRegistry = config.toolRegistry ?? null;
+    this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
   }
 
   /** Invalidate the clause cache for a household (call after clause edits). */
@@ -174,61 +191,64 @@ export class ConstitutionEngine {
     );
 
     // -- 3. Pre-execution: evaluate hard clauses ---------------------
-    try {
-      for (const clause of hardClauses) {
-        const result = this.evaluateHardClause(
-          clause,
-          message,
-          member.age,
-          member.role as MemberRole,
-        );
-
-        if (result && !result.allowed) {
-          const event: PolicyEvent = {
-            clauseId: clause.id,
-            eventType: "enforced",
-            reason: result.reason ?? "Hard clause violation",
-          };
-          collectedEvents.push(event);
-
-          // Log the policy event
-          await this.logPolicyEvent(
-            householdId,
-            agentId,
-            null,
-            null,
-            clause.id,
-            event.eventType,
-            { message, result },
+    // Feature-flagged OFF for v1.0 — constitution enforcement is prompt-based only
+    if (this.hardEvaluatorsEnabled) {
+      try {
+        for (const clause of hardClauses) {
+          const result = this.evaluateHardClause(
+            clause,
+            message,
+            member.age,
+            member.role as MemberRole,
           );
 
-          // Broadcast the block
-          this.broadcast({
-            type: "policy.enforced",
-            data: {
+          if (result && !result.allowed) {
+            const event: PolicyEvent = {
+              clauseId: clause.id,
+              eventType: "enforced",
+              reason: result.reason ?? "Hard clause violation",
+            };
+            collectedEvents.push(event);
+
+            // Log the policy event
+            await this.logPolicyEvent(
               householdId,
               agentId,
-              memberId,
-              clauseId: clause.id,
-              reason: result.reason,
-            },
-          });
+              null,
+              null,
+              clause.id,
+              event.eventType,
+              { message, result },
+            );
 
-          return {
-            response: FRIENDLY_BLOCK_MESSAGE,
-            blocked: true,
-            policyEvents: collectedEvents,
-          };
+            // Broadcast the block
+            this.broadcast({
+              type: "policy.enforced",
+              data: {
+                householdId,
+                agentId,
+                memberId,
+                clauseId: clause.id,
+                reason: result.reason,
+              },
+            });
+
+            return {
+              response: FRIENDLY_BLOCK_MESSAGE,
+              blocked: true,
+              policyEvents: collectedEvents,
+            };
+          }
         }
+      } catch (err) {
+        // Fail closed: evaluator threw -- block the message
+        console.error("[engine] Evaluator error, failing closed:", err);
+        return {
+          response: FRIENDLY_ERROR_MESSAGE,
+          blocked: true,
+          policyEvents: collectedEvents,
+        };
       }
-    } catch (err) {
-      // Fail closed: evaluator threw -- block the message
-      console.error("[engine] Evaluator error, failing closed:", err);
-      return {
-        response: FRIENDLY_ERROR_MESSAGE,
-        blocked: true,
-        policyEvents: collectedEvents,
-      };
     }
 
     // -- 4. Compile system prompt ------------------------------------
@@ -280,6 +300,34 @@ export class ConstitutionEngine {
     const assistantTurnCount = history.filter((m) => m.role === "assistant").length;
     const isFirstContact = !hasProfile && member.role !== "parent";
 
+    // -- M1: Load ambient memory + operating instructions -----------
+    let ambientMemory: string | null = null;
+    let memorySchemaInstructions: string | null = null;
+
+    if (this.memoryProvider) {
+      // Build ambient context from recent/relevant memories
+      try {
+        const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
+        const [personal, household] = await Promise.all([
+          this.memoryProvider.search(message, memberSlug, 3).catch(() => ({ entries: [] })),
+          this.memoryProvider.search(message, "household", 2).catch(() => ({ entries: [] })),
+        ]);
+
+        const allMemories = [
+          ...personal.entries.map((e) => `[${member.name}] ${e.title}: ${e.snippet}`),
+          ...household.entries.map((e) => `[household] ${e.title}: ${e.snippet}`),
+        ];
+
+        if (allMemories.length > 0) {
+          ambientMemory = allMemories.join("\n\n");
+        }
+      } catch (err) {
+        console.warn("[engine] Ambient memory search failed:", err);
+      }
+
+      memorySchemaInstructions = buildMemorySchemaInstructions(DEFAULT_MEMORY_SCHEMA);
+    }
+
     const systemPrompt = compileSystemPrompt({
       mode: "chat",
       roleContent: agent.roleContent ?? "",
@@ -293,7 +341,35 @@ export class ConstitutionEngine {
       firstContact: isFirstContact,
       conversationTurnCount: assistantTurnCount,
       delegationInstructions: delegationInstr,
+      operatingInstructions: agent.operatingInstructions ?? null,
+      ambientMemory,
+      memorySchemaInstructions,
     });
+
+    // -- Build tools for the adapter (registry-based) ----------------
+    let tools = undefined;
+    let toolExecutor = undefined;
+    let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
+
+    if (this.toolRegistry && this.memoryProvider) {
+      const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
+      const built = await this.toolRegistry.buildExecutor({
+        db: this.db,
+        memoryProvider: this.memoryProvider,
+        agentId,
+        memberId,
+        memberName: member.name,
+        householdId,
+        memberCollection: memberSlug,
+        householdCollection: "household",
+      });
+
+      if (built) {
+        tools = built.tools;
+        toolExecutor = built.executor;
+        toolCallLog = built.calls;
+      }
+    }
 
     // Add the current user message to history for the LLM call
     const messagesForLlm = [
@@ -307,8 +383,27 @@ export class ConstitutionEngine {
       const result = await this.adapter.execute({
         systemPrompt,
         messages: messagesForLlm,
+        tools,
+        toolExecutor,
       });
       llmResponse = result.content;
+
+      // Log tool calls to activity log
+      if (toolCallLog && toolCallLog.length > 0) {
+        for (const call of toolCallLog) {
+          try {
+            await this.db.insert(activityLog).values({
+              id: crypto.randomUUID(),
+              householdId,
+              agentId,
+              action: `tool:${call.name}`,
+              details: { input: call.input, result: call.result },
+            });
+          } catch {
+            // Don't let logging failures break the pipeline
+          }
+        }
+      }
     } catch (err) {
       // Adapter failed -- return error
       console.error("[engine] Adapter error:", err);

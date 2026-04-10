@@ -2,19 +2,21 @@
  * Subprocess adapter -- pluggable LLM execution layer.
  *
  * Three adapters:
- *   1. ClaudeCodeAdapter  -- spawns the `claude` CLI binary
- *   2. CodexAdapter       -- spawns the `codex` CLI binary
- *   3. AnthropicSdkAdapter -- direct Anthropic SDK calls
+ *   1. ClaudeCodeAdapter      -- spawns `claude` CLI (text only, no tools)
+ *   2. CodexAdapter           -- spawns `codex` CLI
+ *   3. ClaudeAgentSdkAdapter  -- Claude Agent SDK with MCP tools (default)
  *
- * All implement the same Adapter interface so the engine
- * doesn't care which one is running underneath.
+ * The Agent SDK adapter uses the Claude subscription (no API key needed).
+ * Tools are exposed as an MCP server that the SDK manages internally.
+ * This is the same pattern mr-carson uses.
  */
 
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Anthropic from "@anthropic-ai/sdk";
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import type {
   AdapterType,
   AdapterExecuteParams,
@@ -33,7 +35,7 @@ export interface Adapter {
 
 const TIMEOUT_MS = 120_000;
 
-// -- Claude Code adapter ---------------------------------------------
+// -- Claude Code adapter (text only, no tools) -----------------------
 
 class ClaudeCodeAdapter implements Adapter {
   name = "claude-code";
@@ -63,7 +65,7 @@ class ClaudeCodeAdapter implements Adapter {
     const args = [
       "--output-format", "json",
       "--max-turns", "3",
-      "--allowed-tools", "none",          // No tools allowed — text responses only
+      "--allowed-tools", "none",
       "--system-prompt-file", promptFile,
       "-p", userMessage,
     ];
@@ -95,11 +97,9 @@ class ClaudeCodeAdapter implements Adapter {
       });
 
       child.on("close", (code) => {
-        // Always try to parse JSON stdout first (Claude CLI returns JSON even on error)
         try {
           const parsed = JSON.parse(stdout);
 
-          // Check if Claude returned an error in JSON
           if (parsed.is_error || code !== 0) {
             const errorMsg = parsed.result || parsed.error || stderr || "unknown error";
             console.error(`[adapter] Claude stdout: ${stdout.slice(0, 500)}`);
@@ -120,7 +120,6 @@ class ClaudeCodeAdapter implements Adapter {
             metadata: { adapter: "claude-code", exitCode: code },
           });
         } catch {
-          // If JSON parsing fails, return raw stdout
           resolve({
             content: stdout.trim(),
             metadata: { adapter: "claude-code", rawOutput: true },
@@ -128,7 +127,6 @@ class ClaudeCodeAdapter implements Adapter {
         }
       });
 
-      // Enforce timeout
       setTimeout(() => {
         child.kill("SIGTERM");
         reject(new Error(`Claude Code timed out after ${TIMEOUT_MS}ms`));
@@ -154,7 +152,6 @@ class CodexAdapter implements Adapter {
   async execute(params: AdapterExecuteParams): Promise<AdapterExecuteResult> {
     const { systemPrompt, messages } = params;
 
-    // Build the prompt combining system + user messages
     const userMessage = messages
       .map((m) => (m.role === "user" ? m.content : `[assistant]: ${m.content}`))
       .join("\n\n");
@@ -200,7 +197,6 @@ class CodexAdapter implements Adapter {
         });
       });
 
-      // Enforce timeout
       setTimeout(() => {
         child.kill("SIGTERM");
         reject(new Error(`Codex timed out after ${TIMEOUT_MS}ms`));
@@ -218,51 +214,192 @@ class CodexAdapter implements Adapter {
   }
 }
 
-// -- Anthropic SDK adapter -------------------------------------------
+// -- Claude Agent SDK adapter (with MCP tools) -----------------------
 
-class AnthropicSdkAdapter implements Adapter {
-  name = "anthropic-sdk";
-  private client: Anthropic | null = null;
+const DEFAULT_MODEL = "sonnet";
+const MAX_TURNS = 15;
 
-  private getClient(): Anthropic {
-    if (!this.client) {
-      this.client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
-    }
-    return this.client;
-  }
+class ClaudeAgentSdkAdapter implements Adapter {
+  name = "claude-agent-sdk";
 
   async execute(params: AdapterExecuteParams): Promise<AdapterExecuteResult> {
-    const { systemPrompt, messages, maxTokens } = params;
-    const anthropic = this.getClient();
+    const { systemPrompt, messages, tools, toolExecutor, model } = params;
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: maxTokens ?? 2048,
-      system: systemPrompt,
-      messages: messages.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
+    // Build the user prompt from the messages array
+    const userPrompt = messages
+      .map((m) => (m.role === "user" ? m.content : `[assistant]: ${m.content}`))
+      .join("\n\n");
+
+    // Build MCP server with memory tools if tools + executor provided
+    let mcpConfig: Record<string, ReturnType<typeof createSdkMcpServer>> | undefined;
+    const allowedTools: string[] = [];
+    const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
+
+    if (tools && tools.length > 0 && toolExecutor) {
+      const mcpTools = tools.map((t) => {
+        // Build a Zod schema from the JSON schema input_schema
+        const properties = (t.input_schema.properties ?? {}) as Record<string, { type: string; description?: string; enum?: string[] }>;
+        const required = (t.input_schema.required ?? []) as string[];
+        const shape: Record<string, z.ZodTypeAny> = {};
+
+        for (const [key, prop] of Object.entries(properties)) {
+          let fieldSchema: z.ZodTypeAny;
+          if (prop.enum) {
+            fieldSchema = z.enum(prop.enum as [string, ...string[]]);
+          } else if (prop.type === "object") {
+            fieldSchema = z.record(z.string(), z.unknown());
+          } else {
+            fieldSchema = z.string();
+          }
+          if (prop.description) {
+            fieldSchema = fieldSchema.describe(prop.description);
+          }
+          if (!required.includes(key)) {
+            fieldSchema = fieldSchema.optional();
+          }
+          shape[key] = fieldSchema;
+        }
+
+        // Create an Agent SDK tool that delegates to our toolExecutor
+        return tool(
+          t.name,
+          t.description,
+          shape,
+          async (input: Record<string, unknown>) => {
+            const result = await toolExecutor(t.name, input);
+            allToolCalls.push({ name: t.name, input, result });
+            return {
+              content: [{ type: "text" as const, text: result.content }],
+              isError: result.is_error,
+            };
+          },
+        );
+      });
+
+      const mcpServer = createSdkMcpServer({
+        name: "carsonos-memory",
+        version: "1.0.0",
+        tools: mcpTools,
+      });
+
+      mcpConfig = { "carsonos-memory": mcpServer };
+
+      // Allow all our MCP tools
+      for (const t of tools) {
+        allowedTools.push(`mcp__carsonos-memory__${t.name}`);
+      }
+    }
+
+    // Resolve model name
+    const sdkModel = model === "claude-sonnet-4-20250514" ? "sonnet"
+      : model === "claude-opus-4-20250514" ? "opus"
+      : model === "claude-haiku-4-20250514" ? "haiku"
+      : model ?? DEFAULT_MODEL;
+
+    // Build env, filtering out undefined values
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) env[key] = value;
+    }
+    delete env.CLAUDECODE; // Allow SDK to spawn Claude from within a Claude session
+
+    const t0 = Date.now();
+
+    // Collect text blocks from assistant turns
+    const assistantTextBlocks: string[] = [];
+    let resultText = "";
+    let totalCost: number | null = null;
+    let numTurns: number | null = null;
+
+    const conversation = query({
+      prompt: userPrompt,
+      options: {
+        systemPrompt,
+        model: sdkModel as "sonnet" | "opus" | "haiku",
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        settingSources: ["user"],
+        maxTurns: MAX_TURNS,
+        allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+        ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
+        env,
+      },
     });
 
-    const content = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
+    for await (const message of conversation) {
+      // Collect text content blocks from each assistant turn
+      if (message.type === "assistant" && "message" in message) {
+        const msgObj = message.message as { content?: unknown[] } | undefined;
+        if (msgObj?.content && Array.isArray(msgObj.content)) {
+          for (const block of msgObj.content) {
+            if (
+              block &&
+              typeof block === "object" &&
+              "type" in block &&
+              (block as { type: unknown }).type === "text" &&
+              "text" in block &&
+              typeof (block as { text: unknown }).text === "string"
+            ) {
+              const txt = ((block as { text: string }).text).trim();
+              if (txt) assistantTextBlocks.push(txt);
+            }
+          }
+        }
+      }
+
+      if (message.type === "result") {
+        if ("total_cost_usd" in message && typeof message.total_cost_usd === "number") {
+          totalCost = message.total_cost_usd;
+        }
+        if ("num_turns" in message && typeof message.num_turns === "number") {
+          numTurns = message.num_turns;
+        }
+
+        if (message.subtype === "success") {
+          const sdkResult = ("result" in message && typeof message.result === "string")
+            ? message.result
+            : "";
+          resultText = assistantTextBlocks.length > 0
+            ? assistantTextBlocks.join("\n\n")
+            : sdkResult;
+        } else {
+          const errors: string[] =
+            "errors" in message && Array.isArray(message.errors)
+              ? message.errors
+              : [];
+          resultText = errors.length > 0
+            ? `Error: ${errors.join("; ")}`
+            : "Something went wrong. Please try again.";
+        }
+      }
+    }
+
+    const totalMs = Date.now() - t0;
+    console.log(`[adapter] Agent SDK: ${totalMs}ms, ${numTurns} turns, ${allToolCalls.length} tool calls`);
+    if (totalCost != null) {
+      console.log(`[adapter] Cost: $${totalCost.toFixed(4)}`);
+    }
 
     return {
-      content,
+      content: resultText || "No response.",
+      toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
       metadata: {
-        adapter: "anthropic-sdk",
-        model: response.model,
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
+        adapter: "claude-agent-sdk",
+        model: sdkModel,
+        turns: numTurns,
+        costUsd: totalCost,
+        durationMs: totalMs,
       },
     };
   }
 
   async healthCheck(): Promise<boolean> {
-    return !!process.env.ANTHROPIC_API_KEY;
+    try {
+      execFileSync("which", ["claude"], { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -275,7 +412,7 @@ export function createAdapter(type: AdapterType): Adapter {
     case "codex":
       return new CodexAdapter();
     case "anthropic-sdk":
-      return new AnthropicSdkAdapter();
+      return new ClaudeAgentSdkAdapter();
     default:
       throw new Error(`Unknown adapter type: ${type}`);
   }

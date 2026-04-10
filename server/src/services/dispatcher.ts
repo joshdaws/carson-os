@@ -11,7 +11,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { tasks, taskEvents, staffAgents } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
-import type { BroadcastFn } from "./constitution-engine.js";
+import type { BroadcastFn } from "./event-bus.js";
 
 // -- Types -----------------------------------------------------------
 

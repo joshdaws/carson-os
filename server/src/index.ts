@@ -20,6 +20,7 @@ import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
+import { AppEventBus } from "./services/event-bus.js";
 import { createAdapter } from "./services/subprocess-adapter.js";
 import { ConstitutionEngine } from "./services/constitution-engine.js";
 import { TaskEngine } from "./services/task-engine.js";
@@ -30,6 +31,8 @@ import { createTelegramRelay } from "./services/telegram-relay.js";
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
+import { bootMemory } from "./services/memory/index.js";
+import { ToolRegistry } from "./services/tool-registry.js";
 
 const BANNER = [
   "",
@@ -41,6 +44,7 @@ const BANNER = [
 async function main() {
   const config = getConfig();
   const dbPath = join(config.dataDir, "carsonos.db");
+  const eventBus = new AppEventBus();
 
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
@@ -56,11 +60,27 @@ async function main() {
     `[adapter] ${adapter.name} — ${adapterHealthy ? "healthy" : "unavailable"}`,
   );
 
+  // 2b. Boot memory system
+  let memoryProvider = undefined;
+  try {
+    memoryProvider = await bootMemory(db, config.memory);
+    console.log(`[memory] Provider ready (${config.memory.kind}) at ${config.memory.rootDir}`);
+  } catch (err) {
+    console.warn("[memory] Boot failed, running without memory:", err);
+  }
+
+  // 2c. Tool registry
+  const toolRegistry = new ToolRegistry(db);
+  console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
+
   // 3. Constitution engine
   const constitutionEngine = new ConstitutionEngine({
     db,
-    broadcast,
+    broadcast: eventBus.publish,
     adapter,
+    memoryProvider,
+    toolRegistry,
+    featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
 
@@ -69,7 +89,7 @@ async function main() {
     db,
     adapter,
     constitutionEngine,
-    broadcast,
+    broadcast: eventBus.publish,
   });
   console.log("[engine] Task engine ready");
 
@@ -77,7 +97,7 @@ async function main() {
   const oversight = new CarsonOversight({
     db,
     constitutionEngine,
-    broadcast,
+    broadcast: eventBus.publish,
   });
   console.log("[engine] Carson oversight ready");
 
@@ -99,7 +119,7 @@ async function main() {
   const dispatcher = new Dispatcher({
     db,
     adapter,
-    broadcast,
+    broadcast: eventBus.publish,
   });
   // Recover any tasks stuck in in_progress from a previous crash
   await dispatcher.recoverStuckTasks();
@@ -107,7 +127,7 @@ async function main() {
 
   // 6c. Delegation orchestrator (coordinates delegation lifecycle)
   const orchestrator = new DelegationOrchestrator(
-    { db, adapter, broadcast },
+    { db, adapter, broadcast: eventBus.publish },
     dispatcher,
     taskEngine,
   );
@@ -128,24 +148,15 @@ async function main() {
   const server = createServer(app);
   setupWebSocket(server);
 
-  // 9. Wire server-side event bridges
-  //    dispatcher -> orchestrator: project completion triggers synthesis
-  //    orchestrator -> multi-relay: synthesis results delivered to kids
-  const originalBroadcast = broadcast;
-  const broadcastWithBridge = (event: { type: string; data?: unknown }) => {
-    originalBroadcast(event); // WebSocket to browsers
-
-    // Server-side bridge: project.completed -> orchestrator
-    if (event.type === "project.completed" && event.data) {
-      const { parentTaskId } = event.data as { parentTaskId: string };
-      orchestrator.handleProjectCompleted(parentTaskId).catch((err) => {
-        console.error("[bridge] Failed to handle project completion:", err);
-      });
-    }
-  };
-
-  // Patch the broadcast function on services that need the bridge
-  (dispatcher as any).broadcast = broadcastWithBridge;
+  // 9. Wire event consumers
+  eventBus.on("*", broadcast);
+  eventBus.on("project.completed", (event) => {
+    if (!event.data) return;
+    const { parentTaskId } = event.data as { parentTaskId: string };
+    orchestrator.handleProjectCompleted(parentTaskId).catch((err) => {
+      console.error("[events] Failed to handle project completion:", err);
+    });
+  });
 
   // 10. Telegram relay (multi-bot for per-agent bots, legacy for single-bot fallback)
   const multiRelay = new MultiRelayManager({
@@ -156,14 +167,10 @@ async function main() {
     orchestrator,
   });
 
-  // Wire orchestrator delegation.result -> multi-relay for Telegram delivery
-  const origOrchestratorBroadcast = (orchestrator as any).broadcast;
-  (orchestrator as any).broadcast = (event: { type: string; data?: unknown }) => {
-    origOrchestratorBroadcast(event); // WebSocket to browsers
-    if (event.type === "delegation.result" && event.data) {
-      multiRelay.eventBus.emit("delegation.result", event.data);
-    }
-  };
+  eventBus.on("delegation.result", (event) => {
+    if (!event.data) return;
+    multiRelay.eventBus.emit("delegation.result", event.data);
+  });
 
   // Start per-agent bots (agents with telegramBotToken set)
   await multiRelay.startAll();
@@ -190,6 +197,7 @@ async function main() {
     console.log(`  port:     ${config.port}`);
     console.log(`  data dir: ${config.dataDir}`);
     console.log(`  db:       ${dbPath}`);
+    console.log(`  memory:   ${config.memory.rootDir}`);
     console.log(`  ws:       ws://127.0.0.1:${config.port}/ws`);
     console.log();
   });
