@@ -37,11 +37,12 @@ export type ToolHandler = (
 
 /**
  * Tool tiers:
- *   - system:  Every agent gets these automatically, not toggleable (search_memory, update_instructions)
- *   - builtin: Ships with CarsonOS, toggleable per-agent in dashboard (calendar, gmail, drive)
- *   - custom:  Created by agents, imported from skills.sh, or user-installed
+ *   - system:     Every agent gets these automatically, not toggleable (search_memory, update_instructions)
+ *   - builtin:    Ships with CarsonOS, toggleable per-agent (calendar, gmail, drive)
+ *   - custom:     Created by agents, imported from skills.sh, or user-installed
+ *   - discovered: Found in ~/.claude/skills/, off by default, labeled in UI as global Claude skills
  */
-export type ToolTier = "system" | "builtin" | "custom";
+export type ToolTier = "system" | "builtin" | "custom" | "discovered";
 
 export interface RegisteredTool {
   definition: ToolDefinition;
@@ -62,6 +63,21 @@ export interface ToolExecutionContext {
   memberCollection: string;
   householdCollection: string;
 }
+
+// ── Trust level → Claude Code built-in tools ────────────────────────
+
+import type { TrustLevel } from "@carsonos/shared";
+
+/**
+ * Maps trust level to the Claude Code built-in tools the agent gets.
+ * These are passed as the `tools` option to the Agent SDK.
+ * Empty array = no built-ins (conversation + MCP tools only).
+ */
+export const TRUST_LEVEL_BUILTINS: Record<TrustLevel, string[]> = {
+  full: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"],
+  standard: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+  restricted: [],
+};
 
 // ── Default tool grants per role ────────────────────────────────────
 
@@ -179,7 +195,7 @@ export class ToolRegistry {
             input_schema: { type: "object", properties: {} },
           },
           category: "skill",
-          tier: "builtin",
+          tier: "discovered",
         });
       }
 
@@ -197,6 +213,21 @@ export class ToolRegistry {
    * Returns just the skill names (without "skill:" prefix)
    * for passing to the adapter's enabledSkills param.
    */
+  /**
+   * Get the Claude Code built-in tools for an agent based on trust level.
+   * Passed as the `tools` option to the Agent SDK.
+   */
+  async getAgentBuiltins(agentId: string): Promise<string[]> {
+    const [agent] = await this.db
+      .select({ trustLevel: staffAgents.trustLevel })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .limit(1);
+
+    const level = (agent?.trustLevel ?? "restricted") as TrustLevel;
+    return TRUST_LEVEL_BUILTINS[level] ?? TRUST_LEVEL_BUILTINS.restricted;
+  }
+
   async getAgentSkills(agentId: string): Promise<string[]> {
     const tools = await this.getAgentTools(agentId);
     return tools

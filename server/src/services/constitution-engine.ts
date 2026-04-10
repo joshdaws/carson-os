@@ -409,10 +409,14 @@ export class ConstitutionEngine {
 
     let llmResponse: string;
 
-    // Resolve enabled skills for this agent
-    const enabledSkills = this.toolRegistry
-      ? await this.toolRegistry.getAgentSkills(agentId)
-      : undefined;
+    // Resolve trust level builtins + enabled skills for this agent
+    let builtinTools: string[] | undefined;
+    let enabledSkills: string[] | undefined;
+    if (this.toolRegistry) {
+      builtinTools = await this.toolRegistry.getAgentBuiltins(agentId);
+      const skills = await this.toolRegistry.getAgentSkills(agentId);
+      enabledSkills = skills.length > 0 ? skills : undefined;
+    }
 
     try {
       const result = await this.adapter.execute({
@@ -420,7 +424,8 @@ export class ConstitutionEngine {
         messages: messagesForLlm,
         tools,
         toolExecutor,
-        enabledSkills: enabledSkills?.length ? enabledSkills : undefined,
+        builtinTools,
+        enabledSkills,
       });
       llmResponse = result.content;
 

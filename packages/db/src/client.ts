@@ -60,6 +60,7 @@ CREATE TABLE staff_agents (
   status TEXT NOT NULL DEFAULT 'active',
   is_head_butler INTEGER NOT NULL DEFAULT 0,
   autonomy_level TEXT NOT NULL DEFAULT 'supervised',
+  trust_level TEXT NOT NULL DEFAULT 'restricted',
   operating_instructions TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -366,6 +367,14 @@ function upgradeTables(sqlite: Database.Database) {
     // staff_agents: add operatingInstructions for self-maintained behavioral notes
     if (!staffCols.has("operating_instructions")) {
       sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN operating_instructions TEXT").run();
+      upgraded = true;
+    }
+
+    // staff_agents: add trustLevel for Claude built-in tool access
+    if (!staffCols.has("trust_level")) {
+      sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN trust_level TEXT NOT NULL DEFAULT 'restricted'").run();
+      // Head butler gets full trust by default
+      sqlite.prepare("UPDATE staff_agents SET trust_level = 'full' WHERE is_head_butler = 1").run();
       upgraded = true;
     }
 

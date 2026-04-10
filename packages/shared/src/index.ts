@@ -8,6 +8,14 @@ export type AgentStatus = "active" | "paused" | "idle";
 
 export type AutonomyLevel = "supervised" | "trusted" | "autonomous";
 
+/**
+ * Trust levels determine what Claude Code built-in tools an agent gets.
+ *   - full:       All built-ins (Bash, Read, Write, Edit, Web, etc.) — head agent, parent agents
+ *   - standard:   Read-only built-ins (Read, Glob, Grep, WebFetch, WebSearch) — teen/spouse agents
+ *   - restricted: No built-ins — only CarsonOS MCP tools — young kid agents
+ */
+export type TrustLevel = "full" | "standard" | "restricted";
+
 export type EnforcementLevel = "hard" | "soft" | "advisory";
 
 export type EvaluationType =
@@ -238,7 +246,9 @@ export interface AdapterExecuteParams {
   model?: string;
   tools?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
-  /** Claude Code skill names to enable (e.g., "content-writer", "web-scraper") */
+  /** Claude Code built-in tools to enable (e.g., ["Bash", "Read", "Write"]) */
+  builtinTools?: string[];
+  /** Claude Code skill names to enable (e.g., ["content-writer", "web-scraper"]) */
   enabledSkills?: string[];
 }
 

@@ -328,8 +328,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
         allowDangerouslySkipPermissions: true,
         settingSources: ["user"],
         maxTurns: MAX_TURNS,
-        // Disable all built-in tools — agents only get our MCP tools + explicitly enabled skills
-        tools: [],
+        // Built-in tools controlled by trust level (full/standard/restricted)
+        tools: params.builtinTools ?? [],
         allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
         env,

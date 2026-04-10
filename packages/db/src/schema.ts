@@ -60,6 +60,7 @@ export const staffAgents = sqliteTable(
     status: text("status").notNull().default("active"), // active | paused | idle
     isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),
     autonomyLevel: text("autonomy_level").notNull().default("supervised"), // supervised | trusted | autonomous
+    trustLevel: text("trust_level").notNull().default("restricted"), // full | standard | restricted — controls Claude built-in tool access
     operatingInstructions: text("operating_instructions"), // Self-maintained behavioral notes (agent's CLAUDE.md)
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),

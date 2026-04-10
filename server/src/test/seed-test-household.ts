@@ -135,6 +135,7 @@ async function seed() {
     status: "active",
     isHeadButler: true,
     autonomyLevel: "trusted",
+    trustLevel: "full",
     roleContent: [
       "You are Carson, the family's personal AI assistant.",
       "You help every member of the Daws family with whatever they need.",
