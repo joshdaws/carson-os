@@ -15,9 +15,17 @@ import {
   familyMembers,
   conversations,
   delegationEdges,
+  personalityInterviewState,
 } from "@carsonos/db";
+import type { PersonalityInterviewEngine } from "../services/personality-interview.js";
 
-export function createStaffRoutes(db: Db): Router {
+export interface StaffRouteDeps {
+  db: Db;
+  personalityInterviewEngine: PersonalityInterviewEngine;
+}
+
+export function createStaffRoutes(deps: StaffRouteDeps): Router {
+  const { db, personalityInterviewEngine } = deps;
   const router = Router();
 
   // GET / -- list all staff agents (scoped to household)
@@ -329,6 +337,75 @@ export function createStaffRoutes(db: Db): Router {
       .where(eq(staffAssignments.id, existing.id));
 
     res.json({ deleted: true });
+  });
+
+  // -- Personality Interview -------------------------------------------
+
+  // GET /:id/personality -- interview state + soulContent
+  router.get("/:id/personality", async (req, res) => {
+    const agent = await db
+      .select()
+      .from(staffAgents)
+      .where(eq(staffAgents.id, req.params.id))
+      .get();
+
+    if (!agent) {
+      res.status(404).json({ error: "Staff agent not found" });
+      return;
+    }
+
+    // Get interview state if exists
+    const [interviewState] = await db
+      .select()
+      .from(personalityInterviewState)
+      .where(eq(personalityInterviewState.agentId, req.params.id))
+      .limit(1);
+
+    res.json({
+      agentId: agent.id,
+      agentName: agent.name,
+      soulContent: agent.soulContent,
+      interview: interviewState
+        ? {
+            phase: interviewState.phase,
+            messageCount: ((interviewState.interviewMessages as unknown[]) ?? []).length,
+            messages: ((interviewState.interviewMessages as Array<{ role: string; content: string }>) ?? []).map(
+              (m) => ({ role: m.role, content: m.content }),
+            ),
+          }
+        : null,
+    });
+  });
+
+  // POST /:id/personality/interview -- send message
+  router.post("/:id/personality/interview", async (req, res) => {
+    const { message } = req.body;
+    if (!message || typeof message !== "string") {
+      res.status(400).json({ error: "message (string) is required" });
+      return;
+    }
+
+    try {
+      const result = await personalityInterviewEngine.processMessage(
+        req.params.id,
+        message,
+      );
+      res.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Interview failed";
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // POST /:id/personality/reset -- reset interview
+  router.post("/:id/personality/reset", async (req, res) => {
+    try {
+      await personalityInterviewEngine.resetInterview(req.params.id);
+      res.json({ reset: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Reset failed";
+      res.status(500).json({ error: msg });
+    }
   });
 
   // -- Delegation Edges -----------------------------------------------

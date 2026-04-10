@@ -10,14 +10,16 @@ import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { constitutions, constitutionClauses, households } from "@carsonos/db";
 import type { ConstitutionEngine } from "../services/constitution-engine.js";
+import type { InterviewEngine } from "../services/interview.js";
 
 export interface ConstitutionRouteDeps {
   db: Db;
   constitutionEngine: ConstitutionEngine;
+  interviewEngine?: InterviewEngine;
 }
 
 export function createConstitutionRoutes(deps: ConstitutionRouteDeps): Router {
-  const { db, constitutionEngine } = deps;
+  const { db, constitutionEngine, interviewEngine } = deps;
   const router = Router();
 
   // Helper: get the single household ID (MVP: one household)
@@ -158,6 +160,104 @@ export function createConstitutionRoutes(deps: ConstitutionRouteDeps): Router {
       .all();
 
     res.json({ versions });
+  });
+
+  // -- Interview endpoints (rebuild constitution via interview) --------
+
+  // GET /interview -- current constitution interview state
+  router.get("/interview", async (_req, res) => {
+    if (!interviewEngine) {
+      res.status(501).json({ error: "Interview engine not configured" });
+      return;
+    }
+
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
+    try {
+      const state = await interviewEngine.getOrCreateState(householdId);
+      res.json({
+        phase: state.phase,
+        messageCount: (state.interviewMessages ?? []).length,
+        messages: (state.interviewMessages ?? []).map(
+          (m: { role: string; content: string }) => ({ role: m.role, content: m.content }),
+        ),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to get interview state";
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // POST /interview -- send message to constitution interview
+  router.post("/interview", async (req, res) => {
+    if (!interviewEngine) {
+      res.status(501).json({ error: "Interview engine not configured" });
+      return;
+    }
+
+    const { message } = req.body;
+    if (!message || typeof message !== "string") {
+      res.status(400).json({ error: "message (string) is required" });
+      return;
+    }
+
+    const householdId = await getHouseholdId();
+    if (!householdId) {
+      res.status(404).json({ error: "No household found" });
+      return;
+    }
+
+    try {
+      const result = await interviewEngine.processMessage(householdId, message);
+
+      // If a constitution document was generated, save it
+      if (result.constitutionDocument) {
+        // Deactivate current constitution
+        const current = await db
+          .select()
+          .from(constitutions)
+          .where(
+            and(
+              eq(constitutions.householdId, householdId),
+              eq(constitutions.isActive, true),
+            ),
+          )
+          .get();
+
+        const newVersion = current ? current.version + 1 : 1;
+
+        if (current) {
+          await db
+            .update(constitutions)
+            .set({ isActive: false })
+            .where(eq(constitutions.id, current.id));
+        }
+
+        await db
+          .insert(constitutions)
+          .values({
+            householdId,
+            version: newVersion,
+            document: result.constitutionDocument,
+            isActive: true,
+          });
+
+        constitutionEngine.invalidateCache(householdId);
+      }
+
+      res.json({
+        response: result.response,
+        phase: result.phase,
+        constitutionDocument: result.constitutionDocument,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Interview failed";
+      res.status(500).json({ error: msg });
+    }
   });
 
   // -- Clause CRUD ---------------------------------------------------

@@ -21,11 +21,14 @@ import type { TaskEngine } from "./services/task-engine.js";
 import type { CarsonOversight } from "./services/carson-oversight.js";
 import type { InterviewEngine } from "./services/interview.js";
 import type { ProfileInterviewEngine } from "./services/profile-interview.js";
+import type { PersonalityInterviewEngine } from "./services/personality-interview.js";
+import type { ToolRegistry } from "./services/tool-registry.js";
 
 import { createHealthRoutes } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
 import { createMemberRoutes } from "./routes/members.js";
 import { createStaffRoutes } from "./routes/staff.js";
+import { createToolRoutes } from "./routes/tools.js";
 import { createTaskRoutes } from "./routes/tasks.js";
 import { createConstitutionRoutes } from "./routes/constitution.js";
 import { createConversationRoutes } from "./routes/conversations.js";
@@ -44,6 +47,8 @@ export interface AppDeps {
   oversight: CarsonOversight;
   interviewEngine: InterviewEngine;
   profileInterviewEngine: ProfileInterviewEngine;
+  personalityInterviewEngine: PersonalityInterviewEngine;
+  toolRegistry: ToolRegistry;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -55,6 +60,8 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     oversight,
     interviewEngine,
     profileInterviewEngine,
+    personalityInterviewEngine,
+    toolRegistry,
   } = deps;
   const app = express();
 
@@ -75,11 +82,11 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/health", createHealthRoutes({ adapter }));
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
-  app.use("/api/staff", createStaffRoutes(db));
+  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight }));
   app.use(
     "/api/constitution",
-    createConstitutionRoutes({ db, constitutionEngine }),
+    createConstitutionRoutes({ db, constitutionEngine, interviewEngine }),
   );
   app.use(
     "/api/conversations",
@@ -91,6 +98,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   );
   app.use("/api/activity", createActivityRoutes(db));
   app.use("/api/settings", createSettingsRoutes(db));
+  app.use("/api/tools", createToolRoutes({ db, toolRegistry }));
   app.use(
     "/api/members",
     createProfileRoutes({ db, profileInterviewEngine }),
