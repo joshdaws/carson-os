@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollText, Edit3, Save, X, Clock, Loader2 } from "lucide-react";
+import { ScrollText, Edit3, Save, X, Clock, Loader2, RotateCcw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { InterviewOverlay } from "@/components/InterviewOverlay";
+import type { ChatMessage } from "@/components/ChatBubble";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -37,6 +39,9 @@ export function ConstitutionPage() {
   const [draft, setDraft] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const [viewingVersion, setViewingVersion] = useState<VersionEntry | null>(null);
+  const [showInterview, setShowInterview] = useState(false);
+  const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [interviewStarted, setInterviewStarted] = useState(false);
 
   const { data, isLoading } = useQuery<ConstitutionData>({
     queryKey: ["constitution"],
@@ -59,6 +64,38 @@ export function ConstitutionPage() {
     },
   });
 
+  // Interview mutation
+  const interviewMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; constitutionDocument?: string }>(
+        "/constitution/interview",
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.constitutionDocument) {
+        queryClient.invalidateQueries({ queryKey: ["constitution"] });
+      }
+    },
+  });
+
+  // Auto-start interview when overlay opens
+  useEffect(() => {
+    if (showInterview && !interviewStarted && interviewMessages.length === 0) {
+      setInterviewStarted(true);
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "user" as const, content: "I'd like to create our family constitution." },
+      ]);
+      interviewMutation.mutate("I'd like to create our family constitution.");
+    }
+  }, [showInterview, interviewStarted]);
+
+  const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
+
   const constitution = data?.constitution;
 
   if (isLoading) {
@@ -79,26 +116,7 @@ export function ConstitutionPage() {
 
   if (!constitution) {
     return (
-      <div className="p-6 lg:p-8 max-w-4xl">
-        <div className="flex items-center gap-2 mb-6">
-          <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
-          <h1
-            className="text-xl font-normal"
-            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-          >
-            Family Constitution
-          </h1>
-        </div>
-        <div
-          className="rounded-lg p-8 text-center"
-          style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
-        >
-          <ScrollText className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
-          <p className="text-sm" style={{ color: "#8a8070" }}>
-            No constitution found. Complete onboarding to set up your family constitution.
-          </p>
-        </div>
-      </div>
+      <ConstitutionEmptyState />
     );
   }
 
@@ -145,6 +163,16 @@ export function ConstitutionPage() {
           >
             <Clock className="h-3.5 w-3.5 mr-1" />
             History
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowInterview(true)}
+            style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+          >
+            <RotateCcw className="h-3.5 w-3.5 mr-1" />
+            Rebuild
           </Button>
 
           {!editing && !viewingVersion && (
@@ -207,6 +235,35 @@ export function ConstitutionPage() {
           )}
         </div>
       )}
+
+      {/* Interview Overlay */}
+      <InterviewOverlay
+        title="Constitution Builder"
+        subtitle="Carson will interview you to build your family constitution"
+        isOpen={showInterview}
+        onClose={() => {
+          setShowInterview(false);
+          setInterviewMessages([]);
+          setInterviewStarted(false);
+        }}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["constitution"] });
+        }}
+        messages={interviewMessages}
+        isLoading={interviewMutation.isPending}
+        isComplete={isInterviewComplete}
+        onSendMessage={(text) => {
+          setInterviewMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          interviewMutation.mutate(text);
+        }}
+        onReset={() => {
+          setInterviewMessages([]);
+          setInterviewStarted(false);
+        }}
+      />
 
       {/* Document View */}
       <div
@@ -354,6 +411,111 @@ export function ConstitutionPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Empty State — Interview Launcher ──────────────────────────────
+
+function ConstitutionEmptyState() {
+  const queryClient = useQueryClient();
+  const [showInterview, setShowInterview] = useState(false);
+  const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [interviewStarted, setInterviewStarted] = useState(false);
+
+  const interviewMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; constitutionDocument?: string }>(
+        "/constitution/interview",
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.constitutionDocument) {
+        queryClient.invalidateQueries({ queryKey: ["constitution"] });
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (showInterview && !interviewStarted && interviewMessages.length === 0) {
+      setInterviewStarted(true);
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "user" as const, content: "I'd like to create our family constitution." },
+      ]);
+      interviewMutation.mutate("I'd like to create our family constitution.");
+    }
+  }, [showInterview, interviewStarted]);
+
+  const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
+
+  return (
+    <div className="p-6 lg:p-8 max-w-4xl">
+      <div className="flex items-center gap-2 mb-6">
+        <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
+        <h1
+          className="text-xl font-normal"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          Family Constitution
+        </h1>
+      </div>
+      <div
+        className="rounded-lg p-8 text-center"
+        style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
+      >
+        <ScrollText className="h-10 w-10 mx-auto mb-4" style={{ color: "#8b6f4e" }} />
+        <h3
+          className="text-lg font-normal mb-2"
+          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+        >
+          Build Your Family Constitution
+        </h3>
+        <p className="text-sm mb-5 max-w-md mx-auto" style={{ color: "#8a8070" }}>
+          Carson will interview you about your family's values, boundaries, and expectations
+          to create a constitution that governs how all AI staff interact with your family.
+        </p>
+        <Button
+          size="sm"
+          onClick={() => setShowInterview(true)}
+          style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+        >
+          <ScrollText className="h-4 w-4 mr-2" />
+          Start Interview
+        </Button>
+      </div>
+
+      <InterviewOverlay
+        title="Constitution Builder"
+        subtitle="Carson will interview you to build your family constitution"
+        isOpen={showInterview}
+        onClose={() => {
+          setShowInterview(false);
+          setInterviewMessages([]);
+          setInterviewStarted(false);
+        }}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["constitution"] });
+        }}
+        messages={interviewMessages}
+        isLoading={interviewMutation.isPending}
+        isComplete={isInterviewComplete}
+        onSendMessage={(text) => {
+          setInterviewMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          interviewMutation.mutate(text);
+        }}
+        onReset={() => {
+          setInterviewMessages([]);
+          setInterviewStarted(false);
+        }}
+      />
     </div>
   );
 }
