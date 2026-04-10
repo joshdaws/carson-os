@@ -33,6 +33,7 @@ import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
 import { ToolRegistry } from "./services/tool-registry.js";
+import { GoogleCalendarProvider, CALENDAR_TOOLS } from "./services/google/index.js";
 
 const BANNER = [
   "",
@@ -69,8 +70,34 @@ async function main() {
     console.warn("[memory] Boot failed, running without memory:", err);
   }
 
-  // 2c. Tool registry
+  // 2c. Google Calendar provider
+  const googleDir = join(config.dataDir, "google");
+  const calendarProvider = new GoogleCalendarProvider(googleDir);
+  const gwsHealthy = await calendarProvider.healthCheck();
+  console.log(`[google] Calendar provider ${gwsHealthy ? "ready" : "unavailable (gws not installed)"}`);
+
+  // 2d. Tool registry
   const toolRegistry = new ToolRegistry(db);
+
+  // Register calendar tools (per-member handler created at call time)
+  if (gwsHealthy) {
+    // Calendar tools need the member slug at execution time, so we register
+    // a handler factory that the constitution engine will call per-message.
+    // For now, register the tool definitions so they show up in grants.
+    toolRegistry.registerAll(
+      CALENDAR_TOOLS.map((def) => ({
+        definition: def,
+        category: "calendar",
+        builtin: true,
+      })),
+      // Placeholder handler — real handler is bound per-member in constitution engine
+      async (_name, _input) => ({
+        content: "Calendar not configured for this member.",
+        is_error: true,
+      }),
+    );
+  }
+
   console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
 
   // 3. Constitution engine
@@ -80,6 +107,7 @@ async function main() {
     adapter,
     memoryProvider,
     toolRegistry,
+    calendarProvider: gwsHealthy ? calendarProvider : undefined,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
