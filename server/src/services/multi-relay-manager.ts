@@ -23,6 +23,7 @@ import type { TaskEngine } from "./task-engine.js";
 import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
 import type { Adapter } from "./subprocess-adapter.js";
 import { createTelegramStream } from "./telegram-streaming.js";
+import { markdownToTelegramHtml, stripThinkingBlocks } from "./telegram-format.js";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -509,21 +510,8 @@ export class MultiRelayManager {
     } catch { /* swallow */ }
 
     // Set up streaming — edits Telegram message in real-time as tokens arrive
+    // Keep typing indicator running throughout (covers tool call gaps)
     const stream = createTelegramStream(ctx);
-    const originalOnDelta = stream.onDelta;
-
-    // Stop typing indicator once first delta arrives
-    let firstDelta = true;
-    stream.onDelta = (text: string) => {
-      if (firstDelta) {
-        firstDelta = false;
-        if (typingInterval) {
-          clearInterval(typingInterval);
-          typingInterval = null;
-        }
-      }
-      originalOnDelta(text);
-    };
 
     // 1. Constitution engine with streaming
     let engineResult;
@@ -537,12 +525,12 @@ export class MultiRelayManager {
         onTextDelta: stream.onDelta,
       });
     } catch (err) {
-      if (typingInterval) clearInterval(typingInterval);
+      if (typingInterval) { clearInterval(typingInterval); typingInterval = null; }
       await stream.finish();
       throw err;
     }
 
-    if (typingInterval) clearInterval(typingInterval);
+    if (typingInterval) { clearInterval(typingInterval); typingInterval = null; }
 
     // Finish streaming — returns messageId for in-place edit
     const { messageId: streamMsgId } = await stream.finish();
@@ -576,13 +564,23 @@ export class MultiRelayManager {
       : (delegationResult.userMessage || engineResult.response);
 
     if (streamMsgId) {
-      // Check if the response has markdown worth formatting
-      const hasFormatting = /[*_~`#\[|>]/.test(finalText) || finalText.includes("<think");
-      if (hasFormatting) {
-        // Edit the streaming message in-place with formatted HTML
-        await this.editFormatted(ctx, streamMsgId, finalText);
+      // Streaming already formatted HTML in-place — nothing more to do.
+      // For long responses that exceed a single message, send overflow as new messages.
+      const { chunkMessage } = await import("./telegram-format.js");
+      const fullHtml = markdownToTelegramHtml(stripThinkingBlocks(finalText));
+      const chunks = chunkMessage(fullHtml);
+      if (chunks.length > 1) {
+        // First chunk is already in the streaming message — send the rest
+        for (let i = 1; i < chunks.length; i++) {
+          if (!chunks[i].trim()) continue;
+          try {
+            await ctx.reply(chunks[i], { parse_mode: "HTML" });
+          } catch {
+            // Fallback to plain text
+            await ctx.reply(chunks[i].replace(/<[^>]+>/g, "").slice(0, 4096));
+          }
+        }
       }
-      // If no formatting, the streaming message already shows the correct text — leave it
     } else {
       // No streaming message was created (maybe no deltas) — send fresh
       await this.sendFormatted(ctx, finalText);

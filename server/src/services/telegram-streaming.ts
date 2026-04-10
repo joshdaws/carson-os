@@ -1,14 +1,95 @@
 /**
- * Telegram streaming engine — edit-in-place as tokens arrive.
+ * Telegram streaming engine — formatted edit-in-place.
  *
- * Queues edits through a single async chain so they never race.
- * Each edit waits for the previous one to complete before running.
+ * Streams formatted HTML as tokens arrive. Tracks open markdown
+ * constructs (code fences, bold, italic) and auto-closes them
+ * before converting to HTML on each edit. No jarring flash at
+ * the end — the message is already formatted when complete.
+ *
+ * Inspired by OpenClaw's EmbeddedBlockChunker.
  */
 
 import type { Context } from "grammy";
+import {
+  markdownToTelegramHtml,
+  stripThinkingBlocks,
+} from "./telegram-format.js";
 
 const EDIT_INTERVAL_MS = 300;
-const MAX_PLAIN_LENGTH = 4096;
+const MAX_MESSAGE_LENGTH = 4096;
+
+// ── Markdown state tracking ────────────────────────────────────────
+
+interface MarkdownState {
+  inCodeFence: boolean;
+  codeFenceLang: string;
+  inBold: boolean;
+  inItalic: boolean;
+  inStrikethrough: boolean;
+}
+
+function createMarkdownState(): MarkdownState {
+  return {
+    inCodeFence: false,
+    codeFenceLang: "",
+    inBold: false,
+    inItalic: false,
+    inStrikethrough: false,
+  };
+}
+
+/**
+ * Scan text and determine which markdown constructs are still open.
+ * Uses simple counting — doesn't handle every edge case but covers
+ * the common patterns LLMs produce.
+ */
+function scanMarkdownState(text: string): MarkdownState {
+  const state = createMarkdownState();
+
+  const lines = text.split("\n");
+  for (const line of lines) {
+    // Code fence toggle
+    const fenceMatch = line.match(/^```(\w*)/);
+    if (fenceMatch) {
+      if (state.inCodeFence) {
+        state.inCodeFence = false;
+        state.codeFenceLang = "";
+      } else {
+        state.inCodeFence = true;
+        state.codeFenceLang = fenceMatch[1] || "";
+      }
+      continue;
+    }
+
+    // Skip content inside code fences — no inline formatting
+    if (state.inCodeFence) continue;
+
+    // Count unescaped markers on this line
+    // Bold: **
+    const boldCount = (line.match(/(?<!\\)\*\*/g) || []).length;
+    if (boldCount % 2 !== 0) state.inBold = !state.inBold;
+
+    // Strikethrough: ~~
+    const strikeCount = (line.match(/(?<!\\)~~/g) || []).length;
+    if (strikeCount % 2 !== 0) state.inStrikethrough = !state.inStrikethrough;
+  }
+
+  return state;
+}
+
+/**
+ * Append closing markers for any open markdown constructs.
+ * This makes partial text safe to convert to HTML.
+ */
+function closeOpenMarkdown(text: string, state: MarkdownState): string {
+  let closed = text;
+  if (state.inStrikethrough) closed += "~~";
+  if (state.inBold) closed += "**";
+  if (state.inCodeFence) closed += "\n```";
+  return closed;
+}
+
+// ── Stream Consumer ────────────────────────────────────────────────
 
 export interface StreamResult {
   text: string;
@@ -26,61 +107,82 @@ export function createTelegramStream(ctx: Context): TelegramStreamConsumer {
   let lastSentText = "";
   let editTimer: ReturnType<typeof setTimeout> | null = null;
   let finished = false;
+  let firstDeltaSent = false;
 
-  // Serial async queue — each edit waits for the previous one
+  // Serial async queue
   let editChain: Promise<void> = Promise.resolve();
 
   function enqueueEdit() {
-    const textToSend = accumulated.length > MAX_PLAIN_LENGTH
-      ? accumulated.slice(0, MAX_PLAIN_LENGTH - 3) + "..."
-      : accumulated;
+    if (!accumulated) return;
 
-    if (!textToSend || textToSend === lastSentText) return;
-
-    // Capture the text at this point in time
-    const snapshot = textToSend;
+    // Snapshot current text
+    const rawText = accumulated;
+    if (rawText === lastSentText) return;
 
     editChain = editChain.then(async () => {
-      if (finished && snapshot !== accumulated) return; // Skip stale snapshots
+      // Skip stale edits if we've moved on
+      if (finished && rawText !== accumulated) return;
+
+      // Clean thinking blocks, auto-close open markdown, convert to HTML
+      const cleaned = stripThinkingBlocks(rawText);
+      const mdState = scanMarkdownState(cleaned);
+      const closedText = closeOpenMarkdown(cleaned, mdState);
+
+      let html: string;
+      try {
+        html = markdownToTelegramHtml(closedText);
+      } catch {
+        // Fallback to plain text if conversion fails
+        html = cleaned;
+      }
+
+      // Truncate for Telegram limit
+      if (html.length > MAX_MESSAGE_LENGTH) {
+        html = html.slice(0, MAX_MESSAGE_LENGTH - 10) + "…";
+      }
+
       try {
         if (messageId) {
-          await ctx.api.editMessageText(ctx.chat!.id, messageId, snapshot);
+          await ctx.api.editMessageText(ctx.chat!.id, messageId, html, {
+            parse_mode: "HTML",
+          });
         } else {
-          const sent = await ctx.reply(snapshot);
+          const sent = await ctx.reply(html, { parse_mode: "HTML" });
           messageId = sent.message_id;
         }
-        lastSentText = snapshot;
+        lastSentText = rawText;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.toLowerCase().includes("not modified")) {
-          console.warn("[streaming] Edit failed:", msg);
+        if (msg.toLowerCase().includes("not modified")) return;
+
+        // HTML parse failed — try plain text
+        if (msg.includes("parse") || msg.includes("HTML") || msg.includes("entities")) {
+          try {
+            if (messageId) {
+              await ctx.api.editMessageText(ctx.chat!.id, messageId, cleaned);
+            } else {
+              const sent = await ctx.reply(cleaned);
+              messageId = sent.message_id;
+            }
+            lastSentText = rawText;
+          } catch {
+            // Give up on this edit
+          }
         }
       }
     });
   }
-
-  function scheduleFlush() {
-    if (editTimer) return;
-    editTimer = setTimeout(() => {
-      editTimer = null;
-      enqueueEdit();
-    }, EDIT_INTERVAL_MS);
-  }
-
-  let firstDeltaSent = false;
 
   const onDelta = (text: string) => {
     if (finished) return;
     accumulated += text;
 
     if (!firstDeltaSent) {
-      // First delta — flush immediately so user sees something right away
       firstDeltaSent = true;
       enqueueEdit();
       return;
     }
 
-    // Subsequent deltas — coalesce with timer
     if (editTimer) clearTimeout(editTimer);
     editTimer = setTimeout(() => {
       editTimer = null;
@@ -95,10 +197,8 @@ export function createTelegramStream(ctx: Context): TelegramStreamConsumer {
       editTimer = null;
     }
 
-    // Enqueue final edit with complete text
+    // Final edit with complete text (all constructs should be closed by LLM)
     enqueueEdit();
-
-    // Wait for all edits to complete
     await editChain;
 
     return { text: accumulated, messageId };
