@@ -29,6 +29,10 @@ export interface CompilePromptParams {
   taskDescription?: string;
   // Delegation fields (personal agents only)
   delegationInstructions?: string | null;
+  // M1: Memory + operating instructions
+  operatingInstructions?: string | null;
+  ambientMemory?: string | null;
+  memorySchemaInstructions?: string | null;
 }
 
 export interface DelegationEdge {
@@ -177,48 +181,62 @@ function compileChatPrompt(params: CompilePromptParams): string {
     firstContact,
     conversationTurnCount,
     delegationInstructions,
+    operatingInstructions,
+    ambientMemory,
+    memorySchemaInstructions,
   } = params;
 
   const sections: string[] = [];
 
-  // 1. Role (always present)
-  sections.push(`# Your Role\n\n${roleContent}`);
-
-  // 2. Soul (skip if null -- internal agents won't have one)
-  if (soulContent) {
-    sections.push(`# Your Personality\n\n${soulContent}`);
-  }
-
-  // 3. Member intro
-  if (memberName && memberRole != null && memberAge != null) {
-    sections.push(
-      `# Who You're Talking To\n\n${memberName} is a ${memberAge}-year-old ${memberRole}.`,
-    );
-  }
-
-  // 3b. First-contact onboarding (no profile yet, new conversation)
-  if (firstContact && !memberProfile && memberName && memberAge != null) {
-    sections.push(
-      `# Getting to Know ${memberName}\n\n${buildOnboardingInstructions(memberName, memberAge, conversationTurnCount ?? 0)}`,
-    );
-  }
-
-  // 3c. Member profile (detailed knowledge about this person)
-  if (memberProfile) {
-    sections.push(`# About ${memberName ?? "This Person"}\n\n${memberProfile}`);
-  }
-
-  // 4. Constitution document
+  // 1. Family Constitution — THE FRAME (always first)
   if (constitutionDocument) {
     sections.push(`# Family Constitution\n\n${constitutionDocument}`);
   }
 
-  // 5. Soft rules
+  // 1b. Soft rules (behavioral guidelines from constitution clauses)
   if (softRules) {
     sections.push(`# Behavioral Guidelines\n\n${softRules}`);
   }
 
-  // 6. Delegation instructions (personal agents only)
+  // 2. Your Role (always present)
+  sections.push(`# Your Role\n\n${roleContent}`);
+
+  // 3. Your Personality (skip if null — internal agents won't have one)
+  if (soulContent) {
+    sections.push(`# Your Personality\n\n${soulContent}`);
+  }
+
+  // 4. Operating Instructions (self-maintained behavioral notes)
+  if (operatingInstructions) {
+    sections.push(`# Operating Instructions\n\n${operatingInstructions}`);
+  }
+
+  // 5. About [Member Name] — combined intro line + profile
+  if (memberName && memberRole != null && memberAge != null) {
+    const introLine = `${memberName} is a ${memberAge}-year-old ${memberRole}.`;
+
+    if (memberProfile) {
+      sections.push(`# About ${memberName}\n\n${introLine}\n\n${memberProfile}`);
+    } else if (firstContact && memberAge != null) {
+      sections.push(
+        `# Getting to Know ${memberName}\n\n${introLine}\n\n${buildOnboardingInstructions(memberName, memberAge, conversationTurnCount ?? 0)}`,
+      );
+    } else {
+      sections.push(`# About ${memberName}\n\n${introLine}`);
+    }
+  }
+
+  // 6. What You Know — ambient memory (recent/relevant entries)
+  if (ambientMemory) {
+    sections.push(`# What You Know\n\n${ambientMemory}`);
+  }
+
+  // 7. How to Use Memory — from memory schema
+  if (memorySchemaInstructions) {
+    sections.push(`# How to Use Memory\n\n${memorySchemaInstructions}`);
+  }
+
+  // 8. Delegation instructions (personal agents only)
   if (delegationInstructions) {
     sections.push(`# Delegation\n\n${delegationInstructions}`);
   }

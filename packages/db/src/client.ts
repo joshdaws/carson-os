@@ -41,6 +41,7 @@ CREATE TABLE family_members (
   telegram_user_id TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
+  memory_dir TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX family_members_household_idx ON family_members(household_id);
@@ -59,6 +60,7 @@ CREATE TABLE staff_agents (
   status TEXT NOT NULL DEFAULT 'active',
   is_head_butler INTEGER NOT NULL DEFAULT 0,
   autonomy_level TEXT NOT NULL DEFAULT 'supervised',
+  operating_instructions TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -219,6 +221,16 @@ CREATE TABLE profile_interview_state (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+CREATE TABLE tool_grants (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+  tool_name TEXT NOT NULL,
+  granted_by TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX tool_grants_agent_idx ON tool_grants(agent_id);
+CREATE UNIQUE INDEX tool_grants_unique ON tool_grants(agent_id, tool_name);
+
 CREATE TABLE instance_settings (
   id TEXT PRIMARY KEY,
   key TEXT NOT NULL UNIQUE,
@@ -345,8 +357,34 @@ function upgradeTables(sqlite: Database.Database) {
       upgraded = true;
     }
 
+    // family_members: add memoryDir for per-member memory directory override
+    if (!memberCols.has("memory_dir")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN memory_dir TEXT").run();
+      upgraded = true;
+    }
+
+    // staff_agents: add operatingInstructions for self-maintained behavioral notes
+    if (!staffCols.has("operating_instructions")) {
+      sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN operating_instructions TEXT").run();
+      upgraded = true;
+    }
+
+    // Create tool_grants table
+    if (!tableExists("tool_grants")) {
+      sqlite.prepare(`CREATE TABLE tool_grants (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+        tool_name TEXT NOT NULL,
+        granted_by TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX tool_grants_agent_idx ON tool_grants(agent_id)").run();
+      sqlite.prepare("CREATE UNIQUE INDEX tool_grants_unique ON tool_grants(agent_id, tool_name)").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded to v5 (profile support)");
+      console.log("[db] Schema upgraded to v7 (tool grants)");
     }
   });
 
