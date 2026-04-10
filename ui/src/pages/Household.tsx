@@ -79,7 +79,7 @@ const ROLE_OPTIONS: { value: MemberRole; label: string }[] = [
 
 const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
   { value: "personal", label: "Personal Agent" },
-  { value: "head_butler", label: "Head Butler" },
+  { value: "head_butler", label: "Chief of Staff" },
   { value: "tutor", label: "Tutor" },
   { value: "coach", label: "Coach" },
   { value: "scheduler", label: "Scheduler" },
@@ -99,7 +99,7 @@ function statusColor(s: AgentStatus): string {
 }
 
 function roleLabel(r: StaffRole): string {
-  return r === "head_butler" ? "Head Butler" : r.charAt(0).toUpperCase() + r.slice(1);
+  return r === "head_butler" ? "Chief of Staff" : r.charAt(0).toUpperCase() + r.slice(1);
 }
 
 // ── Add Member Form ────────────────────────────────────────────────
@@ -418,7 +418,7 @@ const ROLE_TEMPLATES: Record<string, string> = {
   tutor: "You create study plans, generate practice questions, review essays, build vocabulary lists, and track learning progress. You coach through problems without giving direct answers unless the constitution allows it.",
   coach: "You build workout schedules, create practice plans, track fitness goals, suggest activities, and encourage physical activity.",
   scheduler: "You manage calendar events, find free time, coordinate family schedules, propose time blocks, and send reminders.",
-  head_butler: "You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal.",
+  head_butler: "You oversee all staff, coordinate family schedules, and ensure the family constitution is upheld. You're the family's primary point of contact.",
   custom: "",
 };
 

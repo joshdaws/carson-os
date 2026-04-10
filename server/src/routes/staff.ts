@@ -2,8 +2,8 @@
  * Staff agent routes -- CRUD for agents + assignment management.
  *
  * Guards:
- *   - Only one head butler allowed per household
- *   - Head butler cannot be deleted
+ *   - Only one Chief of Staff allowed per household
+ *   - Chief of Staff cannot be deleted
  */
 
 import { Router } from "express";
@@ -150,7 +150,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       if (existingButler) {
         res
           .status(409)
-          .json({ error: "A head butler already exists for this household" });
+          .json({ error: "A Chief of Staff already exists for this household" });
         return;
       }
     }
@@ -222,7 +222,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     res.json({ agent: updated });
   });
 
-  // DELETE /:id -- delete staff agent (block if head butler)
+  // DELETE /:id -- delete staff agent (block if Chief of Staff)
   router.delete("/:id", async (req, res) => {
     const existing = await db
       .select()
@@ -236,7 +236,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     }
 
     if (existing.isHeadButler) {
-      res.status(403).json({ error: "Cannot delete the head butler" });
+      res.status(403).json({ error: "Cannot delete the Chief of Staff" });
       return;
     }
 
