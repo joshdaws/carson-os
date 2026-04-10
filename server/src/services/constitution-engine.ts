@@ -409,12 +409,18 @@ export class ConstitutionEngine {
 
     let llmResponse: string;
 
+    // Resolve enabled skills for this agent
+    const enabledSkills = this.toolRegistry
+      ? await this.toolRegistry.getAgentSkills(agentId)
+      : undefined;
+
     try {
       const result = await this.adapter.execute({
         systemPrompt,
         messages: messagesForLlm,
         tools,
         toolExecutor,
+        enabledSkills: enabledSkills?.length ? enabledSkills : undefined,
       });
       llmResponse = result.content;
 

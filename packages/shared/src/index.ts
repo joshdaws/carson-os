@@ -238,6 +238,8 @@ export interface AdapterExecuteParams {
   model?: string;
   tools?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
+  /** Claude Code skill names to enable (e.g., "content-writer", "web-scraper") */
+  enabledSkills?: string[];
 }
 
 export interface AdapterExecuteResult {

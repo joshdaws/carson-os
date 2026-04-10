@@ -103,6 +103,9 @@ async function main() {
     );
   }
 
+  // Discover installed Claude Code skills
+  toolRegistry.discoverSkills();
+
   console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
 
   // 3. Constitution engine

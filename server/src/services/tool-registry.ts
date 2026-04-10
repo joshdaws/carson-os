@@ -9,6 +9,9 @@
  * executor that routes tool calls to the right handler.
  */
 
+import { readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { toolGrants, staffAgents } from "@carsonos/db";
@@ -153,6 +156,52 @@ export class ToolRegistry {
   /** List tools by tier. */
   listByTier(tier: ToolTier): RegisteredTool[] {
     return [...this.tools.values()].filter((t) => t.tier === tier);
+  }
+
+  /**
+   * Discover installed Claude Code skills from ~/.claude/skills/
+   * and register them as toggleable builtin tools.
+   */
+  discoverSkills(): void {
+    const skillsDir = join(homedir(), ".claude", "skills");
+    if (!existsSync(skillsDir)) return;
+
+    try {
+      const entries = readdirSync(skillsDir);
+      for (const name of entries) {
+        const skillToolName = `skill:${name}`;
+        if (this.tools.has(skillToolName)) continue;
+
+        this.tools.set(skillToolName, {
+          definition: {
+            name: skillToolName,
+            description: `Claude Code skill: ${name}`,
+            input_schema: { type: "object", properties: {} },
+          },
+          category: "skill",
+          tier: "builtin",
+        });
+      }
+
+      const count = entries.length;
+      if (count > 0) {
+        console.log(`[tools] Discovered ${count} Claude Code skills`);
+      }
+    } catch {
+      // Skills dir not readable — skip
+    }
+  }
+
+  /**
+   * Get the Claude Code skill names an agent is granted.
+   * Returns just the skill names (without "skill:" prefix)
+   * for passing to the adapter's enabledSkills param.
+   */
+  async getAgentSkills(agentId: string): Promise<string[]> {
+    const tools = await this.getAgentTools(agentId);
+    return tools
+      .filter((t) => t.name.startsWith("skill:"))
+      .map((t) => t.name.replace("skill:", ""));
   }
 
   // ── Per-agent resolution ──────────────────────────────────────────
