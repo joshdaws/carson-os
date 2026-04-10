@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/Toast";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { InterviewOverlay } from "@/components/InterviewOverlay";
 import { ToolsManager } from "@/components/ToolsManager";
 import type { ChatMessage } from "@/components/ChatBubble";
@@ -521,11 +523,8 @@ export function StaffDetailPage() {
               }}
             />
           ) : agent.soulContent ? (
-            <div
-              className="text-sm leading-relaxed whitespace-pre-wrap"
-              style={{ color: "#2c2c2c" }}
-            >
-              {agent.soulContent}
+            <div className="prose prose-sm max-w-none text-sm leading-relaxed" style={{ color: "#2c2c2c" }}>
+              <Markdown remarkPlugins={[remarkGfm]}>{agent.soulContent}</Markdown>
             </div>
           ) : (
             <div className="text-center py-6">
