@@ -160,7 +160,13 @@ export type MemoryType =
   | "decision"
   | "commitment"
   | "person"
-  | "project";
+  | "project"
+  | "media"
+  | "place"
+  | "routine"
+  | "relationship"
+  | "goal"
+  | "skill";
 
 export interface MemorySchemaField {
   name: string;

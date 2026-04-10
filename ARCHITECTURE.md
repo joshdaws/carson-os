@@ -102,7 +102,13 @@ This is inspired by Hermes (raw delta buffering + edit-in-place) and OpenClaw (m
 
 ### Three Layers
 
-**1. Memory Schema** — Defines what types of memories exist and their frontmatter structure. Seven default types: fact, preference, event, decision, commitment, person, project. Each has typed fields (topics, date, status, etc.).
+**1. Memory Schema** — Defines what types of memories exist and their frontmatter structure. Thirteen types, inspired by research into Mem0, MemPalace, Letta, Capacities, and PKM systems:
+
+- **Core:** fact, preference, event, decision, commitment
+- **Entity:** person, project, media, place, relationship
+- **Behavioral:** routine, goal, skill
+
+Each type has typed frontmatter fields (topics, date, status, mediaType, frequency, proficiency, etc.). The schema is a config — adding new types requires no code changes.
 
 **2. Knowledge Base** — Markdown files indexed by QMD. One QMD collection per family member, plus a shared household collection. Files have YAML frontmatter with type, title, topics, etc.
 

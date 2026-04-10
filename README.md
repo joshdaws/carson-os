@@ -142,7 +142,24 @@ Trust levels control what Claude Code built-in tools an agent can use:
 
 Three layers of memory, all stored as local markdown files:
 
-1. **Memory Schema** — Defines 7 memory types (fact, preference, event, decision, commitment, person, project) with YAML frontmatter fields
+1. **Memory Schema** — Defines 13 memory types with YAML frontmatter fields:
+
+   | Type | Description | Example |
+   |------|-------------|---------|
+   | `fact` | Concrete information | "Elsie's soccer practice is Tuesdays at 5pm" |
+   | `preference` | Likes, dislikes, ways of working | "Grant prefers short explanations" |
+   | `event` | Things that happened | "We went to Disney World this week" |
+   | `decision` | Choices made | "We decided to homeschool starting fall 2026" |
+   | `commitment` | Promises and obligations | "Josh promised to coach the spring league" |
+   | `person` | Contact info and relationship notes | "Dr. Kim, pediatrician, office on 5th" |
+   | `project` | Ongoing efforts with status | "Kitchen renovation, started March, contractor is Mike" |
+   | `media` | Books, movies, shows, articles, podcasts | "Watched Jaws again, Quint's monologue is about survivor's guilt" |
+   | `place` | Locations, restaurants, schools | "The cabin in Tahoe, great for summer trips" |
+   | `routine` | Recurring habits and schedules | "Grant has basketball Tue/Thu after school" |
+   | `relationship` | Connections between people | "Tyler coaches Grant's team, our closest family friends" |
+   | `goal` | Aspirations and targets | "Get Claire into the school play by October" |
+   | `skill` | Things people know or are learning | "Grant is learning to code, started with Python" |
+
 2. **Knowledge Base** — QMD-indexed markdown files. One collection per member + a shared household collection. Searchable via hybrid search (BM25 + vector + LLM reranking)
 3. **Operating Instructions** — Per-agent self-maintained behavioral notes. The agent updates these itself as it learns how to help you
 

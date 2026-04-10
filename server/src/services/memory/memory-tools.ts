@@ -58,13 +58,9 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         type: {
           type: "string",
           enum: [
-            "fact",
-            "preference",
-            "event",
-            "decision",
-            "commitment",
-            "person",
-            "project",
+            "fact", "preference", "event", "decision", "commitment",
+            "person", "project", "media", "place", "routine",
+            "relationship", "goal", "skill",
           ],
           description: "The type of memory to save.",
         },
