@@ -32,12 +32,20 @@ export type ToolHandler = (
   input: Record<string, unknown>,
 ) => Promise<ToolResult>;
 
+/**
+ * Tool tiers:
+ *   - system:  Every agent gets these automatically, not toggleable (search_memory, update_instructions)
+ *   - builtin: Ships with CarsonOS, toggleable per-agent in dashboard (calendar, gmail, drive)
+ *   - custom:  Created by agents, imported from skills.sh, or user-installed
+ */
+export type ToolTier = "system" | "builtin" | "custom";
+
 export interface RegisteredTool {
   definition: ToolDefinition;
-  /** Category for grouping in UI / access control */
+  /** Category for grouping in UI (memory, calendar, gmail, drive, etc.) */
   category: string;
-  /** Whether this tool is a built-in (always available) or installed */
-  builtin: boolean;
+  /** Tool tier determines visibility and default behavior */
+  tier: ToolTier;
 }
 
 /** Context needed to build tool executors for a specific conversation */
@@ -100,11 +108,13 @@ export class ToolRegistry {
 
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
+    // System tools — every agent gets these, not toggleable
+    const systemTools = ["search_memory", "save_memory", "update_instructions"];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
-        category: def.name === "update_instructions" ? "system" : "memory",
-        builtin: true,
+        category: "memory",
+        tier: systemTools.includes(def.name) ? "system" : "builtin",
       });
     }
   }
@@ -135,9 +145,14 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
-  /** List tool names by category. */
+  /** List tools by category. */
   listByCategory(category: string): RegisteredTool[] {
     return [...this.tools.values()].filter((t) => t.category === category);
+  }
+
+  /** List tools by tier. */
+  listByTier(tier: ToolTier): RegisteredTool[] {
+    return [...this.tools.values()].filter((t) => t.tier === tier);
   }
 
   // ── Per-agent resolution ──────────────────────────────────────────
@@ -148,7 +163,12 @@ export class ToolRegistry {
    * if no explicit grants exist.
    */
   async getAgentTools(agentId: string): Promise<ToolDefinition[]> {
-    // Check for explicit grants
+    // System tools — every agent gets these, always
+    const systemTools = [...this.tools.values()]
+      .filter((t) => t.tier === "system")
+      .map((t) => t.definition.name);
+
+    // Check for explicit grants (builtin + custom tools)
     const grants = await this.db
       .select({ toolName: toolGrants.toolName })
       .from(toolGrants)
@@ -157,8 +177,10 @@ export class ToolRegistry {
     let grantedNames: string[];
 
     if (grants.length > 0) {
-      grantedNames = grants.map((g) => g.toolName);
+      // Explicit grants exist — use them + system tools
+      grantedNames = [...new Set([...systemTools, ...grants.map((g) => g.toolName)])];
     } else {
+      // No explicit grants — use role defaults (which already include system tools)
       const [agent] = await this.db
         .select({ staffRole: staffAgents.staffRole })
         .from(staffAgents)
@@ -166,7 +188,7 @@ export class ToolRegistry {
         .limit(1);
 
       const role = agent?.staffRole ?? "custom";
-      grantedNames = DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom;
+      grantedNames = [...new Set([...systemTools, ...(DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom)])];
     }
 
     // Only return tools that are actually registered

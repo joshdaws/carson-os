@@ -90,15 +90,15 @@ async function main() {
     });
 
     toolRegistry.registerAll(
-      CALENDAR_TOOLS.map((def) => ({ definition: def, category: "calendar", builtin: true })),
+      CALENDAR_TOOLS.map((def) => ({ definition: def, category: "calendar", tier: "builtin" as const })),
       googlePlaceholder,
     );
     toolRegistry.registerAll(
-      GMAIL_TOOLS.map((def) => ({ definition: def, category: "gmail", builtin: true })),
+      GMAIL_TOOLS.map((def) => ({ definition: def, category: "gmail", tier: "builtin" as const })),
       googlePlaceholder,
     );
     toolRegistry.registerAll(
-      DRIVE_TOOLS.map((def) => ({ definition: def, category: "drive", builtin: true })),
+      DRIVE_TOOLS.map((def) => ({ definition: def, category: "drive", tier: "builtin" as const })),
       googlePlaceholder,
     );
   }
