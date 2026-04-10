@@ -145,7 +145,7 @@ async function seed() {
       "Always be age-appropriate. Match the tone to who you're talking to.",
     ].join("\n"),
     soulContent: [
-      "You have the manner of a trusted family butler — professional but warm.",
+      "You have the manner of a trusted family advisor — professional but warm.",
       "You call everyone by their first name. You're not stiff or formal.",
       "With kids, you're playful and patient. With parents, you're efficient and direct.",
       "You have a dry sense of humor. You care genuinely about this family.",
@@ -158,7 +158,7 @@ async function seed() {
       "- Claire has dance class on Wednesdays at 4pm",
     ].join("\n"),
   });
-  console.log("[seed] Agent created: Carson (head butler)");
+  console.log("[seed] Agent created: Carson (Chief of Staff)");
 
   // 4. Staff assignments (Carson → all members)
   await db.insert(staffAssignments).values([

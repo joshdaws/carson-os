@@ -31,9 +31,18 @@ interface VersionEntry {
   documentPreview: string;
 }
 
-const CONSTITUTION_GREETING = "Welcome. I'm Carson, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.";
+function constitutionGreeting(agentName: string): string {
+  return `Welcome. I'm ${agentName}, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.`;
+}
 
 // ── Page ───────────────────────────────────────────────────────────
+
+interface StaffAgent {
+  id: string;
+  name: string;
+  staffRole: string;
+  isHeadButler?: boolean;
+}
 
 export function ConstitutionPage() {
   const queryClient = useQueryClient();
@@ -49,6 +58,15 @@ export function ConstitutionPage() {
     queryFn: () => api.get("/constitution"),
     retry: false,
   });
+
+  const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
+    queryKey: ["staff"],
+    queryFn: () => api.get("/staff"),
+  });
+
+  const headAgentName = staffData?.staff?.find(
+    (a) => a.isHeadButler || a.staffRole === "head_butler",
+  )?.name ?? "your Chief of Staff";
 
   const { data: versionsData } = useQuery<{ versions: VersionEntry[] }>({
     queryKey: ["constitution", "versions"],
@@ -158,7 +176,7 @@ export function ConstitutionPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
+              setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
               setShowInterview(true);
             }}
             style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
@@ -251,7 +269,7 @@ export function ConstitutionPage() {
           interviewMutation.mutate(text);
         }}
         onReset={() => {
-          setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
+          setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
         }}
       />
 
@@ -412,6 +430,15 @@ function ConstitutionEmptyState() {
   const [showInterview, setShowInterview] = useState(false);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
 
+  const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
+    queryKey: ["staff"],
+    queryFn: () => api.get("/staff"),
+  });
+
+  const headAgentName = staffData?.staff?.find(
+    (a) => a.isHeadButler || a.staffRole === "head_butler",
+  )?.name ?? "your Chief of Staff";
+
   const interviewMutation = useMutation({
     mutationFn: (text: string) =>
       api.post<{ response: string; phase: string; constitutionDocument?: string }>(
@@ -489,7 +516,7 @@ function ConstitutionEmptyState() {
           interviewMutation.mutate(text);
         }}
         onReset={() => {
-          setInterviewMessages([{ role: "assistant", content: CONSTITUTION_GREETING }]);
+          setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
         }}
       />
     </div>

@@ -278,7 +278,7 @@ export function StaffDetailPage() {
   const currentSoul = soulDraft ?? agent.soulContent ?? "";
   const isButler = agent.isHeadButler || agent.staffRole === "head_butler";
   const roleLabel = isButler
-    ? "Head Butler"
+    ? "Chief of Staff"
     : agent.staffRole.charAt(0).toUpperCase() + agent.staffRole.slice(1);
 
   const assignedMemberIds = new Set(agent.assignments?.map((a) => a.memberId) || []);

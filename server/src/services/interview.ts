@@ -8,7 +8,7 @@
 
 import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { onboardingState, households } from "@carsonos/db";
+import { onboardingState, households, staffAgents } from "@carsonos/db";
 import type { OnboardingPhase, RichContent, InterviewPhase } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
 
@@ -154,9 +154,9 @@ const CONSTITUTION_TEMPLATE = `# [Family Name] Household Constitution
 
 [FILL: 1-2 sentences synthesized by Carson from the interview. What is the purpose of AI agents in this household?]`;
 
-const INTERVIEW_SYSTEM_PROMPT = `You are Carson, the head butler of a household AI governance system called CarsonOS. You are conducting a structured interview to build the family's household constitution.
+const INTERVIEW_SYSTEM_PROMPT = `You are the Chief of Staff of a household AI governance system called CarsonOS. You are conducting a structured interview to build the family's household constitution.
 
-Your personality: dignified, warm but professional, occasionally dry-witted. A proper English butler who cares about the family he serves.
+Your personality: warm but professional, occasionally dry-witted. Dedicated to the family's wellbeing.
 
 You are filling in a SPECIFIC CONSTITUTION TEMPLATE. The template has these sections, each with [FILL] placeholders:
 
@@ -309,9 +309,18 @@ export class InterviewEngine {
 
     // If first message, inject the hardcoded greeting so the LLM has context
     if (interviewMessages.length === 0) {
+      // Look up the head agent name (or fall back to "your Chief of Staff")
+      const headAgent = await this.db
+        .select({ name: staffAgents.name })
+        .from(staffAgents)
+        .where(eq(staffAgents.householdId, householdId))
+        .limit(1)
+        .get();
+      const agentName = headAgent?.name ?? "your Chief of Staff";
+
       interviewMessages.push({
         role: "assistant",
-        content: "Welcome. I'm Carson, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.",
+        content: InterviewEngine.greeting(agentName),
       });
     }
 
@@ -473,6 +482,10 @@ Format it as a clear, readable document that a family would be proud to have gov
   }
 
   // -- Private helpers -----------------------------------------------
+
+  static greeting(agentName: string): string {
+    return `Welcome. I'm ${agentName}, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.`;
+  }
 
   private parsePhase(response: string): string {
     const match = response.match(/\[PHASE:\s*(\w+)\]/);
