@@ -523,8 +523,38 @@ export function StaffDetailPage() {
               }}
             />
           ) : agent.soulContent ? (
-            <div className="prose prose-sm max-w-none text-sm leading-relaxed" style={{ color: "#2c2c2c" }}>
-              <Markdown remarkPlugins={[remarkGfm]}>{agent.soulContent}</Markdown>
+            <div className="max-w-none text-sm leading-relaxed" style={{ color: "#2c2c2c" }}>
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({ children }) => (
+                    <h1 className="text-lg font-semibold mt-4 mb-2 first:mt-0" style={{ color: "#1a1f2e" }}>{children}</h1>
+                  ),
+                  h2: ({ children }) => (
+                    <h2 className="text-base font-semibold mt-5 mb-1.5" style={{ color: "#1a1f2e" }}>{children}</h2>
+                  ),
+                  h3: ({ children }) => (
+                    <h3 className="text-sm font-semibold mt-4 mb-1" style={{ color: "#1a1f2e" }}>{children}</h3>
+                  ),
+                  p: ({ children }) => (
+                    <p className="mb-2 last:mb-0">{children}</p>
+                  ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc ml-5 mb-2 space-y-0.5">{children}</ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal ml-5 mb-2 space-y-0.5">{children}</ol>
+                  ),
+                  strong: ({ children }) => (
+                    <strong className="font-semibold" style={{ color: "#1a1f2e" }}>{children}</strong>
+                  ),
+                  em: ({ children }) => (
+                    <em style={{ color: "#6a6050" }}>{children}</em>
+                  ),
+                }}
+              >
+                {agent.soulContent}
+              </Markdown>
             </div>
           ) : (
             <div className="text-center py-6">
