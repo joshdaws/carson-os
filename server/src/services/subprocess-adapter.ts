@@ -319,6 +319,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
       }
     }
 
+    const onTextDelta = params.onTextDelta;
+
     const conversation = query({
       prompt: userPrompt,
       options: {
@@ -332,11 +334,24 @@ class ClaudeAgentSdkAdapter implements Adapter {
         tools: params.builtinTools ?? [],
         allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
+        // Enable streaming when a delta callback is provided
+        ...(onTextDelta ? { includePartialMessages: true } : {}),
         env,
       },
     });
 
     for await (const message of conversation) {
+      // Stream text deltas to the caller as they arrive
+      if (onTextDelta && message.type === "stream_event") {
+        const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
+        if (
+          event?.type === "content_block_delta" &&
+          (event?.delta as Record<string, unknown>)?.type === "text_delta"
+        ) {
+          onTextDelta((event.delta as { text: string }).text);
+        }
+      }
+
       // Collect text content blocks from each assistant turn
       if (message.type === "assistant" && "message" in message) {
         const msgObj = message.message as { content?: unknown[] } | undefined;

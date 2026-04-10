@@ -22,6 +22,7 @@ import type { ConstitutionEngine } from "./constitution-engine.js";
 import type { TaskEngine } from "./task-engine.js";
 import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
 import type { Adapter } from "./subprocess-adapter.js";
+import { createTelegramStream } from "./telegram-streaming.js";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -61,8 +62,8 @@ const MEMORY_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_MESSAGE_LENGTH = 4096;
 const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 min dedup window
 const DEDUP_MAX_SIZE = 2000;
-const STALL_CHECK_INTERVAL_MS = 30_000;
-const STALL_THRESHOLD_MS = 90_000;
+const STALL_CHECK_INTERVAL_MS = 60_000;
+const STALL_THRESHOLD_MS = 300_000; // 5 min — SDK calls can take 30-60s with tool loops
 const CONFLICT_BACKOFF_MS = 5_000;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -313,14 +314,7 @@ export class MultiRelayManager {
       console.log(`[multi-relay] Bot started for ${agent.name} (${agentId})`);
     } catch (err) {
       console.error(`[multi-relay] Failed to start bot for ${agent.name}:`, err);
-      try {
-        await this.db
-          .update(staffAgents)
-          .set({ status: "idle" })
-          .where(eq(staffAgents.id, agentId));
-      } catch {
-        // swallow
-      }
+      // Don't set status to idle on start failure — it prevents recovery on restart
     }
   }
 
@@ -505,7 +499,7 @@ export class MultiRelayManager {
     member: typeof familyMembers.$inferSelect,
     message: string,
   ): Promise<void> {
-    // Send typing indicator while LLM works (refreshes every 4s)
+    // Typing indicator until first delta arrives
     let typingInterval: ReturnType<typeof setInterval> | null = null;
     try {
       await ctx.replyWithChatAction("typing");
@@ -514,7 +508,24 @@ export class MultiRelayManager {
       }, 4000);
     } catch { /* swallow */ }
 
-    // 1. Constitution engine
+    // Set up streaming — edits Telegram message in real-time as tokens arrive
+    const stream = createTelegramStream(ctx);
+    const originalOnDelta = stream.onDelta;
+
+    // Stop typing indicator once first delta arrives
+    let firstDelta = true;
+    stream.onDelta = (text: string) => {
+      if (firstDelta) {
+        firstDelta = false;
+        if (typingInterval) {
+          clearInterval(typingInterval);
+          typingInterval = null;
+        }
+      }
+      originalOnDelta(text);
+    };
+
+    // 1. Constitution engine with streaming
     let engineResult;
     try {
       engineResult = await this.engine.processMessage({
@@ -523,12 +534,23 @@ export class MultiRelayManager {
         householdId: member.householdId,
         message,
         channel: "telegram",
+        onTextDelta: stream.onDelta,
       });
-    } finally {
+    } catch (err) {
       if (typingInterval) clearInterval(typingInterval);
+      await stream.finish();
+      throw err;
     }
 
+    if (typingInterval) clearInterval(typingInterval);
+
+    // Finish streaming — returns messageId for in-place edit
+    const { messageId: streamMsgId } = await stream.finish();
+
     if (engineResult.blocked) {
+      if (streamMsgId) {
+        try { await ctx.api.deleteMessage(ctx.chat!.id, streamMsgId); } catch { /* swallow */ }
+      }
       await this.sendFormatted(ctx, engineResult.response);
       return;
     }
@@ -548,17 +570,56 @@ export class MultiRelayManager {
       }
     }
 
-    // 3. Send response
-    if (delegationResult.delegated) {
-      const ackMessage = delegationResult.userMessage;
-      if (ackMessage && ackMessage.trim().length > 0) {
-        await this.sendFormatted(ctx, ackMessage);
-      } else {
-        await ctx.reply("Working on that for you. I'll have an answer shortly.");
+    // 3. Send final formatted response
+    const finalText = delegationResult.delegated
+      ? (delegationResult.userMessage || "Working on that for you. I'll have an answer shortly.")
+      : (delegationResult.userMessage || engineResult.response);
+
+    if (streamMsgId) {
+      // Check if the response has markdown worth formatting
+      const hasFormatting = /[*_~`#\[|>]/.test(finalText) || finalText.includes("<think");
+      if (hasFormatting) {
+        // Edit the streaming message in-place with formatted HTML
+        await this.editFormatted(ctx, streamMsgId, finalText);
       }
+      // If no formatting, the streaming message already shows the correct text — leave it
     } else {
-      await this.sendFormatted(ctx, delegationResult.userMessage || engineResult.response);
+      // No streaming message was created (maybe no deltas) — send fresh
+      await this.sendFormatted(ctx, finalText);
     }
+  }
+
+  /**
+   * Edit an existing message with formatted HTML content.
+   * Falls back to delete+resend if the edit fails (e.g., content too long for single message).
+   */
+  private async editFormatted(ctx: Context, messageId: number, text: string): Promise<void> {
+    const { markdownToTelegramHtml, chunkMessage, stripThinkingBlocks } =
+      await import("./telegram-format.js");
+
+    const cleaned = stripThinkingBlocks(text);
+    const html = markdownToTelegramHtml(cleaned);
+    const chunks = chunkMessage(html);
+
+    if (chunks.length === 1 && chunks[0].trim()) {
+      // Single chunk — edit in place
+      try {
+        await ctx.api.editMessageText(ctx.chat!.id, messageId, chunks[0], {
+          parse_mode: "HTML",
+        });
+        return;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[multi-relay] HTML edit failed: ${errMsg}`);
+        // Fall through to delete+resend
+      }
+    }
+
+    // Multiple chunks or edit failed — delete streaming msg, send formatted chunks
+    try {
+      await ctx.api.deleteMessage(ctx.chat!.id, messageId);
+    } catch { /* swallow */ }
+    await this.sendFormatted(ctx, text);
   }
 
   // ── Formatted sending ─────────────────────────────────────────────

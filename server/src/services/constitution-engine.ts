@@ -64,6 +64,8 @@ export interface ProcessMessageParams {
   householdId: string;
   message: string;
   channel: Channel;
+  /** Streaming callback — forwarded to the adapter for real-time text deltas */
+  onTextDelta?: (text: string) => void;
 }
 
 export interface ProcessMessageResult {
@@ -426,6 +428,7 @@ export class ConstitutionEngine {
         toolExecutor,
         builtinTools,
         enabledSkills,
+        onTextDelta: params.onTextDelta,
       });
       llmResponse = result.content;
 
