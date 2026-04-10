@@ -48,7 +48,7 @@ import {
 } from "./memory/index.js";
 import type { ToolRegistry } from "./tool-registry.js";
 import type { GoogleCalendarProvider } from "./google/index.js";
-import { createCalendarToolHandler } from "./google/index.js";
+import { createCalendarToolHandler, createGmailToolHandler, createDriveToolHandler } from "./google/index.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -359,12 +359,26 @@ export class ConstitutionEngine {
     if (this.toolRegistry) {
       const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
 
-      // Bind per-member calendar handler for this conversation
+      // Bind per-member Google handlers for this conversation
       if (this.calendarProvider) {
         const calHandler = createCalendarToolHandler(this.calendarProvider, memberSlug);
         for (const toolName of ["list_calendar_events", "create_calendar_event", "get_calendar_event"]) {
           if (this.toolRegistry.get(toolName)) {
             this.toolRegistry.handlers.set(toolName, calHandler);
+          }
+        }
+
+        const gmailHandler = createGmailToolHandler(this.calendarProvider, memberSlug);
+        for (const toolName of ["gmail_triage", "gmail_read", "gmail_send", "gmail_reply", "gmail_search"]) {
+          if (this.toolRegistry.get(toolName)) {
+            this.toolRegistry.handlers.set(toolName, gmailHandler);
+          }
+        }
+
+        const driveHandler = createDriveToolHandler(this.calendarProvider, memberSlug);
+        for (const toolName of ["drive_search", "drive_list"]) {
+          if (this.toolRegistry.get(toolName)) {
+            this.toolRegistry.handlers.set(toolName, driveHandler);
           }
         }
       }

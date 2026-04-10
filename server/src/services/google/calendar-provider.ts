@@ -55,7 +55,7 @@ export class GoogleCalendarProvider {
   }
 
   /** Run a gws command with the right config dir for a member. */
-  private async gws(
+  async gws(
     memberSlug: string,
     args: string[],
   ): Promise<string> {
