@@ -250,6 +250,8 @@ export interface AdapterExecuteParams {
   builtinTools?: string[];
   /** Claude Code skill names to enable (e.g., ["content-writer", "web-scraper"]) */
   enabledSkills?: string[];
+  /** Streaming callback — fired for each text delta as it arrives from the LLM */
+  onTextDelta?: (text: string) => void;
 }
 
 export interface AdapterExecuteResult {
