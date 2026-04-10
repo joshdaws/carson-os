@@ -392,8 +392,21 @@ function upgradeTables(sqlite: Database.Database) {
       upgraded = true;
     }
 
+    // Create personality_interview_state table
+    if (!tableExists("personality_interview_state")) {
+      sqlite.prepare(`CREATE TABLE personality_interview_state (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+        phase TEXT NOT NULL DEFAULT 'intro',
+        interview_messages TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded to v7 (tool grants)");
+      console.log("[db] Schema upgraded to v8 (personality interviews)");
     }
   });
 

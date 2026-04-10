@@ -126,6 +126,14 @@ export type ProfileInterviewPhase =
   | "boundaries"
   | "review_complete";
 
+export type PersonalityInterviewPhase =
+  | "intro"
+  | "voice"
+  | "humor"
+  | "boundaries"
+  | "style"
+  | "review_complete";
+
 // ── Evaluation config shapes ────────────────────────────────────────
 
 export interface KeywordBlockConfig {

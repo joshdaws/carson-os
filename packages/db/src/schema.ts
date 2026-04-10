@@ -344,6 +344,21 @@ export const profileInterviewState = sqliteTable("profile_interview_state", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
 });
 
+// ── 13c. personalityInterviewState ─────────────────────────────────
+
+export const personalityInterviewState = sqliteTable("personality_interview_state", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => staffAgents.id),
+  phase: text("phase").notNull().default("intro"),
+  interviewMessages: text("interview_messages", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+});
+
 // ── 14. toolGrants ─────────────────────────────────────────────────
 
 export const toolGrants = sqliteTable(
