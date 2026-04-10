@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -23,13 +23,17 @@ import {
   Pencil,
   MessageSquare,
   Shield,
-  ListTodo,
-  UserPlus,
   UserMinus,
   Users,
+  FileText,
+  Sparkles,
+  Wrench,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/Toast";
+import { InterviewOverlay } from "@/components/InterviewOverlay";
+import { ToolsManager } from "@/components/ToolsManager";
+import type { ChatMessage } from "@/components/ChatBubble";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -51,6 +55,8 @@ interface StaffAgent {
   status: "active" | "paused" | "idle";
   isHeadButler?: boolean;
   autonomyLevel: string;
+  trustLevel?: string;
+  operatingInstructions?: string;
   assignments?: Assignment[];
 }
 
@@ -111,6 +117,12 @@ const AUTONOMY_OPTIONS = [
   { value: "autonomous", label: "Autonomous" },
 ];
 
+const TRUST_LEVEL_OPTIONS = [
+  { value: "full", label: "Full", description: "All built-in tools (Bash, Read, Write...)" },
+  { value: "standard", label: "Standard", description: "Read-only tools (Read, Glob, Grep...)" },
+  { value: "restricted", label: "Restricted", description: "No built-in tools — MCP only" },
+];
+
 const TASK_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   pending: { bg: "#fff3e0", text: "#8b6f4e" },
   approved: { bg: "#e8f5e9", text: "#2e7d32" },
@@ -127,9 +139,13 @@ export function StaffDetailPage() {
   const queryClient = useQueryClient();
 
   const [soulDraft, setSoulDraft] = useState<string | null>(null);
+  const [editingSoul, setEditingSoul] = useState(false);
   const [roleDraft, setRoleDraft] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
+  const [showPersonalityInterview, setShowPersonalityInterview] = useState(false);
+  const [personalityMessages, setPersonalityMessages] = useState<ChatMessage[]>([]);
+  const [personalityStarted, setPersonalityStarted] = useState(false);
 
   // Fetch staff agent
   const { data: staffData, isLoading } = useQuery<{ agent: StaffAgent; assignments: Assignment[] }>({
@@ -188,6 +204,43 @@ export function StaffDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
     },
   });
+
+  // Personality interview mutation
+  const personalityMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; soulDocument?: string }>(
+        `/staff/${staffId}/personality/interview`,
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setPersonalityMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.soulDocument) {
+        queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+      }
+    },
+  });
+
+  // Auto-start personality interview
+  useEffect(() => {
+    if (showPersonalityInterview && !personalityStarted && personalityMessages.length === 0) {
+      setPersonalityStarted(true);
+      const starter = "I'd like to define this agent's personality.";
+      setPersonalityMessages([{ role: "user" as const, content: starter }]);
+      personalityMutation.mutate(starter);
+    }
+  }, [showPersonalityInterview, personalityStarted]);
+
+  const isPersonalityComplete = personalityMutation.data?.soulDocument != null;
+
+  const handleTrustLevelChange = (level: string) => {
+    api.put(`/tools/agents/${staffId}/trust-level`, { trustLevel: level }).then(() => {
+      queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+      toast.success("Trust level updated");
+    });
+  };
 
   const rawAgent = staffData?.agent;
   const agent = rawAgent
@@ -330,6 +383,19 @@ export function StaffDetailPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
+            <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TRUST_LEVEL_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Select value={agent.autonomyLevel} onValueChange={handleAutonomyChange}>
             <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
               <SelectValue />
@@ -397,38 +463,161 @@ export function StaffDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Soul editor */}
+      {/* Soul / Personality */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
-          <h3 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <Sparkles className="h-4 w-4" style={{ color: "#8a8070" }} />
             Soul / Personality
           </h3>
-          {soulDraft !== null && (
+          <div className="flex gap-1">
+            {agent.soulContent && !editingSoul && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setEditingSoul(true); setSoulDraft(agent.soulContent ?? ""); }}
+                style={{ borderColor: "#ddd5c8" }}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+              </Button>
+            )}
+            {editingSoul && soulDraft !== null && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSaveSoul}
+                  disabled={patchStaff.isPending}
+                  style={{ borderColor: "#ddd5c8" }}
+                >
+                  <Save className="h-3.5 w-3.5 mr-1" /> Save
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setEditingSoul(false); setSoulDraft(null); }}
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
             <Button
               variant="outline"
               size="sm"
-              onClick={handleSaveSoul}
-              disabled={patchStaff.isPending}
+              onClick={() => setShowPersonalityInterview(true)}
               style={{ borderColor: "#ddd5c8" }}
             >
-              <Save className="h-3.5 w-3.5 mr-1" /> Save
+              {agent.soulContent ? "Re-interview" : "Build Personality"}
             </Button>
-          )}
+          </div>
         </div>
         <CardContent className="p-4">
-          <Textarea
-            value={currentSoul}
-            onChange={(e) => setSoulDraft(e.target.value)}
-            placeholder="Define this agent's personality, tone, and behavioral guidelines..."
-            className="min-h-[140px] text-sm"
-            style={{
-              fontFamily: "ui-monospace, monospace",
-              background: "#faf8f4",
-              borderColor: "#ddd5c8",
-            }}
-          />
+          {editingSoul ? (
+            <Textarea
+              value={soulDraft ?? ""}
+              onChange={(e) => setSoulDraft(e.target.value)}
+              placeholder="Define this agent's personality, tone, and behavioral guidelines..."
+              className="min-h-[140px] text-sm"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                background: "#faf8f4",
+                borderColor: "#ddd5c8",
+              }}
+            />
+          ) : agent.soulContent ? (
+            <div
+              className="text-sm leading-relaxed whitespace-pre-wrap"
+              style={{ color: "#2c2c2c" }}
+            >
+              {agent.soulContent}
+            </div>
+          ) : (
+            <div className="text-center py-6">
+              <Sparkles className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
+              <p className="text-sm mb-3" style={{ color: "#8a8070" }}>
+                No personality defined yet. Interview Carson to build one.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => setShowPersonalityInterview(true)}
+                style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              >
+                <Sparkles className="h-4 w-4 mr-2" />
+                Build Personality
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Personality Interview Overlay */}
+      <InterviewOverlay
+        title={`Personality: ${agent.name}`}
+        subtitle="Define how this agent communicates"
+        isOpen={showPersonalityInterview}
+        onClose={() => {
+          setShowPersonalityInterview(false);
+          setPersonalityMessages([]);
+          setPersonalityStarted(false);
+        }}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+        }}
+        messages={personalityMessages}
+        isLoading={personalityMutation.isPending}
+        isComplete={isPersonalityComplete}
+        onSendMessage={(text) => {
+          setPersonalityMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          personalityMutation.mutate(text);
+        }}
+        onReset={() => {
+          setPersonalityMessages([]);
+          setPersonalityStarted(false);
+        }}
+      />
+
+      {/* Operating Instructions */}
+      {agent.operatingInstructions && (
+        <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+          <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
+            <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+              <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
+              Operating Instructions
+            </h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs"
+              style={{ color: "#8a8070" }}
+              onClick={() => patchStaff.mutate({ operatingInstructions: "" } as Partial<StaffAgent>)}
+              disabled={patchStaff.isPending}
+            >
+              Clear
+            </Button>
+          </div>
+          <CardContent className="p-4">
+            <pre
+              className="text-xs leading-relaxed whitespace-pre-wrap"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                color: "#2c2c2c",
+                background: "#faf8f4",
+                padding: "12px",
+                borderRadius: "6px",
+                border: "1px solid #eee8dd",
+              }}
+            >
+              {agent.operatingInstructions}
+            </pre>
+            <p className="text-[11px] mt-2" style={{ color: "#a09080" }}>
+              These notes are maintained by the agent during conversations.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Telegram Bot Token */}
       {agent.visibility !== "internal" && (
@@ -558,6 +747,19 @@ export function StaffDetailPage() {
               </span>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Tools */}
+      <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+        <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <Wrench className="h-4 w-4" style={{ color: "#8a8070" }} />
+            Tools
+          </h3>
+        </div>
+        <CardContent className="p-4">
+          <ToolsManager agentId={staffId!} />
         </CardContent>
       </Card>
 
