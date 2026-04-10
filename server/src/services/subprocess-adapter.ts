@@ -311,6 +311,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let totalCost: number | null = null;
     let numTurns: number | null = null;
 
+    // Build the full allowed tools list: MCP tools + enabled skills
+    const allAllowedTools = [...allowedTools];
+    if (params.enabledSkills && params.enabledSkills.length > 0) {
+      for (const skill of params.enabledSkills) {
+        allAllowedTools.push(`Skill(${skill})`);
+      }
+    }
+
     const conversation = query({
       prompt: userPrompt,
       options: {
@@ -320,7 +328,9 @@ class ClaudeAgentSdkAdapter implements Adapter {
         allowDangerouslySkipPermissions: true,
         settingSources: ["user"],
         maxTurns: MAX_TURNS,
-        allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+        // Disable all built-in tools — agents only get our MCP tools + explicitly enabled skills
+        tools: [],
+        allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
         env,
       },
