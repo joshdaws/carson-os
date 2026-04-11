@@ -56,7 +56,7 @@ export const staffAgents = sqliteTable(
     soulContent: text("soul_content"), // Personality: voice, tone, values. NULL for internal agents.
     visibility: text("visibility").notNull().default("family"), // family | internal
     telegramBotToken: text("telegram_bot_token"), // Bot token for family-visible agents. NULL for internal.
-    model: text("model").notNull().default("claude-sonnet-4-20250514"),
+    model: text("model").notNull().default("claude-sonnet-4-6"),
     status: text("status").notNull().default("active"), // active | paused | idle
     isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),
     autonomyLevel: text("autonomy_level").notNull().default("supervised"), // supervised | trusted | autonomous

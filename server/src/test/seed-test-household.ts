@@ -131,7 +131,7 @@ async function seed() {
     staffRole: "personal",
     specialty: null,
     visibility: "family",
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     status: "active",
     isHeadButler: true,
     autonomyLevel: "trusted",

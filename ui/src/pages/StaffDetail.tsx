@@ -127,9 +127,9 @@ const TRUST_LEVEL_OPTIONS = [
 ];
 
 const MODEL_OPTIONS = [
-  { value: "claude-sonnet-4-20250514", label: "Sonnet 4" },
-  { value: "claude-opus-4-20250514", label: "Opus 4" },
-  { value: "claude-haiku-4-20250514", label: "Haiku 4" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 const TASK_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
@@ -386,7 +386,7 @@ export function StaffDetailPage() {
 
         <div className="flex items-center gap-2">
           <Select
-            value={agent.model ?? "claude-sonnet-4-20250514"}
+            value={agent.model ?? "claude-sonnet-4-6"}
             onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
           >
             <SelectTrigger className="h-8 w-32 text-xs" style={{ borderColor: "#ddd5c8" }}>

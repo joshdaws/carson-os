@@ -290,10 +290,10 @@ class ClaudeAgentSdkAdapter implements Adapter {
       }
     }
 
-    // Resolve model name
-    const sdkModel = model === "claude-sonnet-4-20250514" ? "sonnet"
-      : model === "claude-opus-4-20250514" ? "opus"
-      : model === "claude-haiku-4-20250514" ? "haiku"
+    // Resolve model name to SDK shorthand
+    const sdkModel = model === "claude-sonnet-4-6" ? "sonnet"
+      : model === "claude-opus-4-6" ? "opus"
+      : model === "claude-haiku-4-5-20251001" ? "haiku"
       : model ?? DEFAULT_MODEL;
 
     // Build env, filtering out undefined values

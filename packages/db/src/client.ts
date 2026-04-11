@@ -56,7 +56,7 @@ CREATE TABLE staff_agents (
   soul_content TEXT,
   visibility TEXT NOT NULL DEFAULT 'family',
   telegram_bot_token TEXT,
-  model TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+  model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
   status TEXT NOT NULL DEFAULT 'active',
   is_head_butler INTEGER NOT NULL DEFAULT 0,
   autonomy_level TEXT NOT NULL DEFAULT 'supervised',

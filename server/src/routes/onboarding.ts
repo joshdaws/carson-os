@@ -214,7 +214,7 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
         name: agentName,
         staffRole: "personal",
         visibility: "family",
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         status: "active",
         isHeadButler: true,
         autonomyLevel: "trusted",

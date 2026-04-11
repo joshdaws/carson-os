@@ -166,7 +166,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         soulContent: soulContent ?? null,
         visibility: visibility ?? "family",
         telegramBotToken: telegramBotToken ?? null,
-        model: model ?? "claude-sonnet-4-20250514",
+        model: model ?? "claude-sonnet-4-6",
         isHeadButler: isHeadButler ?? false,
         autonomyLevel: autonomyLevel ?? "supervised",
       })
