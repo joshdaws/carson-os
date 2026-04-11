@@ -271,10 +271,14 @@ export interface AdapterExecuteParams {
   enabledSkills?: string[];
   /** Streaming callback — fired for each text delta as it arrives from the LLM */
   onTextDelta?: (text: string) => void;
+  /** Resume an existing Agent SDK session instead of starting fresh */
+  resumeSessionId?: string;
 }
 
 export interface AdapterExecuteResult {
   content: string;
   toolCalls?: Array<{ name: string; input: Record<string, unknown>; result: ToolResult }>;
+  /** Agent SDK session ID — store this to resume the session on the next message */
+  sessionId?: string;
   metadata?: Record<string, unknown>;
 }

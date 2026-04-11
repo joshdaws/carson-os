@@ -110,6 +110,7 @@ interface CachedConstitution {
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_HISTORY_MESSAGES = 50;
+const SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours — session expires, falls back to text replay
 
 const FRIENDLY_BLOCK_MESSAGE =
   "I'm not able to help with that. If you think this is a mistake, ask a parent to review the family rules.";
@@ -122,9 +123,16 @@ const FRIENDLY_SCAN_REPLACEMENT =
 
 // -- Engine ----------------------------------------------------------
 
+interface SessionCacheEntry {
+  sessionId: string;
+  lastActivity: number;
+  toolCallNames: string[];
+}
+
 export class ConstitutionEngine {
   private cache = new Map<string, CachedConstitution>();
   private cachedMemorySchema: string | null = null;
+  private sessionCache = new Map<string, SessionCacheEntry>();
   private db: Db;
   private broadcast: BroadcastFn;
   private adapter: Adapter;
@@ -293,13 +301,19 @@ export class ConstitutionEngine {
       }
     }
 
-    // -- 5. Load conversation history ---------------------------------
+    // -- 5. Load conversation history + session state -----------------
     const conversationId = await this.getOrCreateConversation(
       agentId,
       memberId,
       householdId,
       channel,
     );
+
+    // Try to resume existing Agent SDK session (check cache first, then DB)
+    let resumeSessionId = this.getSessionId(conversationId);
+    if (!resumeSessionId) {
+      resumeSessionId = await this.loadSessionFromDb(conversationId);
+    }
 
     const history = await this.getConversationHistory(conversationId);
 
@@ -412,8 +426,15 @@ export class ConstitutionEngine {
         builtinTools,
         enabledSkills,
         onTextDelta: params.onTextDelta,
+        resumeSessionId: resumeSessionId ?? undefined,
       });
       llmResponse = result.content;
+
+      // Save session ID for resume on next message
+      if (result.sessionId) {
+        await this.saveSessionId(conversationId, result.sessionId, toolCallLog);
+        console.log(`[engine] Session saved for conversation ${conversationId}: ${result.sessionId}`);
+      }
 
       // Log tool calls to activity log
       if (toolCallLog && toolCallLog.length > 0) {
@@ -731,6 +752,82 @@ export class ConstitutionEngine {
       .update(conversations)
       .set({ lastMessageAt: now })
       .where(eq(conversations.id, conversationId));
+  }
+
+  // -- Private: session management -----------------------------------
+
+  /**
+   * Get the Agent SDK session ID for a conversation, if it's still valid.
+   * Returns null if no session exists or it's expired.
+   */
+  private getSessionId(conversationId: string): string | null {
+    const ctx = this.sessionCache.get(conversationId);
+    if (!ctx) return null;
+
+    const elapsed = Date.now() - ctx.lastActivity;
+    if (elapsed > SESSION_TIMEOUT_MS) {
+      // Session expired — will be cleaned up and noted
+      return null;
+    }
+
+    return ctx.sessionId;
+  }
+
+  /**
+   * Save the Agent SDK session ID after a successful query.
+   * Also persists to the conversation's sessionContext field in the DB.
+   */
+  private async saveSessionId(
+    conversationId: string,
+    sessionId: string,
+    toolCalls?: Array<{ name: string; input: Record<string, unknown> }>,
+  ): Promise<void> {
+    this.sessionCache.set(conversationId, {
+      sessionId,
+      lastActivity: Date.now(),
+      toolCallNames: toolCalls?.map((t) => t.name) ?? [],
+    });
+
+    // Persist to DB for durability across restarts
+    await this.db
+      .update(conversations)
+      .set({
+        sessionContext: {
+          sessionId,
+          lastActivity: new Date().toISOString(),
+          toolCallNames: toolCalls?.map((t) => t.name) ?? [],
+        },
+      })
+      .where(eq(conversations.id, conversationId));
+  }
+
+  /**
+   * Load session state from DB (on server restart, cache is empty).
+   */
+  private async loadSessionFromDb(conversationId: string): Promise<string | null> {
+    const row = await this.db
+      .select({ sessionContext: conversations.sessionContext })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .limit(1)
+      .then((rows) => rows[0]);
+
+    if (!row?.sessionContext) return null;
+
+    const ctx = row.sessionContext as { sessionId?: string; lastActivity?: string };
+    if (!ctx.sessionId || !ctx.lastActivity) return null;
+
+    const elapsed = Date.now() - new Date(ctx.lastActivity).getTime();
+    if (elapsed > SESSION_TIMEOUT_MS) return null;
+
+    // Restore to in-memory cache
+    this.sessionCache.set(conversationId, {
+      sessionId: ctx.sessionId,
+      lastActivity: new Date(ctx.lastActivity).getTime(),
+      toolCallNames: (ctx as { toolCallNames?: string[] }).toolCallNames ?? [],
+    });
+
+    return ctx.sessionId;
   }
 
   // -- Private: policy event logging ---------------------------------

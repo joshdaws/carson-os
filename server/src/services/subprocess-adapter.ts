@@ -308,6 +308,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
     // Collect text blocks from assistant turns
     const assistantTextBlocks: string[] = [];
     let resultText = "";
+    let capturedSessionId: string | null = null;
     let totalCost: number | null = null;
     let numTurns: number | null = null;
 
@@ -320,6 +321,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
     }
 
     const onTextDelta = params.onTextDelta;
+
+    const isResume = !!params.resumeSessionId;
 
     const conversation = query({
       prompt: userPrompt,
@@ -336,6 +339,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
         // Enable streaming when a delta callback is provided
         ...(onTextDelta ? { includePartialMessages: true } : {}),
+        // Resume existing session for conversation continuity
+        ...(params.resumeSessionId ? { resume: params.resumeSessionId } : {}),
         env,
       },
     });
@@ -343,6 +348,11 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let hasStreamedText = false;
 
     for await (const message of conversation) {
+      // Capture session_id from any message that carries it
+      if ("session_id" in message && typeof message.session_id === "string") {
+        capturedSessionId = message.session_id;
+      }
+
       // Stream text deltas to the caller as they arrive
       if (onTextDelta && message.type === "stream_event") {
         const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
@@ -409,7 +419,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
     }
 
     const totalMs = Date.now() - t0;
-    console.log(`[adapter] Agent SDK: ${totalMs}ms, ${numTurns} turns, ${allToolCalls.length} tool calls`);
+    console.log(`[adapter] Agent SDK: ${totalMs}ms, ${numTurns} turns, ${allToolCalls.length} tool calls, resume=${isResume ? 'yes' : 'no'}, session=${capturedSessionId ?? 'none'}`);
     if (totalCost != null) {
       console.log(`[adapter] Cost: $${totalCost.toFixed(4)}`);
     }
@@ -417,6 +427,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
     return {
       content: resultText || "No response.",
       toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+      sessionId: capturedSessionId ?? undefined,
       metadata: {
         adapter: "claude-agent-sdk",
         model: sdkModel,
