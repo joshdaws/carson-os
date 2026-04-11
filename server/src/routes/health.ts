@@ -25,7 +25,7 @@ export function createHealthRoutes(deps: HealthRouteDeps): Router {
     res.json({
       status: "ok",
       timestamp: Date.now(),
-      version: "0.3.0",
+      version: "0.1.0",
       adapter: {
         name: adapter.name,
         healthy: adapterHealthy,

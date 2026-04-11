@@ -38,8 +38,8 @@ import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from
 
 const BANNER = [
   "",
-  " CarsonOS v3",
-  " Constitution Engine + Task Governance",
+  " CarsonOS v0.1",
+  " Your family's values, your family's AI.",
   "",
 ].join("\n");
 

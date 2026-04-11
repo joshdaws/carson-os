@@ -6,5 +6,7 @@ dist/
 *.db-shm
 .env
 .env.local
+.env.sandbox
+.sandbox/
 .DS_Store
 *.tsbuildinfo
