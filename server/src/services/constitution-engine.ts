@@ -424,6 +424,7 @@ export class ConstitutionEngine {
       const result = await this.adapter.execute({
         systemPrompt,
         messages: messagesForLlm,
+        model: agent.model,
         tools,
         toolExecutor,
         builtinTools,
