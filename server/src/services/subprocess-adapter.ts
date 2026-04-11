@@ -321,6 +321,17 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     const isResume = !!params.resumeSessionId;
 
+    // Build agent definition with per-agent skill filtering
+    // The SDK's AgentDefinition.skills controls which skills are loaded —
+    // this is how we grant specific skills per agent instead of all-or-nothing.
+    const agentDef: Record<string, unknown> = {
+      description: "CarsonOS agent",
+      prompt: "", // System prompt is passed separately
+      ...(params.enabledSkills && params.enabledSkills.length > 0
+        ? { skills: params.enabledSkills }
+        : {}),
+    };
+
     const conversation = query({
       prompt: userPrompt,
       options: {
@@ -330,14 +341,21 @@ class ClaudeAgentSdkAdapter implements Adapter {
         allowDangerouslySkipPermissions: true,
         settingSources: ["user"],
         maxTurns: MAX_TURNS,
-        // Built-in tools controlled by trust level (full/standard/restricted)
-        tools: params.builtinTools ?? [],
+        // Built-in tools controlled by trust level + "Skill" if agent has skill grants
+        tools: [
+          ...(params.builtinTools ?? []),
+          ...(params.enabledSkills && params.enabledSkills.length > 0 ? ["Skill"] : []),
+        ],
         allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
         // Enable streaming when a delta callback is provided
         ...(onTextDelta ? { includePartialMessages: true } : {}),
         // Resume existing session for conversation continuity
         ...(params.resumeSessionId ? { resume: params.resumeSessionId } : {}),
+        // Per-agent skill filtering via agent definition
+        ...(params.enabledSkills && params.enabledSkills.length > 0
+          ? { agent: "carsonos-agent", agents: { "carsonos-agent": agentDef } }
+          : {}),
         env,
       },
     });
