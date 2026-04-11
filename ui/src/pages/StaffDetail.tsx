@@ -384,44 +384,39 @@ export function StaffDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Select
-            value={agent.model ?? "claude-sonnet-4-6"}
-            onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
-          >
-            <SelectTrigger className="h-8 w-32 text-xs" style={{ borderColor: "#ddd5c8" }}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex items-center gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: "#a09080" }}>Model</p>
+            <Select
+              value={agent.model ?? "claude-sonnet-4-6"}
+              onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
+            >
+              <SelectTrigger className="h-8 w-32 text-xs" style={{ borderColor: "#ddd5c8" }}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MODEL_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
-            <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TRUST_LEVEL_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={agent.autonomyLevel} onValueChange={handleAutonomyChange}>
-            <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {AUTONOMY_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div title="Controls which Claude built-in tools this agent can use. Full = all tools. Standard = read-only. Restricted = no built-in tools, only CarsonOS tools.">
+            <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: "#a09080" }}>Trust</p>
+            <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
+              <SelectTrigger className="h-8 w-32 text-xs" style={{ borderColor: "#ddd5c8" }}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TRUST_LEVEL_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           <Button
             variant="outline"

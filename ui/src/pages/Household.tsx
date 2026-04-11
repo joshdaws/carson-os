@@ -52,6 +52,8 @@ interface StaffAgent {
   status: AgentStatus;
   isHeadButler?: boolean;
   autonomyLevel: AutonomyLevel;
+  trustLevel?: string;
+  model?: string;
   assignments?: Assignment[];
 }
 
@@ -85,6 +87,13 @@ const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
   { value: "scheduler", label: "Scheduler" },
   { value: "custom", label: "Custom" },
 ];
+
+const MODEL_LABELS: Record<string, string> = {
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-opus-4-6": "Opus 4.6",
+  "claude-haiku-4-5-20251001": "Haiku 4.5",
+  "claude-haiku-4-5": "Haiku 4.5",
+};
 
 const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string }[] = [
   { value: "supervised", label: "Supervised" },
@@ -597,7 +606,10 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
             {agent.status}
           </Badge>
           <Badge variant="secondary" className="text-[10px]">
-            {agent.autonomyLevel}
+            {MODEL_LABELS[agent.model ?? "claude-sonnet-4-6"] ?? agent.model}
+          </Badge>
+          <Badge variant="secondary" className="text-[10px]">
+            {(agent.trustLevel ?? "restricted").charAt(0).toUpperCase() + (agent.trustLevel ?? "restricted").slice(1)} trust
           </Badge>
         </div>
 
