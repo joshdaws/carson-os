@@ -155,20 +155,13 @@ export function createTelegramStream(ctx: Context): TelegramStreamConsumer {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.toLowerCase().includes("not modified")) return;
 
-        // HTML parse failed — try plain text (log the failure for debugging)
+        // HTML parse failed — try plain text
         if (msg.includes("parse") || msg.includes("HTML") || msg.includes("entities")) {
-          console.warn("[telegram] HTML parse failed, falling back to plain text:", msg.slice(0, 120));
           try {
-            // Strip any remaining markdown syntax for clean plain text
-            const plain = cleaned
-              .replace(/\*\*(.+?)\*\*/g, "$1")
-              .replace(/\*(.+?)\*/g, "$1")
-              .replace(/__(.+?)__/g, "$1")
-              .replace(/_(.+?)_/g, "$1");
             if (messageId) {
-              await ctx.api.editMessageText(ctx.chat!.id, messageId, plain);
+              await ctx.api.editMessageText(ctx.chat!.id, messageId, cleaned);
             } else {
-              const sent = await ctx.reply(plain);
+              const sent = await ctx.reply(cleaned);
               messageId = sent.message_id;
             }
             lastSentText = rawText;
