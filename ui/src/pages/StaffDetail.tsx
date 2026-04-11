@@ -620,13 +620,13 @@ export function StaffDetailPage() {
       />
 
       {/* Operating Instructions */}
-      {agent.operatingInstructions && (
-        <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
-          <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
-            <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-              <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
-              Operating Instructions
-            </h3>
+      <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+        <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
+            Operating Instructions
+          </h3>
+          {agent.operatingInstructions && (
             <Button
               variant="ghost"
               size="sm"
@@ -637,8 +637,10 @@ export function StaffDetailPage() {
             >
               Clear
             </Button>
-          </div>
-          <CardContent className="p-4">
+          )}
+        </div>
+        <CardContent className="p-4">
+          {agent.operatingInstructions ? (
             <pre
               className="text-xs leading-relaxed whitespace-pre-wrap"
               style={{
@@ -652,12 +654,18 @@ export function StaffDetailPage() {
             >
               {agent.operatingInstructions}
             </pre>
-            <p className="text-[11px] mt-2" style={{ color: "#a09080" }}>
-              These notes are maintained by the agent during conversations.
+          ) : (
+            <p className="text-sm py-2" style={{ color: "#a09080" }}>
+              No instructions yet.
             </p>
-          </CardContent>
-        </Card>
-      )}
+          )}
+          <p className="text-[11px] mt-3" style={{ color: "#a09080" }}>
+            The agent writes and updates these notes itself as it learns how to work with its assigned family members.
+            Things like communication preferences, scheduling constraints, and topics to avoid.
+            You can clear them if needed, but the agent will rebuild them naturally over time.
+          </p>
+        </CardContent>
+      </Card>
 
       {/* Telegram Bot Token */}
       {agent.visibility !== "internal" && (
