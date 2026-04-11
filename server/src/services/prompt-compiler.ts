@@ -33,6 +33,9 @@ export interface CompilePromptParams {
   operatingInstructions?: string | null;
   ambientMemory?: string | null;
   memorySchemaInstructions?: string | null;
+  // Trust level + enabled skills (for system capability awareness)
+  trustLevel?: string | null;
+  enabledSkills?: string[] | null;
 }
 
 export interface DelegationEdge {
@@ -195,7 +198,24 @@ function compileChatPrompt(params: CompilePromptParams): string {
     sections.push(`# How to Use Memory\n\n${memorySchemaInstructions}`);
   }
 
-  // 8. Delegation instructions (personal agents only)
+  // 8. Your Capabilities (trust level + skills)
+  if (params.trustLevel) {
+    const capLines: string[] = [];
+    if (params.trustLevel === "full") {
+      capLines.push("You have full system access including Bash, Read, Write, Edit, Glob, Grep, WebFetch, and WebSearch.");
+      capLines.push("You can run commands, read files, search the web, and investigate errors or issues directly.");
+    } else if (params.trustLevel === "standard") {
+      capLines.push("You have read-only system access: Read, Glob, Grep, WebFetch, and WebSearch.");
+    }
+    if (params.enabledSkills && params.enabledSkills.length > 0) {
+      capLines.push(`You have access to these installed skills: ${params.enabledSkills.join(", ")}.`);
+    }
+    if (capLines.length > 0) {
+      sections.push(`# Your Capabilities\n\n${capLines.join("\n")}`);
+    }
+  }
+
+  // 9. Delegation instructions (personal agents only)
   if (delegationInstructions) {
     sections.push(`# Delegation\n\n${delegationInstructions}`);
   }
