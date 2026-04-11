@@ -104,8 +104,8 @@ async function main() {
     );
   }
 
-  // Discover installed Claude Code skills
-  toolRegistry.discoverSkills();
+  // Skills are enabled via trust level ("Skill" built-in for full trust).
+  // No need to discover/register them — the SDK handles skill loading.
 
   console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
 
