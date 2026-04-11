@@ -58,6 +58,7 @@ interface StaffAgent {
   isHeadButler?: boolean;
   autonomyLevel: string;
   trustLevel?: string;
+  model?: string;
   operatingInstructions?: string;
   assignments?: Assignment[];
 }
@@ -123,6 +124,12 @@ const TRUST_LEVEL_OPTIONS = [
   { value: "full", label: "Full", description: "All built-in tools (Bash, Read, Write...)" },
   { value: "standard", label: "Standard", description: "Read-only tools (Read, Glob, Grep...)" },
   { value: "restricted", label: "Restricted", description: "No built-in tools — MCP only" },
+];
+
+const MODEL_OPTIONS = [
+  { value: "claude-sonnet-4-20250514", label: "Sonnet 4" },
+  { value: "claude-opus-4-20250514", label: "Opus 4" },
+  { value: "claude-haiku-4-20250514", label: "Haiku 4" },
 ];
 
 const TASK_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
@@ -378,6 +385,20 @@ export function StaffDetailPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Select
+            value={agent.model ?? "claude-sonnet-4-20250514"}
+            onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
+          >
+            <SelectTrigger className="h-8 w-32 text-xs" style={{ borderColor: "#ddd5c8" }}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MODEL_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
             <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
               <SelectValue />
