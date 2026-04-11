@@ -36,7 +36,7 @@ import { useToast } from "@/components/Toast";
 type MemberRole = "parent" | "kid";
 type StaffRole = "head_butler" | "personal" | "tutor" | "coach" | "scheduler" | "custom";
 type AgentStatus = "active" | "paused" | "idle";
-type AutonomyLevel = "supervised" | "trusted" | "autonomous";
+type TrustLevel = "full" | "standard" | "restricted";
 
 interface Assignment {
   memberId: string;
@@ -51,7 +51,6 @@ interface StaffAgent {
   specialty?: string;
   status: AgentStatus;
   isHeadButler?: boolean;
-  autonomyLevel: AutonomyLevel;
   trustLevel?: string;
   model?: string;
   assignments?: Assignment[];
@@ -95,10 +94,16 @@ const MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5",
 };
 
-const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string }[] = [
-  { value: "supervised", label: "Supervised" },
-  { value: "trusted", label: "Trusted" },
-  { value: "autonomous", label: "Autonomous" },
+const TRUST_LEVEL_OPTIONS: { value: TrustLevel; label: string; description: string }[] = [
+  { value: "full", label: "Full", description: "Bash, files, web, skills" },
+  { value: "standard", label: "Standard", description: "Read-only file access" },
+  { value: "restricted", label: "Restricted", description: "Memory tools only" },
+];
+
+const MODEL_OPTIONS = [
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 function statusColor(s: AgentStatus): string {
@@ -431,14 +436,23 @@ const ROLE_TEMPLATES: Record<string, string> = {
   custom: "",
 };
 
-function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: () => void }) {
+function AddStaffModal({
+  householdId,
+  members,
+  onClose,
+}: {
+  householdId: string;
+  members: HouseholdMember[];
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [staffRole, setStaffRole] = useState<StaffRole>("personal");
-  const [specialty, setSpecialty] = useState("");
-  const [autonomyLevel, setAutonomyLevel] = useState<AutonomyLevel>("supervised");
-  const [visibility, setVisibility] = useState<"family" | "internal">("family");
+  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [trustLevel, setTrustLevel] = useState<TrustLevel>("restricted");
+  const [assignTo, setAssignTo] = useState<string>("");
+  const [botToken, setBotToken] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   const mutation = useMutation({
@@ -455,99 +469,137 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
     if (!name.trim()) return;
 
     const template = ROLE_TEMPLATES[staffRole] || "";
-    const roleContent = template.replace(/\{name\}/g, name.trim());
+    const roleContent = template.replace(/\{name\}/g, assignTo ? (members.find((m) => m.id === assignTo)?.name ?? name.trim()) : name.trim());
 
     mutation.mutate({
       householdId,
       name: name.trim(),
       staffRole,
       roleContent,
-      visibility,
-      ...(specialty.trim() ? { specialty: specialty.trim() } : {}),
-      autonomyLevel,
+      model,
+      trustLevel,
+      visibility: "family",
+      ...(botToken.trim() ? { telegramBotToken: botToken.trim() } : {}),
     });
   }
 
   const nameError = submitted && !name.trim();
 
   return (
-    <Card className="border" style={{ borderColor: "#ddd5c8" }}>
-      <CardContent className="p-4">
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>New Staff Agent</span>
-            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-              <X className="h-3.5 w-3.5" />
-            </Button>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.4)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="rounded-lg shadow-xl w-full max-w-md mx-4"
+        style={{ background: "#faf6ef", border: "1px solid #ddd5c8" }}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+            New Staff Agent
+          </h3>
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {/* Name */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Name</label>
+            <Input
+              placeholder="e.g., Django"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              style={nameError ? { borderColor: "#c62828" } : undefined}
+            />
+            {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
           </div>
+
+          {/* Role + Assign to */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Input
-                placeholder="Name (e.g., Ms. Hughes) *"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                autoFocus
-                style={nameError ? { borderColor: "#c62828" } : undefined}
-              />
-              {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Role</label>
+              <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {STAFF_ROLE_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {STAFF_ROLE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Assign to</label>
+              <Select value={assignTo} onValueChange={setAssignTo}>
+                <SelectTrigger><SelectValue placeholder="Select member..." /></SelectTrigger>
+                <SelectContent>
+                  {members.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="flex gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => setVisibility("family")}
-              className="flex-1 py-1.5 rounded text-center transition-colors"
-              style={{
-                background: visibility === "family" ? "#1a1f2e" : "#f5f0e8",
-                color: visibility === "family" ? "#e8dfd0" : "#8a8070",
-                border: "1px solid #ddd5c8",
-              }}
-            >
-              Family-facing (has Telegram bot)
-            </button>
-            <button
-              type="button"
-              onClick={() => setVisibility("internal")}
-              className="flex-1 py-1.5 rounded text-center transition-colors"
-              style={{
-                background: visibility === "internal" ? "#1a1f2e" : "#f5f0e8",
-                color: visibility === "internal" ? "#e8dfd0" : "#8a8070",
-                border: "1px solid #ddd5c8",
-              }}
-            >
-              Internal (works behind the scenes)
-            </button>
-          </div>
+
+          {/* Model + Trust Level */}
           <div className="grid grid-cols-2 gap-3">
-            <Input placeholder="Specialty (optional)" value={specialty} onChange={(e) => setSpecialty(e.target.value)} />
-            <Select value={autonomyLevel} onValueChange={(v) => setAutonomyLevel(v as AutonomyLevel)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {AUTONOMY_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Model</label>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MODEL_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Trust Level</label>
+              <Select value={trustLevel} onValueChange={(v) => setTrustLevel(v as TrustLevel)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {TRUST_LEVEL_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                      <span className="text-[10px] ml-1.5" style={{ color: "#8a8070" }}>{o.description}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="flex items-center justify-end pt-1">
-            <Button type="submit" size="sm" disabled={mutation.isPending}>
-              {mutation.isPending ? "Adding..." : "Add Staff"}
+
+          {/* Telegram Bot Token */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+              Telegram Bot Token <span style={{ color: "#a09080" }}>(optional)</span>
+            </label>
+            <Input
+              type="password"
+              placeholder="123456:ABC-DEF..."
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+            />
+            <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>You can add this later from the agent detail page.</p>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button type="submit" size="sm" disabled={mutation.isPending} style={{ background: "#1a1f2e", color: "#e8dfd0" }}>
+              {mutation.isPending ? "Creating..." : "Create Agent"}
             </Button>
           </div>
           {mutation.isError && (
             <p className="text-xs text-red-600">{(mutation.error as Error).message}</p>
           )}
         </form>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -555,7 +607,6 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
 
 function StaffCard({ agent }: { agent: StaffAgent }) {
   const queryClient = useQueryClient();
-  const [showAssign, setShowAssign] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const deleteMutation = useMutation({
@@ -883,6 +934,15 @@ export function HouseholdPage() {
         }}
       />
 
+      {/* Add Staff Modal */}
+      {showAddStaff && householdId && (
+        <AddStaffModal
+          householdId={householdId}
+          members={members}
+          onClose={() => setShowAddStaff(false)}
+        />
+      )}
+
       {/* Staff Agents section */}
       <div>
         <div className="flex items-center justify-between mb-5">
@@ -916,7 +976,6 @@ export function HouseholdPage() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {showAddStaff && householdId && <AddStaffForm householdId={householdId} onClose={() => setShowAddStaff(false)} />}
           {staff.map((agent) => (
             <StaffCard key={agent.id} agent={agent} />
           ))}

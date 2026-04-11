@@ -123,6 +123,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       visibility,
       telegramBotToken,
       model,
+      trustLevel,
       isHeadButler,
       autonomyLevel,
     } = req.body;
@@ -167,6 +168,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         visibility: visibility ?? "family",
         telegramBotToken: telegramBotToken ?? null,
         model: model ?? "claude-sonnet-4-6",
+        trustLevel: trustLevel ?? "restricted",
         isHeadButler: isHeadButler ?? false,
         autonomyLevel: autonomyLevel ?? "supervised",
       })
