@@ -5,11 +5,10 @@
  * and provides toggles for builtin tools. System tools show as always-on.
  */
 
-import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 interface ToolEntry {
   name: string;
@@ -26,7 +25,6 @@ interface ToolsGrantData {
 
 export function ToolsManager({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient();
-  const [skillsExpanded, setSkillsExpanded] = useState(false);
 
   const { data, isLoading } = useQuery<ToolsGrantData>({
     queryKey: ["tools", "grants", agentId],
@@ -61,7 +59,6 @@ export function ToolsManager({ agentId }: { agentId: string }) {
 
   const systemTools = data.tools.filter((t) => t.tier === "system");
   const builtinTools = data.tools.filter((t) => t.tier === "builtin");
-  const discoveredTools = data.tools.filter((t) => t.tier === "discovered");
 
   // Group builtins by category
   const builtinByCategory = new Map<string, ToolEntry[]>();
@@ -130,57 +127,9 @@ export function ToolsManager({ agentId }: { agentId: string }) {
         </div>
       ))}
 
-      {/* Discovered skills (collapsible) */}
-      {discoveredTools.length > 0 && (
-        <div>
-          <button
-            onClick={() => setSkillsExpanded(!skillsExpanded)}
-            className="flex items-center gap-1.5 mb-2 hover:opacity-70 transition-opacity"
-          >
-            {skillsExpanded ? (
-              <ChevronDown className="h-3 w-3" style={{ color: "#8a8070" }} />
-            ) : (
-              <ChevronRight className="h-3 w-3" style={{ color: "#8a8070" }} />
-            )}
-            <span className="text-[10px] uppercase tracking-[1.5px]" style={{ color: "#8a8070" }}>
-              Discovered Skills ({discoveredTools.length})
-            </span>
-          </button>
-          {skillsExpanded && (
-            <div className="space-y-1">
-              {discoveredTools.map((t) => (
-                <label
-                  key={t.name}
-                  className="flex items-center gap-3 py-1.5 px-3 rounded cursor-pointer hover:bg-[#faf8f4] transition-colors"
-                >
-                  <input
-                    type="checkbox"
-                    checked={t.granted}
-                    onChange={() =>
-                      toggleMutation.mutate({ toolName: t.name, granted: !t.granted })
-                    }
-                    disabled={toggleMutation.isPending}
-                    className="rounded"
-                    style={{ accentColor: "#8b6f4e" }}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs font-medium" style={{ color: "#1a1f2e" }}>
-                      {t.name.replace("skill:", "")}
-                    </span>
-                    <p className="text-[10px] truncate" style={{ color: "#a09080" }}>
-                      {t.description}
-                    </p>
-                  </div>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {discoveredTools.length === 0 && builtinTools.length === 0 && (
+      {builtinTools.length === 0 && (
         <p className="text-xs" style={{ color: "#a09080" }}>
-          Only system tools configured. Install additional tools to see them here.
+          Only system tools configured.
         </p>
       )}
     </div>
