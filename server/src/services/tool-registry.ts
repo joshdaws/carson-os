@@ -342,10 +342,47 @@ export class ToolRegistry {
 
   // ── Grant management ──────────────────────────────────────────────
 
+  /**
+   * Materialize role defaults into tool_grants table.
+   * Called on first explicit grant/revoke so toggling one tool
+   * doesn't wipe out all the implicit role defaults.
+   */
+  private async materializeDefaults(agentId: string): Promise<void> {
+    const existing = await this.db
+      .select({ toolName: toolGrants.toolName })
+      .from(toolGrants)
+      .where(eq(toolGrants.agentId, agentId));
+
+    if (existing.length > 0) return; // already materialized
+
+    const [agent] = await this.db
+      .select({ staffRole: staffAgents.staffRole })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .limit(1);
+
+    const role = agent?.staffRole ?? "custom";
+    const defaults = DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom;
+
+    // Filter to only tools that are actually registered (skip system tools — they're implicit)
+    const systemNames = new Set(
+      [...this.tools.values()].filter((t) => t.tier === "system").map((t) => t.definition.name),
+    );
+    const toInsert = defaults.filter((name) => !systemNames.has(name) && this.tools.has(name));
+
+    if (toInsert.length > 0) {
+      await this.db
+        .insert(toolGrants)
+        .values(toInsert.map((toolName) => ({ agentId, toolName, grantedBy: null })))
+        .onConflictDoNothing();
+    }
+  }
+
   async grant(agentId: string, toolName: string, grantedBy?: string): Promise<void> {
     if (!this.tools.has(toolName)) {
       throw new Error(`Tool "${toolName}" is not registered`);
     }
+    await this.materializeDefaults(agentId);
     await this.db
       .insert(toolGrants)
       .values({ agentId, toolName, grantedBy: grantedBy ?? null })
@@ -353,6 +390,7 @@ export class ToolRegistry {
   }
 
   async revoke(agentId: string, toolName: string): Promise<void> {
+    await this.materializeDefaults(agentId);
     await this.db
       .delete(toolGrants)
       .where(and(eq(toolGrants.agentId, agentId), eq(toolGrants.toolName, toolName)));
