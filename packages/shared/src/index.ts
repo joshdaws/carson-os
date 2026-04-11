@@ -225,6 +225,11 @@ export interface MemoryProvider {
     content: string;
     frontmatter?: Record<string, unknown>;
   }): Promise<{ id: string; filePath: string }>;
+  update(collection: string, id: string, entry: {
+    title?: string;
+    content?: string;
+    frontmatter?: Record<string, unknown>;
+  }): Promise<{ id: string; filePath: string }>;
   delete(collection: string, id: string): Promise<void>;
   list(collection: string, limit?: number): Promise<MemoryEntry[]>;
 }

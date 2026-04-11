@@ -90,6 +90,40 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: "update_memory",
+    description:
+      "Update an existing memory with new or corrected information. Use this instead of delete+save when a memory exists but needs to be enriched or corrected. Preserves the original entry and updates it in place — no data loss.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to update (from search results).",
+        },
+        collection: {
+          type: "string",
+          description:
+            "Which collection the memory is in. Matches the collection name from search results.",
+        },
+        title: {
+          type: "string",
+          description: "New title (optional — keeps existing if not provided).",
+        },
+        content: {
+          type: "string",
+          description:
+            "New content (optional — keeps existing if not provided). Provide the full updated content, not just the diff.",
+        },
+        frontmatter: {
+          type: "object",
+          description:
+            "Updated frontmatter fields to merge (optional). Only provided fields are changed.",
+        },
+      },
+      required: ["id", "collection"],
+    },
+  },
+  {
     name: "delete_memory",
     description:
       "Delete an outdated or incorrect memory. Use the memory ID from search results.",
@@ -172,6 +206,9 @@ export function buildToolExecutor(
           break;
         case "save_memory":
           result = await handleSaveMemory(ctx, input);
+          break;
+        case "update_memory":
+          result = await handleUpdateMemory(ctx, input);
           break;
         case "delete_memory":
           result = await handleDeleteMemory(ctx, input);
@@ -258,6 +295,31 @@ async function handleSaveMemory(
 
   return {
     content: `Memory saved: "${title}" (id: ${id}) in ${collection}. File: ${filePath}`,
+  };
+}
+
+async function handleUpdateMemory(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const id = input.id as string;
+  const collection = input.collection as string;
+  const title = input.title as string | undefined;
+  const content = input.content as string | undefined;
+  const frontmatter = input.frontmatter as Record<string, unknown> | undefined;
+
+  if (!title && !content && !frontmatter) {
+    return { content: "Nothing to update — provide at least title, content, or frontmatter." };
+  }
+
+  const { id: updatedId, filePath } = await ctx.memoryProvider.update(
+    collection,
+    id,
+    { title, content, frontmatter },
+  );
+
+  return {
+    content: `Memory updated: "${title ?? updatedId}" (id: ${updatedId}) in ${collection}. File: ${filePath}`,
   };
 }
 

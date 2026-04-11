@@ -232,34 +232,90 @@ export class QmdMemoryProvider implements MemoryProvider {
     return { id, filePath };
   }
 
+  async update(
+    collection: string,
+    id: string,
+    entry: {
+      title?: string;
+      content?: string;
+      frontmatter?: Record<string, unknown>;
+    },
+  ): Promise<{ id: string; filePath: string }> {
+    const dir = this.collections.get(collection);
+    if (!dir) {
+      throw new Error(`Collection "${collection}" not registered`);
+    }
+
+    // Find the file
+    const filePath = this.findMemoryFile(dir, id);
+    if (!filePath) {
+      throw new Error(`Memory "${id}" not found in collection "${collection}"`);
+    }
+
+    // Read existing file and parse frontmatter
+    const existing = readFileSync(filePath, "utf-8");
+    const parsed = parseMemoryFile(existing, filePath, collection);
+    if (!parsed) {
+      throw new Error(`Could not parse memory file: ${filePath}`);
+    }
+
+    // Merge updates
+    const title = entry.title ?? parsed.title;
+    const content = entry.content ?? parsed.content;
+    const fm: Record<string, unknown> = {
+      ...parsed.frontmatter,
+      ...entry.frontmatter,
+      id,
+      title,
+      updated: new Date().toISOString().slice(0, 10),
+    };
+
+    const yaml = Object.entries(fm)
+      .map(([key, val]) => {
+        if (Array.isArray(val)) {
+          return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
+        }
+        return `${key}: ${val}`;
+      })
+      .join("\n");
+
+    const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${content}\n`;
+    writeFileSync(filePath, fileContent, "utf-8");
+
+    // Trigger QMD reindex in the background
+    this.reindex().catch((err) => {
+      console.warn("[memory] Background reindex failed:", err);
+    });
+
+    return { id, filePath };
+  }
+
+  /** Find a memory file by ID — checks filename first, then frontmatter. */
+  private findMemoryFile(dir: string, id: string): string | null {
+    const direct = join(dir, `${id}.md`);
+    if (existsSync(direct)) return direct;
+
+    const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    for (const file of files) {
+      const content = readFileSync(join(dir, file), "utf-8");
+      if (content.includes(`id: ${id}`)) {
+        return join(dir, file);
+      }
+    }
+    return null;
+  }
+
   async delete(collection: string, id: string): Promise<void> {
     const dir = this.collections.get(collection);
     if (!dir) {
       throw new Error(`Collection "${collection}" not registered`);
     }
 
-    // Find the file — try exact ID match first
-    const fileName = `${id}.md`;
-    const filePath = join(dir, fileName);
-
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-    } else {
-      // Scan directory for file with matching id in frontmatter
-      const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-      let found = false;
-      for (const file of files) {
-        const content = readFileSync(join(dir, file), "utf-8");
-        if (content.includes(`id: ${id}`)) {
-          unlinkSync(join(dir, file));
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        throw new Error(`Memory "${id}" not found in collection "${collection}"`);
-      }
+    const filePath = this.findMemoryFile(dir, id);
+    if (!filePath) {
+      throw new Error(`Memory "${id}" not found in collection "${collection}"`);
     }
+    unlinkSync(filePath);
 
     // Trigger QMD reindex in the background
     this.reindex().catch((err) => {
