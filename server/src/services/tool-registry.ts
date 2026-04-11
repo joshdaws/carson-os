@@ -9,7 +9,7 @@
  * executor that routes tool calls to the right handler.
  */
 
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { eq, and } from "drizzle-orm";
@@ -183,7 +183,10 @@ export class ToolRegistry {
     if (!existsSync(skillsDir)) return;
 
     try {
-      const entries = readdirSync(skillsDir);
+      const entries = readdirSync(skillsDir).filter((name) => {
+        if (name.startsWith(".")) return false;
+        try { return statSync(join(skillsDir, name)).isDirectory(); } catch { return false; }
+      });
       for (const name of entries) {
         const skillToolName = `skill:${name}`;
         if (this.tools.has(skillToolName)) continue;
