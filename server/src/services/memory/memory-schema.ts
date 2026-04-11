@@ -153,7 +153,10 @@ export const DEFAULT_MEMORY_SCHEMA: MemorySchema = {
  */
 export function buildMemorySchemaInstructions(schema: MemorySchema): string {
   const lines: string[] = [
-    "You have access to a persistent memory system. Use it proactively — save important facts, preferences, events, and commitments as you learn them. Search memory before answering questions about the family.",
+    "You have access to a persistent memory system. Memory is NOT pre-loaded — you must search it yourself.",
+    "When a topic comes up that you might have prior knowledge about, use `search_memory` to check.",
+    "Search proactively: if someone mentions a person, project, event, or preference, search before responding.",
+    "Save important facts, preferences, events, and commitments as you learn them.",
     "",
     "Available memory types and their frontmatter fields:",
     "",

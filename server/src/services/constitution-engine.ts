@@ -124,6 +124,7 @@ const FRIENDLY_SCAN_REPLACEMENT =
 
 export class ConstitutionEngine {
   private cache = new Map<string, CachedConstitution>();
+  private cachedMemorySchema: string | null = null;
   private db: Db;
   private broadcast: BroadcastFn;
   private adapter: Adapter;
@@ -307,32 +308,13 @@ export class ConstitutionEngine {
     const assistantTurnCount = history.filter((m) => m.role === "assistant").length;
     const isFirstContact = !hasProfile && member.role !== "parent";
 
-    // -- M1: Load ambient memory + operating instructions -----------
-    let ambientMemory: string | null = null;
+    // -- M1: Memory schema instructions (no ambient injection) ------
+    // Ambient memory search removed — the agent uses search_memory on demand
+    // instead of pre-loading context on every message. Saves 200-500ms per message.
     let memorySchemaInstructions: string | null = null;
 
     if (this.memoryProvider) {
-      // Build ambient context from recent/relevant memories
-      try {
-        const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
-        const [personal, household] = await Promise.all([
-          this.memoryProvider.search(message, memberSlug, 3).catch(() => ({ entries: [] })),
-          this.memoryProvider.search(message, "household", 2).catch(() => ({ entries: [] })),
-        ]);
-
-        const allMemories = [
-          ...personal.entries.map((e) => `[${member.name}] ${e.title}: ${e.snippet}`),
-          ...household.entries.map((e) => `[household] ${e.title}: ${e.snippet}`),
-        ];
-
-        if (allMemories.length > 0) {
-          ambientMemory = allMemories.join("\n\n");
-        }
-      } catch (err) {
-        console.warn("[engine] Ambient memory search failed:", err);
-      }
-
-      memorySchemaInstructions = buildMemorySchemaInstructions(DEFAULT_MEMORY_SCHEMA);
+      memorySchemaInstructions = this.cachedMemorySchema ??= buildMemorySchemaInstructions(DEFAULT_MEMORY_SCHEMA);
     }
 
     const systemPrompt = compileSystemPrompt({
@@ -349,7 +331,7 @@ export class ConstitutionEngine {
       conversationTurnCount: assistantTurnCount,
       delegationInstructions: delegationInstr,
       operatingInstructions: agent.operatingInstructions ?? null,
-      ambientMemory,
+      ambientMemory: null,
       memorySchemaInstructions,
     });
 
