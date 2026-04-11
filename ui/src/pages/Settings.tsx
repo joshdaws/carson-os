@@ -14,7 +14,6 @@ import {
 import {
   Settings as SettingsIcon,
   Bot,
-  Key,
   Users,
   Eye,
   EyeOff,
@@ -170,7 +169,10 @@ export function SettingsPage() {
 
   const { data: settings, isLoading } = useQuery<SettingsMap>({
     queryKey: ["settings"],
-    queryFn: () => api.get("/settings"),
+    queryFn: async () => {
+      const res = await api.get<{ settings: SettingsMap }>("/settings");
+      return res.settings;
+    },
   });
 
   const updateSetting = useMutation({
