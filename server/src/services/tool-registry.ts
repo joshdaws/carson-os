@@ -74,8 +74,8 @@ import type { TrustLevel } from "@carsonos/shared";
  * Empty array = no built-ins (conversation + MCP tools only).
  */
 export const TRUST_LEVEL_BUILTINS: Record<TrustLevel, string[]> = {
-  full: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"],
-  standard: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+  full: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "Skill"],
+  standard: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Skill"],
   restricted: [],
 };
 

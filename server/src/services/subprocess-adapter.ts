@@ -312,13 +312,10 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let totalCost: number | null = null;
     let numTurns: number | null = null;
 
-    // Build the full allowed tools list: MCP tools + enabled skills
+    // Build the full allowed tools list: MCP tools
+    // (Skills are enabled via "Skill" in the tools array + settingSources: ["user"],
+    // not via allowedTools — the SDK picks them up from ~/.claude/skills/ automatically)
     const allAllowedTools = [...allowedTools];
-    if (params.enabledSkills && params.enabledSkills.length > 0) {
-      for (const skill of params.enabledSkills) {
-        allAllowedTools.push(`Skill(${skill})`);
-      }
-    }
 
     const onTextDelta = params.onTextDelta;
 
