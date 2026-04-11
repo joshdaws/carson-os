@@ -364,7 +364,7 @@ export class ConstitutionEngine {
     let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
 
     if (this.toolRegistry) {
-      const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-");
+      const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
 
       // Bind per-member Google handlers for this conversation
       if (this.calendarProvider) {

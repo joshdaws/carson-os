@@ -18,6 +18,7 @@
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/transformer-throttler": "^1.2.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.6",
     "drizzle-orm": "^0.38.0",
     "express": "^5.1.0",
     "grammy": "^1.35.0",
@@ -28,6 +29,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.0",

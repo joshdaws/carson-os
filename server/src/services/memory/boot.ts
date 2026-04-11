@@ -36,7 +36,7 @@ export async function bootMemory(
       .where(eq(familyMembers.householdId, household.id));
 
     for (const member of members) {
-      const slug = member.name.toLowerCase().replace(/\s+/g, "-");
+      const slug = member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
       const dirOverride = member.memoryDir ?? undefined;
       await provider.ensureCollection(slug, dirOverride);
     }
