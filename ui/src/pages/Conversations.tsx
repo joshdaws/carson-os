@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -160,7 +162,45 @@ function MessageBubble({ message }: { message: Message }) {
               : { background: "#f0ede6", color: "#2c2c2c" }
           }
         >
-          {message.content}
+          {isUser ? (
+            <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
+          ) : (
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                em: ({ children }) => <em className="italic">{children}</em>,
+                ul: ({ children }) => <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>,
+                ol: ({ children }) => <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>,
+                li: ({ children }) => <li>{children}</li>,
+                h1: ({ children }) => <h1 className="text-lg font-semibold mb-2">{children}</h1>,
+                h2: ({ children }) => <h2 className="text-base font-semibold mb-2">{children}</h2>,
+                h3: ({ children }) => <h3 className="text-sm font-semibold mb-1">{children}</h3>,
+                code: ({ children, className }) => {
+                  const isBlock = className?.startsWith("language-");
+                  return isBlock ? (
+                    <pre className="rounded p-3 mb-2 overflow-x-auto text-xs" style={{ background: "rgba(0,0,0,0.05)" }}>
+                      <code>{children}</code>
+                    </pre>
+                  ) : (
+                    <code className="rounded px-1 py-0.5 text-xs" style={{ background: "rgba(0,0,0,0.05)" }}>{children}</code>
+                  );
+                },
+                pre: ({ children }) => <>{children}</>,
+                blockquote: ({ children }) => (
+                  <blockquote className="border-l-2 pl-3 my-2 italic text-sm" style={{ borderColor: "#8b6f4e", color: "#6a6050" }}>
+                    {children}
+                  </blockquote>
+                ),
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "#8b6f4e" }}>{children}</a>
+                ),
+              }}
+            >
+              {message.content}
+            </Markdown>
+          )}
         </div>
         <div
           className={cn("flex items-center gap-2 mt-1", isUser ? "justify-end" : "justify-start")}
