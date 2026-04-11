@@ -128,7 +128,7 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = ["search_memory", "save_memory", "update_instructions"];
+    const systemTools = ["search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions"];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
