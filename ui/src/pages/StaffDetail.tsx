@@ -154,6 +154,8 @@ export function StaffDetailPage() {
   const [editingName, setEditingName] = useState(false);
   const [showPersonalityInterview, setShowPersonalityInterview] = useState(false);
   const [personalityMessages, setPersonalityMessages] = useState<ChatMessage[]>([]);
+  const [editingInstructions, setEditingInstructions] = useState(false);
+  const [instructionsDraft, setInstructionsDraft] = useState("");
 
   // Fetch staff agent
   const { data: staffData, isLoading } = useQuery<{ agent: StaffAgent; assignments: Assignment[] }>({
@@ -626,21 +628,60 @@ export function StaffDetailPage() {
             <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
             Operating Instructions
           </h3>
-          {agent.operatingInstructions && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs"
-              style={{ color: "#8a8070" }}
-              onClick={() => patchStaff.mutate({ operatingInstructions: "" } as Partial<StaffAgent>)}
-              disabled={patchStaff.isPending}
-            >
-              Clear
-            </Button>
-          )}
+          <div className="flex gap-1">
+            {!editingInstructions && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                style={{ color: "#8a8070" }}
+                onClick={() => { setEditingInstructions(true); setInstructionsDraft(agent.operatingInstructions ?? ""); }}
+              >
+                <Pencil className="h-3 w-3 mr-1" /> Edit
+              </Button>
+            )}
+            {editingInstructions && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  style={{ borderColor: "#ddd5c8" }}
+                  disabled={patchStaff.isPending}
+                  onClick={() => {
+                    patchStaff.mutate({ operatingInstructions: instructionsDraft } as Partial<StaffAgent>);
+                    setEditingInstructions(false);
+                  }}
+                >
+                  <Save className="h-3 w-3 mr-1" /> Save
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => setEditingInstructions(false)}
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
+          </div>
         </div>
         <CardContent className="p-4">
-          {agent.operatingInstructions ? (
+          {editingInstructions ? (
+            <Textarea
+              value={instructionsDraft}
+              onChange={(e) => setInstructionsDraft(e.target.value)}
+              className="min-h-[120px] text-xs"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                background: "#faf8f4",
+                borderColor: "#ddd5c8",
+              }}
+              placeholder="Add instructions for this agent..."
+              autoFocus
+            />
+          ) : agent.operatingInstructions ? (
             <pre
               className="text-xs leading-relaxed whitespace-pre-wrap"
               style={{
@@ -662,7 +703,7 @@ export function StaffDetailPage() {
           <p className="text-[11px] mt-3" style={{ color: "#a09080" }}>
             The agent writes and updates these notes itself as it learns how to work with its assigned family members.
             Things like communication preferences, scheduling constraints, and topics to avoid.
-            You can clear them if needed, but the agent will rebuild them naturally over time.
+            You can edit them, but generally it's best to let the agent manage these on its own.
           </p>
         </CardContent>
       </Card>
