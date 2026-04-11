@@ -309,12 +309,19 @@ export class ConstitutionEngine {
     const isFirstContact = !hasProfile && member.role !== "parent";
 
     // -- M1: Memory schema instructions (no ambient injection) ------
-    // Ambient memory search removed — the agent uses search_memory on demand
-    // instead of pre-loading context on every message. Saves 200-500ms per message.
     let memorySchemaInstructions: string | null = null;
 
     if (this.memoryProvider) {
       memorySchemaInstructions = this.cachedMemorySchema ??= buildMemorySchemaInstructions(DEFAULT_MEMORY_SCHEMA);
+    }
+
+    // Resolve trust level builtins + enabled skills (needed for both prompt and adapter)
+    let builtinTools: string[] | undefined;
+    let enabledSkills: string[] | undefined;
+    if (this.toolRegistry) {
+      builtinTools = await this.toolRegistry.getAgentBuiltins(agentId);
+      const skills = await this.toolRegistry.getAgentSkills(agentId);
+      enabledSkills = skills.length > 0 ? skills : undefined;
     }
 
     const systemPrompt = compileSystemPrompt({
@@ -333,6 +340,8 @@ export class ConstitutionEngine {
       operatingInstructions: agent.operatingInstructions ?? null,
       ambientMemory: null,
       memorySchemaInstructions,
+      trustLevel: agent.trustLevel,
+      enabledSkills: enabledSkills ?? null,
     });
 
     // -- Build tools for the adapter (registry-based) ----------------
@@ -392,15 +401,6 @@ export class ConstitutionEngine {
     ];
 
     let llmResponse: string;
-
-    // Resolve trust level builtins + enabled skills for this agent
-    let builtinTools: string[] | undefined;
-    let enabledSkills: string[] | undefined;
-    if (this.toolRegistry) {
-      builtinTools = await this.toolRegistry.getAgentBuiltins(agentId);
-      const skills = await this.toolRegistry.getAgentSkills(agentId);
-      enabledSkills = skills.length > 0 ? skills : undefined;
-    }
 
     try {
       const result = await this.adapter.execute({
