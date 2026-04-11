@@ -115,7 +115,7 @@ function FamilyStep({
       <Input
         value={householdName}
         onChange={(e) => setHouseholdName(e.target.value)}
-        placeholder="The Daws Family"
+        placeholder="The Smith Family"
         className="mb-5"
         style={{ borderColor: "var(--carson-border)" }}
       />

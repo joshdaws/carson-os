@@ -1,7 +1,7 @@
 /**
  * Seed a test household for M1 smoke testing.
  *
- * Creates: Daws family household, 5 members, 1 personal agent (Carson),
+ * Creates: Smith family household, 5 members, 1 personal agent (Carson),
  * staff assignments, a basic constitution, and memory collections.
  *
  * Usage: npx tsx server/src/test/seed-test-household.ts
@@ -44,10 +44,10 @@ async function seed() {
   // 1. Household
   await db.insert(households).values({
     id: householdId,
-    name: "The Daws Family",
+    name: "The Smith Family",
     timezone: "America/Chicago",
   });
-  console.log("[seed] Household created: The Daws Family");
+  console.log("[seed] Household created: The Smith Family");
 
   // 2. Family members
   await db.insert(familyMembers).values([
@@ -138,7 +138,7 @@ async function seed() {
     trustLevel: "full",
     roleContent: [
       "You are Carson, the family's personal AI assistant.",
-      "You help every member of the Daws family with whatever they need.",
+      "You help every member of the Smith family with whatever they need.",
       "You're reliable, warm, and practical. You remember things.",
       "For parents: help with scheduling, planning, household management.",
       "For kids: help with homework, answer questions, be a good companion.",
@@ -177,7 +177,7 @@ async function seed() {
     version: 1,
     isActive: true,
     document: [
-      "## The Daws Family Constitution",
+      "## The Smith Family Constitution",
       "",
       "### Our Values",
       "We are a Christian family. We value faith, kindness, hard work, and humor.",
