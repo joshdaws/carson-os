@@ -51,7 +51,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: "save_memory",
     description:
-      "Save something to memory. Use this proactively when you learn facts, preferences, events, decisions, commitments, or contact information worth remembering. Saves to the family member's personal memory by default.",
+      "Save something to memory. IMPORTANT: Always search_memory first to check for existing entries on the same topic. If one exists, delete it first, then save the updated version. Never create duplicates. Save only lasting facts worth remembering — not every conversational detail.",
     input_schema: {
       type: "object",
       properties: {

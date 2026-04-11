@@ -170,9 +170,28 @@ export function buildMemorySchemaInstructions(schema: MemorySchema): string {
   }
 
   lines.push(
-    "Use `search_memory` to find relevant memories before answering questions.",
-    "Use `save_memory` when you learn something worth remembering.",
-    "Use `delete_memory` to remove outdated or incorrect memories.",
+    "## How to use memory",
+    "",
+    "**Search first, always.** Before saving anything, search for existing memories on the same topic.",
+    "If a relevant memory already exists, decide: update it (delete old + save new) or skip.",
+    "Never create a duplicate. One memory per fact.",
+    "",
+    "**When to save:** Save when you learn something new and genuinely worth remembering.",
+    "Don't save every detail from a conversation — save the lasting facts.",
+    "One conversation about westerns = one memory about their western preferences, not five.",
+    "",
+    "**When to update:** If you learn something new about an existing topic,",
+    "delete the old memory and save a new, more complete version.",
+    "Example: if you already have 'Grant likes westerns' and learn he specifically",
+    "loves True Grit, delete the old one and save a richer version.",
+    "",
+    "**When NOT to save:** Don't save things that are trivially obvious from context,",
+    "things you just said, or things already covered by their profile.",
+    "",
+    "Tools:",
+    "- `search_memory` — search before answering AND before saving",
+    "- `save_memory` — save new memories (search first to avoid duplicates)",
+    "- `delete_memory` — remove outdated, incorrect, or superseded memories",
   );
 
   return lines.join("\n");
