@@ -14,6 +14,7 @@ import express, {
   type Response,
   type NextFunction,
 } from "express";
+import cors from "cors";
 import type { Db } from "@carsonos/db";
 import type { Adapter } from "./services/subprocess-adapter.js";
 import type { ConstitutionEngine } from "./services/constitution-engine.js";
@@ -66,6 +67,12 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   const app = express();
 
   // --------------- middleware ---------------
+
+  // CORS -- only allow requests from the dashboard UI origin
+  const port = process.env.PORT || "3300";
+  app.use("/api", cors({
+    origin: [`http://localhost:${port}`, `http://127.0.0.1:${port}`],
+  }));
 
   // JSON body parsing (Express 5 built-in, 1 MB limit)
   // Must come before Vite middleware so API routes parse JSON bodies
