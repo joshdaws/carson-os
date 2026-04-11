@@ -31,11 +31,12 @@ User message (Telegram)
   ├─ 2. Load agent + member info from DB
   ├─ 3. Load constitution clauses (cached 5min)
   ├─ 4. Evaluate hard clauses (feature-flagged OFF for v1.0)
-  ├─ 5. Search ambient memory (QMD hybrid search on user's message)
-  ├─ 6. Compile system prompt (7 sections, constitution first)
-  ├─ 7. Resolve agent's tools (registry + grants + trust level)
+  ├─ 5. Compile system prompt (constitution first, then role/personality/memory instructions)
+  ├─ 6. Resolve agent's tools (registry + grants + trust level)
+  ├─ 7. Resume session if continuing a conversation (Agent SDK session resume)
   ├─ 8. Execute via Agent SDK (MCP tools, streaming, max 15 turns)
-  │     ├─ Agent may call tools: search_memory, save_memory, list_calendar_events, etc.
+  │     ├─ Agent searches memory on demand via search_memory tool
+  │     ├─ Agent may call tools: save_memory, update_memory, list_calendar_events, etc.
   │     ├─ Tool calls handled by MCP server inside the SDK
   │     └─ Text deltas stream back via onTextDelta callback
   ├─ 9. Stream formatted response to Telegram (edit-in-place)
@@ -55,6 +56,10 @@ Uses `query()` from `@anthropic-ai/claude-agent-sdk`. This spawns a Claude proce
 **Why not the Anthropic API?** Because it requires an API key. The Agent SDK uses the Claude subscription, which every Claude user already has.
 
 **Why not the Claude CLI in `-p` mode?** Because `-p` is single-turn with no tool support. The Agent SDK supports multi-turn conversations with MCP tools.
+
+**Session Resume:** Conversations maintain continuity via the Agent SDK's `resume` parameter. Each conversation stores a `sessionId` (on `conversation.sessionContext`), and subsequent messages resume the existing session rather than starting fresh. This gives agents memory of the conversation without replaying the full history.
+
+**Model Selection:** Agents can use different Claude models — Sonnet 4.6 (default), Opus 4.6, or Haiku 4.5. The model is mapped to the Agent SDK's model parameter (`"sonnet"`, `"opus"`, `"haiku"`).
 
 **How tools work:** We define tools as MCP tools using `tool()` and `createSdkMcpServer()` from the SDK. Each tool has a name, description, Zod schema, and async handler. The SDK presents them to Claude and handles the tool_use loop internally. Our code never touches the Anthropic API's tool_use protocol directly.
 
@@ -110,7 +115,7 @@ This is inspired by Hermes (raw delta buffering + edit-in-place) and OpenClaw (m
 
 Each type has typed frontmatter fields (topics, date, status, mediaType, frequency, proficiency, etc.). The schema is a config — adding new types requires no code changes.
 
-**2. Knowledge Base** — Markdown files indexed by QMD. One QMD collection per family member, plus a shared household collection. Files have YAML frontmatter with type, title, topics, etc.
+**2. Knowledge Base** — Markdown files indexed by QMD. One QMD collection per family member, plus a shared household collection. Files have YAML frontmatter with type, title, topics, etc. Agents search memory on demand via the `search_memory` tool rather than having memory pre-loaded into the system prompt.
 
 ```yaml
 ---
@@ -137,7 +142,11 @@ QMD provides three search modes:
 - `vsearch` — Vector similarity (semantic)
 - `query` — Hybrid with LLM expansion + reranking (best quality, used by default)
 
-CarsonOS uses `query` for both ambient context (pre-loaded into the system prompt) and the `search_memory` tool. Results include docid, score, title, snippet, and collection name.
+CarsonOS uses `query` for the `search_memory` tool. Results include docid, score, title, snippet, and collection name.
+
+### Memory Deduplication
+
+Before saving a new memory, agents search for existing entries on the same topic. If a match is found, they use `update_memory` to update the existing entry in-place rather than creating a duplicate. The five memory tools are: `search_memory`, `save_memory`, `update_memory`, `delete_memory`, and `update_instructions`.
 
 ### MemoryProvider Interface
 
@@ -169,8 +178,8 @@ The `tool_grants` table stores explicit grants: which agent gets which tools. If
 
 Trust levels control Claude Code built-in tools (Bash, Read, Write, etc.), not CarsonOS MCP tools.
 
-- **Full** — All built-ins. For the head agent and parent agents.
-- **Standard** — Read-only built-ins. For teenagers.
+- **Full** — All built-ins including Bash, Write, Edit, and Skill. For the head agent and parent agents. The `Skill` built-in gives full-trust agents access to all installed Claude Code skills.
+- **Standard** — Read-only built-ins (Read, Glob, Grep, WebFetch, WebSearch). For teenagers.
 - **Restricted** — No built-ins. For young kids. Only CarsonOS MCP tools.
 
 ### Google Integration
@@ -213,6 +222,12 @@ SQLite via Drizzle ORM. Single file at `~/.carsonos/carsonos.db`. Tables:
 - `conversations` / `messages` — Chat history
 - `activity_log` — Tool call records for dashboard visibility
 - `tasks` / `task_events` — Task system (future)
+
+## First-Contact Behavior
+
+When an agent encounters a family member for the first time (no prior conversation history), the prompt compiler injects a "Getting to Know [Name]" section instead of the usual "About [Name]" profile section. The agent suggests a profile interview — a short, natural conversation to learn about the person — rather than auto-compiling a profile from available data. This gives the member control over what the agent knows about them.
+
+The profile interview collects information that becomes the member's profile, injected into the agent's system prompt for future conversations.
 
 ## What's Not Built Yet
 

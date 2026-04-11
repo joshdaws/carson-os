@@ -1,7 +1,7 @@
 # CarsonOS Roadmap
 
 Status: Living document
-Last updated: 2026-04-09
+Last updated: 2026-04-11
 
 ## Vision
 
@@ -17,7 +17,10 @@ Working: dashboard, onboarding (needs polish), agent CRUD, constitution
 profiles (via first-contact), conversation history, settings, task system
 (working but deferred from MVP).
 
-Not working: tools, memory, knowledge base.
+Working (added in MVP): memory system (QMD-backed, 13 types, search/save/update/delete
+tools), Google Calendar + Gmail + Drive (via gws), session resume, model selector
+(Sonnet/Opus/Haiku), trust levels + skill access, first-contact profile interviews,
+memory deduplication (search before save + update_memory).
 
 ## MVP (v1.0) — "Announce on X"
 
@@ -34,16 +37,17 @@ constitution. Parents can see everything in the dashboard.
 
 ```
 # Family Constitution        ← Agent-formatted (concise, structured). THE FRAME.
-# Your Role                  ← Job description (~200-400 tokens)
-# Your Personality            ← Soul (~200-400 tokens)
-# Operating Instructions      ← Self-maintained behavioral notes (~500 tokens cap)
-# About [Member Name]         ← Combined: intro line + profile (~300-500 tokens)
-# What You Know               ← Recent memories, ambient context (~500-800 tokens)
-# How to Use Memory           ← From memory schema (~200 tokens)
+# Behavioral Guidelines       ← Soft rules from constitution clauses
+# Your Role                  ← Job description
+# Your Personality            ← Soul / communication style
+# Operating Instructions      ← Self-maintained behavioral notes (2000 char cap)
+# About [Member Name]         ← Intro line + profile (or first-contact instructions)
+# How to Use Memory           ← Memory schema + tool instructions
+# Your Capabilities           ← Trust level + enabled skills
 ```
 
-Token budget guideline: ~2,500-3,500 tokens total system prompt. Not enforced,
-just guidance for content length.
+Ambient memory injection was removed — agents search memory on demand via the
+`search_memory` tool, keeping the system prompt lean.
 
 Two versions of the constitution:
 - Human-readable (full prose, for dashboard display and editing)
@@ -121,52 +125,59 @@ Size-capped. Periodically compressed (agent consolidates redundant entries).
 Injected into the agent's system prompt alongside soul and constitution.
 
 Deliverables:
-- [ ] SDK adapter tool_use loop (max 10 iterations, per-iteration timeout)
-- [ ] MemoryProvider interface in @carsonos/shared
-- [ ] QmdMemoryProvider (default: markdown files + QMD collections, no FTS5)
-- [ ] Memory schema type + default schema (7 types with frontmatter)
-- [ ] search_memory, save_memory, delete_memory tools
-- [ ] Operating instructions: per-agent self-maintained doc + update tool
-- [ ] Prompt compiler reorder: constitution first, combined member section
-- [ ] Feature-flag hard clause evaluators (off for v1.0)
-- [ ] Ambient memory injection into system prompt
-- [ ] Memory collections auto-created at boot from family members table
-- [ ] Per-member memoryDir override (point at existing brain directory)
-- [ ] Memory provider config via env vars (kind, rootDir)
-- [ ] Memory provider swappable via module path for third-party backends
-- [ ] Tool-call activity logging (before smoke test)
-- [ ] Pre-populate test household: members, agents with roles/souls/profiles
+- [x] SDK adapter tool_use loop (max 15 turns via Agent SDK)
+- [x] MemoryProvider interface in @carsonos/shared
+- [x] QmdMemoryProvider (default: markdown files + QMD collections, no FTS5)
+- [x] Memory schema type + default schema (13 types with frontmatter)
+- [x] search_memory, save_memory, update_memory, delete_memory tools
+- [x] Operating instructions: per-agent self-maintained doc + update_instructions tool
+- [x] Prompt compiler reorder: constitution first, combined member section
+- [x] Feature-flag hard clause evaluators (off for v1.0)
+- [x] Memory search on demand via search_memory tool (ambient injection removed)
+- [x] Memory collections auto-created at boot from family members table
+- [x] Per-member memoryDir override (point at existing brain directory)
+- [x] Memory provider config via env vars (kind, rootDir)
+- [x] Memory provider swappable via module path for third-party backends
+- [x] Tool-call activity logging (before smoke test)
+- [x] Pre-populate test household: members, agents with roles/souls/profiles
+- [x] Memory deduplication: search before save + update_memory tool
+- [x] Session resume via Agent SDK resume parameter
+- [x] Model selector: Sonnet 4.6, Opus 4.6, Haiku 4.5
 
-#### M2: Google Calendar (1-2 days)
+#### M2: Google Calendar + Gmail + Drive (1-2 days) ✅
 
-- [ ] Google OAuth2 flow (user creates own Google Cloud project, localhost redirect)
-- [ ] list_calendar_events, create_calendar_event, get_calendar_event tools
-- [ ] Calendar tools wired into SDK adapter alongside memory tools
-- [ ] Agent can answer "what do we have this week?" with real data
-- [ ] Agent can create events from Telegram conversation
+- [x] Google OAuth2 flow (user creates own Google Cloud project, gws CLI)
+- [x] list_calendar_events, create_calendar_event, get_calendar_event tools
+- [x] Gmail tools: triage, read, compose, reply, update_draft, send_draft
+- [x] Drive tools: search, list
+- [x] Calendar tools wired into SDK adapter alongside memory tools
+- [x] Agent can answer "what do we have this week?" with real data
+- [x] Agent can create events from Telegram conversation
 
-#### M3: Onboarding Polish (1 day)
+#### M3: Onboarding Polish (1 day) ✅
 
-- [ ] Smooth 3-phase flow: Family -> Staff -> Connect (per commit b274d4e)
-- [ ] No broken states or janky transitions
-- [ ] Auto-create one personal agent per family member
-- [ ] Telegram bot token entry integrated into agent setup
+- [x] Smooth 3-phase flow: Family → Agent → Done
+- [x] No broken states or janky transitions
+- [x] Telegram bot token entry integrated into agent setup
+- [x] First-contact behavior: agent suggests profile interview instead of auto-compiling
+- [x] "Butler" scrubbed from all user-facing text → "Chief of Staff"
 
-#### M4: Dashboard Cleanup (0.5 day)
+#### M4: Dashboard Cleanup (0.5 day) ✅
 
-- [ ] Hide tasks, delegation, specialist pages behind feature flag
-- [ ] Overview shows: family members, agents, recent conversations
-- [ ] Settings page has Google Calendar OAuth section
-- [ ] Knowledge & Memory section (view memories, future: wiki browser)
-- [ ] No dead links or broken navigation
+- [x] Hide tasks, delegation, specialist pages behind feature flag
+- [x] Overview shows: family members, agents, recent conversations
+- [x] Settings page has Google Calendar OAuth section
+- [x] Knowledge & Memory section (view memories, future: wiki browser)
+- [x] No dead links or broken navigation
 
-#### M5: Ship Prep (0.5 day)
+#### M5: Ship Prep (0.5 day) ✅
 
-- [ ] README with install instructions, prerequisites, screenshots
-- [ ] setup.sh script for first-run
-- [ ] Demo GIF/video
-- [ ] X announcement post
-- [ ] MIT license
+- [x] README with install instructions, prerequisites, quick start, project structure
+- [x] setup.sh script for first-run (prerequisite checks + install + data dir)
+- [x] MIT license
+- [x] ARCHITECTURE.md updated for session changes
+- [ ] Demo GIF/video (post-launch)
+- [ ] X announcement post (post-launch)
 
 ### Total: ~5-6 days
 
