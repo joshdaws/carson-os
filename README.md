@@ -2,97 +2,91 @@
 
 **Your family's values, your family's AI.**
 
-CarsonOS is a self-hosted digital staff platform for families. Each family member gets their own AI agent on Telegram with its own personality, memory, and tools. Everything is governed by a family constitution that reflects your values. Open source, runs locally, works with your Claude subscription.
+CarsonOS is a self-hosted AI staff platform for families. Each family member gets their own AI agent on Telegram — with its own personality, memory, and tools — all governed by a family constitution that reflects your values. Open source, runs locally, works with your Claude subscription.
 
-## What It Does
+<!-- TODO: Add hero screenshot or demo GIF here -->
 
-Install CarsonOS on your machine, walk through a 3-step setup (name your family, create your agent, connect Telegram), and you have a personal AI assistant that:
+## What You Get
 
-- **Remembers things** across conversations (powered by QMD, a local markdown knowledge base)
-- **Checks your calendar** and can create events (Google Calendar via gws)
-- **Reads and drafts emails** for you (Gmail, draft-first — never sends without approval)
-- **Searches your Google Drive** for documents
-- **Stays within your family's rules** via a constitution you define
-- **Learns how to help you** through operating instructions it maintains itself
-
-Each family member can have their own agent with their own personality, tools, and trust level. A 6-year-old's agent is locked down (no Bash, no email). A parent's agent has full access.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│                  Telegram                    │
-│         (one bot per agent)                  │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│            Multi-Relay Manager               │
-│  Streaming (edit-in-place) + debouncing      │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│           Constitution Engine                │
-│  System prompt compilation + policy          │
-│  enforcement (prompt-based for v1.0)         │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│          Claude Agent SDK Adapter            │
-│  MCP tools + streaming + trust levels        │
-│  Uses your Claude subscription (no API key)  │
-└──────────────────┬──────────────────────────┘
-                   │
-        ┌──────────┼──────────┐
-        ▼          ▼          ▼
-   ┌─────────┐ ┌────────┐ ┌────────┐
-   │ Memory  │ │Calendar│ │ Gmail  │
-   │  (QMD)  │ │ (gws)  │ │ (gws)  │
-   └─────────┘ └────────┘ └────────┘
-```
-
-**Key design decisions:**
-- Agents use the Claude Agent SDK, not the Anthropic API — works with your Claude subscription
-- Tools are MCP servers managed by the SDK — the tool loop is handled internally
-- Memory is markdown files with YAML frontmatter, indexed by QMD for hybrid search
-- Google services use the `gws` CLI — one auth per family member, per-member config dirs
-- Streaming uses edit-in-place on Telegram with markdown-aware formatting
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document.
+- **Personal agents** — Each family member gets their own AI on Telegram with a distinct personality
+- **Memory that sticks** — Agents remember facts, preferences, events, and commitments across conversations
+- **Calendar & email** — Check schedules, create events, draft emails (never sends without your OK)
+- **A constitution** — Your family's rules and values, enforced across every agent
+- **Trust levels** — A parent's agent has full system access; a 6-year-old's is locked down
+- **Everything local** — SQLite database, markdown memory files, no cloud dependencies
 
 ## Prerequisites
 
-- **Node.js 20+** (recommended: use nvm)
-- **Claude CLI** — `npm install -g @anthropic-ai/claude-code` (requires Claude subscription)
-- **QMD** — `npm install -g @tobilu/qmd` (local markdown search engine)
-- **gws** (optional) — `npm install -g @anthropic-ai/gws` (Google Workspace CLI)
-- **pnpm** — `npm install -g pnpm`
+| Dependency | Install | Why |
+|------------|---------|-----|
+| **Node.js 20+** | [nodejs.org](https://nodejs.org) or `nvm install 20` | Runtime |
+| **pnpm** | `npm install -g pnpm` | Package manager (monorepo) |
+| **Claude CLI** | `npm install -g @anthropic-ai/claude-code` | Agent runtime (uses your Claude subscription) |
+| **QMD** | `npm install -g @anthropic-ai/qmd` | Local markdown search engine for memory |
+
+Optional:
+- **gws** — `npm install -g @anthropic-ai/gws` — Google Workspace CLI (Calendar, Gmail, Drive)
 
 ## Quick Start
 
 ```bash
-# Clone and install
 git clone https://github.com/joshdaws/carson-os.git
 cd carson-os
-pnpm install
 
-# Start the server
+# Auto-check prerequisites, install deps, create data directory
+./setup.sh
+
+# Start the dev server
 pnpm dev
 
-# Open http://localhost:3300/onboarding in your browser
-# Follow the 3-step setup: Family → Agent → Done
+# Open the onboarding flow
+open http://localhost:3300/onboarding
 ```
+
+Or manually:
+
+```bash
+pnpm install
+mkdir -p ~/.carsonos
+pnpm dev
+```
+
+Then open [http://localhost:3300/onboarding](http://localhost:3300/onboarding) and follow the 3-step setup:
+
+1. **Family** — Name your household and add family members (name, age, role)
+2. **Agent** — Create your first agent and optionally connect a Telegram bot
+3. **Done** — Open Telegram and start chatting
+
+<!-- TODO: Add onboarding screenshot -->
+
+### Development Sandbox
+
+If you're using CarsonOS for your family and also developing on it, use sandbox mode to keep them completely separate:
+
+```bash
+# Your family's instance (default — uses ~/.carsonos, port 3300)
+pnpm dev
+
+# Development sandbox (uses .sandbox/ in the project, port 3301)
+pnpm dev:sandbox
+```
+
+The sandbox gets its own database, memory files, and Google auth directory. You can delete `.sandbox/` anytime without affecting your real data.
 
 ### Connecting Telegram
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Create a new bot (`/newbot`)
 3. Copy the bot token
-4. Enter it during onboarding (or add it later in the dashboard)
+4. Enter it during onboarding, or add it later in the dashboard under Staff → your agent
 
-### Connecting Google (Calendar, Gmail, Drive)
+### Connecting Google (optional)
+
+Google Calendar, Gmail, and Drive integration uses the `gws` CLI:
 
 ```bash
-# Copy your Google Cloud credentials (or create new ones at console.cloud.google.com)
+# Create a Google Cloud project and download OAuth credentials
+# See: https://console.cloud.google.com
 mkdir -p ~/.carsonos/google/your-name
 cp credentials.json ~/.carsonos/google/your-name/client_secret.json
 
@@ -102,7 +96,20 @@ GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.carsonos/google/your-name gws auth login
 
 Each family member authenticates separately with their own Google account.
 
-## System Prompt Order
+## How It Works
+
+```
+Telegram message
+  → Identify member (by Telegram user ID)
+  → Load agent + member + constitution from DB
+  → Compile system prompt (constitution first, always)
+  → Resolve tools (memory, calendar, etc.) by trust level
+  → Execute via Claude Agent SDK (streaming, multi-turn, MCP tools)
+  → Stream response back to Telegram (edit-in-place)
+  → Log conversation + tool calls
+```
+
+### System Prompt Order
 
 The constitution comes first. Always.
 
@@ -113,119 +120,133 @@ The constitution comes first. Always.
 # Your Personality             ← How this agent communicates
 # Operating Instructions       ← Self-maintained behavioral notes
 # About [Member Name]          ← Who they're talking to + profile
-# What You Know                ← Ambient memory (recent/relevant entries)
 # How to Use Memory            ← Memory schema + tool instructions
+# Your Capabilities            ← Trust level + enabled skills
 ```
 
-## Tools
+### First Contact
 
-CarsonOS has a tool registry with four tiers:
+When an agent talks to a family member for the first time, it suggests a profile interview — a short conversation to learn about the person. No auto-compiling; the agent asks and the member shares what they want.
 
-| Tier | Description | Default | Examples |
-|------|-------------|---------|----------|
-| **System** | Every agent gets these, always | On | search_memory, save_memory, update_instructions |
-| **Builtin** | Ships with CarsonOS, toggleable per-agent | Role defaults | calendar, gmail, drive |
-| **Custom** | Agent-created or imported | Off | scripts, skills |
-| **Discovered** | Found in ~/.claude/skills/ | Off | content-writer, web-scraper |
+### Session Resume
 
-### Trust Levels
+Conversations maintain continuity via Claude Agent SDK session resume. Each conversation tracks a session ID so the agent picks up where it left off.
 
-Trust levels control what Claude Code built-in tools an agent can use:
+## Memory
 
-| Level | Built-in Tools | Use Case |
-|-------|----------------|----------|
-| **Full** | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch | Parent's agent |
-| **Standard** | Read, Glob, Grep, WebFetch, WebSearch | Teenager's agent |
-| **Restricted** | None — MCP tools only | Young kid's agent |
+Three layers, all stored as local markdown files with YAML frontmatter:
 
-## Memory Architecture
+1. **Knowledge Base** — QMD-indexed markdown files. One collection per family member + a shared household collection. Agents search memory on demand via the `search_memory` tool.
 
-Three layers of memory, all stored as local markdown files:
+2. **Memory Schema** — 13 types (fact, preference, event, decision, commitment, person, project, media, place, routine, relationship, goal, skill) with typed frontmatter fields. Agents use `save_memory` and `update_memory` to manage entries, with dedup (search before save).
 
-1. **Memory Schema** — Defines 13 memory types with YAML frontmatter fields:
-
-   | Type | Description | Example |
-   |------|-------------|---------|
-   | `fact` | Concrete information | "Elsie's soccer practice is Tuesdays at 5pm" |
-   | `preference` | Likes, dislikes, ways of working | "Grant prefers short explanations" |
-   | `event` | Things that happened | "We went to Disney World this week" |
-   | `decision` | Choices made | "We decided to homeschool starting fall 2026" |
-   | `commitment` | Promises and obligations | "Josh promised to coach the spring league" |
-   | `person` | Contact info and relationship notes | "Dr. Kim, pediatrician, office on 5th" |
-   | `project` | Ongoing efforts with status | "Kitchen renovation, started March, contractor is Mike" |
-   | `media` | Books, movies, shows, articles, podcasts | "Watched Jaws again, Quint's monologue is about survivor's guilt" |
-   | `place` | Locations, restaurants, schools | "The cabin in Tahoe, great for summer trips" |
-   | `routine` | Recurring habits and schedules | "Grant has basketball Tue/Thu after school" |
-   | `relationship` | Connections between people | "Tyler coaches Grant's team, our closest family friends" |
-   | `goal` | Aspirations and targets | "Get Claire into the school play by October" |
-   | `skill` | Things people know or are learning | "Grant is learning to code, started with Python" |
-
-2. **Knowledge Base** — QMD-indexed markdown files. One collection per member + a shared household collection. Searchable via hybrid search (BM25 + vector + LLM reranking)
-3. **Operating Instructions** — Per-agent self-maintained behavioral notes. The agent updates these itself as it learns how to help you
+3. **Operating Instructions** — Per-agent self-maintained behavioral notes ("Josh prefers bullet points", "Don't schedule during church on Sundays"). Capped at 2000 characters.
 
 ```
 ~/.carsonos/memory/
-  household/       ← shared family memory
-  josh/            ← Josh's personal memory (or point at existing brain)
-  becca/           ← Becca's personal memory
-  grant/           ← Grant's personal memory
+  household/       <- shared family memory
+  josh/            <- Josh's personal memory
+  becca/           <- Becca's personal memory
+  ...
 ```
 
 Members can override their memory directory to point at an existing QMD-compatible knowledge base.
+
+## Tools
+
+Agents get tools based on their role and trust level:
+
+| Tool | Description |
+|------|-------------|
+| `search_memory` | Search personal + household memory |
+| `save_memory` | Save new memories (facts, events, etc.) |
+| `update_memory` | Update existing memory entries in-place |
+| `delete_memory` | Remove outdated memories |
+| `update_instructions` | Maintain operating instructions |
+| `list_calendar_events` | Check schedules (requires gws) |
+| `create_calendar_event` | Create events (requires gws) |
+| `gmail_*` | Read, draft, and manage email (requires gws) |
+| `drive_*` | Search and list Drive files (requires gws) |
+
+### Trust Levels
+
+| Level | Built-in Tools | For |
+|-------|----------------|-----|
+| **Full** | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Skill | Parents |
+| **Standard** | Read, Glob, Grep, WebFetch, WebSearch | Teenagers |
+| **Restricted** | None (MCP tools only) | Young kids |
+
+### Model Selection
+
+Agents can use different Claude models:
+- **Sonnet 4.6** (default) — Fast and capable
+- **Opus 4.6** — Most capable
+- **Haiku 4.5** — Fastest, lightest
 
 ## Project Structure
 
 ```
 packages/
-  shared/          ← Types: MemoryProvider, ToolDefinition, TrustLevel, etc.
-  db/              ← SQLite schema + Drizzle ORM (households, agents, tools, etc.)
+  shared/          <- Types: MemoryProvider, ToolDefinition, TrustLevel, etc.
+  db/              <- SQLite schema + Drizzle ORM
 
 server/
   src/
-    config.ts              ← Environment config (memory, features, adapter)
-    index.ts               ← Boot sequence
-    app.ts                 ← Express routes + Vite dev middleware
-    routes/                ← API routes (onboarding, staff, health, etc.)
+    index.ts                    <- Boot sequence
+    app.ts                      <- Express routes + Vite dev middleware
+    config.ts                   <- Environment config
+    routes/                     <- API routes (onboarding, staff, settings, etc.)
     services/
-      subprocess-adapter.ts     ← Claude Agent SDK adapter (MCP tools, streaming)
-      constitution-engine.ts    ← Core pipeline: prompt compilation + tool wiring
-      prompt-compiler.ts        ← System prompt builder (7 sections, ordered)
-      tool-registry.ts          ← Tool registration, grants, trust levels
-      telegram-streaming.ts     ← Edit-in-place streaming with markdown formatting
-      multi-relay-manager.ts    ← One Telegram bot per agent
-      memory/                   ← MemoryProvider, QMD provider, memory schema
-      google/                   ← Calendar, Gmail, Drive tool handlers
+      constitution-engine.ts    <- Core pipeline: prompt compilation + tool wiring
+      prompt-compiler.ts        <- System prompt builder (ordered sections)
+      subprocess-adapter.ts     <- Claude Agent SDK adapter (streaming, resume)
+      tool-registry.ts          <- Tool registration, grants, trust levels
+      telegram-streaming.ts     <- Edit-in-place streaming with markdown formatting
+      multi-relay-manager.ts    <- One Telegram bot per agent
+      memory/                   <- MemoryProvider, QMD provider, schema, tools
+      google/                   <- Calendar, Gmail, Drive providers
 
 ui/
   src/
-    pages/Onboarding.tsx   ← 3-step setup flow
-    pages/Dashboard.tsx    ← Household overview + agent hierarchy
-    components/            ← Shared UI components
+    pages/
+      Onboarding.tsx            <- 3-step setup flow
+      Dashboard.tsx             <- Household overview
+    components/                 <- Shared UI components
 ```
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 3300 | Server port |
-| `DATA_DIR` | ~/.carsonos | Data directory (DB, memory, Google auth) |
-| `CARSONOS_ADAPTER` | anthropic-sdk | Adapter: `anthropic-sdk` (Agent SDK) or `claude-code` |
-| `CARSONOS_MEMORY_DIR` | {DATA_DIR}/memory | Memory file root |
-| `CARSONOS_HARD_EVALUATORS` | false | Enable hard clause evaluators (off for v1.0) |
+| `PORT` | `3300` | Server port |
+| `DATA_DIR` | `~/.carsonos` | Data directory (DB, memory, Google auth) |
+| `CARSONOS_ADAPTER` | `anthropic-sdk` | Adapter: `anthropic-sdk`, `claude-code`, or `codex` |
+| `CARSONOS_MEMORY_PROVIDER` | `qmd` | Memory backend |
+| `CARSONOS_MEMORY_DIR` | `{DATA_DIR}/memory` | Memory file root |
+| `CARSONOS_HARD_EVALUATORS` | `false` | Hard clause evaluators (off for v1.0) |
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document covering:
+- The message pipeline (Telegram → Constitution → Agent SDK → Tools → Response)
+- Memory system (MemoryProvider interface, QMD backend, 13 memory types)
+- Tool registry (4 tiers: system, builtin, custom, discovered)
+- Constitution engine (prompt-based enforcement, two versions)
+- Streaming architecture (edit-in-place, markdown-aware formatting)
 
 ## Roadmap
 
+See [docs/roadmap.md](docs/roadmap.md) for the full roadmap. Current status:
+
 - [x] **M1** — Memory system + Agent SDK adapter
 - [x] **M2** — Google Calendar + Gmail + Drive
-- [x] **M3** — Simplified onboarding + Chief of Staff language
-- [ ] **M4** — Dashboard cleanup + post-onboarding checklist
-- [ ] **M5** — Ship prep (setup.sh, demo, license)
-- [ ] **v1.1** — Task system + activity feed
-- [ ] **v1.2** — Sub-agents + delegation (tutor, developer, scheduler)
-- [ ] **v1.3** — More connectors (YNAB, Todoist, etc.)
-- [ ] **v2.0** — Full tool registry + governance
-- [ ] **v2.x** — Generated tools + skills.sh import + Code Mode
+- [x] **M3** — Simplified onboarding
+- [x] **M4** — Dashboard cleanup
+- [x] **M5** — Ship prep (this release)
+- [ ] **v1.1** — Task system + memory scoping + activity feed
+- [ ] **v1.2** — Sub-agents + delegation
+- [ ] **v1.3** — More connectors (YNAB, Todoist)
 
 ## License
 
-MIT
+[MIT](LICENSE)
