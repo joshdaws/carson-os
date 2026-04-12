@@ -167,19 +167,19 @@ describe("evaluateRoleRestrict", () => {
 
   it("14. allows when role is in the allowed list", () => {
     const result = evaluateRoleRestrict("parent", ruleId, {
-      allowedRoles: ["parent", "student"],
+      allowedRoles: ["parent", "kid"],
     });
 
     expect(result.allowed).toBe(true);
   });
 
   it("15. blocks when role is not in the allowed list", () => {
-    const result = evaluateRoleRestrict("child", ruleId, {
+    const result = evaluateRoleRestrict("kid", ruleId, {
       allowedRoles: ["parent"],
     });
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("child");
+    expect(result.reason).toContain("kid");
     expect(result.reason).toContain("parent");
   });
 });
@@ -199,7 +199,7 @@ describe("compileSoftRules", () => {
     {
       ruleText: "Use simple language",
       category: "interaction-mode",
-      appliesToRoles: ["child" as const],
+      appliesToRoles: ["kid" as const],
       appliesToAgents: null,
       appliesToMinAge: null,
       appliesToMaxAge: 10,
@@ -207,7 +207,7 @@ describe("compileSoftRules", () => {
     {
       ruleText: "Allow discussion of college topics",
       category: "content-governance",
-      appliesToRoles: ["student" as const],
+      appliesToRoles: ["kid" as const],
       appliesToAgents: null,
       appliesToMinAge: 13,
       appliesToMaxAge: null,
@@ -223,13 +223,13 @@ describe("compileSoftRules", () => {
   ];
 
   it("includes rules with null appliesToRoles (applies to everyone)", () => {
-    const result = compileSoftRules(rules, "child", 8);
+    const result = compileSoftRules(rules, "kid", 8);
 
     expect(result).toContain("Be encouraging and patient");
   });
 
   it("includes role-matched rules", () => {
-    const result = compileSoftRules(rules, "child", 8);
+    const result = compileSoftRules(rules, "kid", 8);
 
     expect(result).toContain("Use simple language");
     expect(result).not.toContain("Full admin access");
@@ -238,19 +238,19 @@ describe("compileSoftRules", () => {
 
   it("filters by age range", () => {
     // Student age 14 should get the college topics rule
-    const result = compileSoftRules(rules, "student", 14);
+    const result = compileSoftRules(rules, "kid", 14);
 
     expect(result).toContain("college topics");
     expect(result).toContain("Be encouraging");
 
     // Student age 12 should NOT get college topics (minAge 13)
-    const young = compileSoftRules(rules, "student", 12);
+    const young = compileSoftRules(rules, "kid", 12);
 
     expect(young).not.toContain("college topics");
   });
 
   it("groups rules by category", () => {
-    const result = compileSoftRules(rules, "child", 8);
+    const result = compileSoftRules(rules, "kid", 8);
 
     // Should have category headers
     expect(result).toContain("## interaction-mode");
@@ -268,7 +268,7 @@ describe("compileSoftRules", () => {
           appliesToMaxAge: null,
         },
       ],
-      "child",
+      "kid",
       8,
     );
 
@@ -298,7 +298,7 @@ describe("compileSoftRules", () => {
     // With matching agent -- both rules included
     const matching = compileSoftRules(
       agentSpecificRules,
-      "child",
+      "kid",
       8,
       "tutor-agent-1",
     );
@@ -308,7 +308,7 @@ describe("compileSoftRules", () => {
     // With non-matching agent -- only universal rule
     const nonMatching = compileSoftRules(
       agentSpecificRules,
-      "child",
+      "kid",
       8,
       "other-agent",
     );
@@ -316,7 +316,7 @@ describe("compileSoftRules", () => {
     expect(nonMatching).toContain("Universal rule");
 
     // Without agent ID -- all rules included (no agent filtering)
-    const noAgent = compileSoftRules(agentSpecificRules, "child", 8);
+    const noAgent = compileSoftRules(agentSpecificRules, "kid", 8);
     expect(noAgent).toContain("Tutor-specific rule");
     expect(noAgent).toContain("Universal rule");
   });
