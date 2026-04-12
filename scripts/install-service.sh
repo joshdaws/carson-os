@@ -103,7 +103,7 @@ cat > "$PLIST_PATH" << PLIST
   <key>ProgramArguments</key>
   <array>
     <string>${PNPM_PATH}</string>
-    <string>dev</string>
+    <string>start</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${PROJECT_DIR}</string>
