@@ -9,7 +9,7 @@
  * executor that routes tool calls to the right handler.
  */
 
-import { readdirSync, existsSync, statSync } from "node:fs";
+import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { eq, and } from "drizzle-orm";
@@ -175,6 +175,31 @@ export class ToolRegistry {
   }
 
   /**
+   * Read the description from a skill's SKILL.md frontmatter.
+   * Falls back to a generic description if the file is missing or unparseable.
+   */
+  private readSkillDescription(skillDir: string, skillName: string): string {
+    const skillMdPath = join(skillDir, "SKILL.md");
+    try {
+      if (!existsSync(skillMdPath)) return `Claude Code skill: ${skillName}`;
+      const content = readFileSync(skillMdPath, "utf8");
+      // Extract YAML frontmatter between --- delimiters
+      const match = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!match) return `Claude Code skill: ${skillName}`;
+      // Parse description field (may be multi-line with | indicator)
+      const descMatch = match[1].match(/description:\s*\|?\n?((?:[ \t]+.+\n?)+)/);
+      if (!descMatch) return `Claude Code skill: ${skillName}`;
+      return descMatch[1]
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join(" ");
+    } catch {
+      return `Claude Code skill: ${skillName}`;
+    }
+  }
+
+  /**
    * Discover installed Claude Code skills from ~/.claude/skills/
    * and register them as toggleable builtin tools.
    */
@@ -191,10 +216,13 @@ export class ToolRegistry {
         const skillToolName = `skill:${name}`;
         if (this.tools.has(skillToolName)) continue;
 
+        const skillDir = join(skillsDir, name);
+        const description = this.readSkillDescription(skillDir, name);
+
         this.tools.set(skillToolName, {
           definition: {
             name: skillToolName,
-            description: `Claude Code skill: ${name}`,
+            description,
             input_schema: { type: "object", properties: {} },
           },
           category: "skill",

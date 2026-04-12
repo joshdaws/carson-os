@@ -208,7 +208,15 @@ function compileChatPrompt(params: CompilePromptParams): string {
       capLines.push("You have read-only system access: Read, Glob, Grep, WebFetch, and WebSearch.");
     }
     if (params.enabledSkills && params.enabledSkills.length > 0) {
-      capLines.push(`You have access to these installed skills: ${params.enabledSkills.join(", ")}.`);
+      const skillList = params.enabledSkills.map((s) => `- ${s}`).join("\n");
+      capLines.push(
+        `\nYou have access to these installed skills:\n${skillList}\n\n` +
+        `Skill loading rules:\n` +
+        `- When a request matches or is even partially relevant to a skill, you MUST invoke it using the Skill tool before proceeding.\n` +
+        `- Skills contain specialized knowledge — proven workflows, domain-specific commands, and context that outperform general-purpose approaches. Load the skill even if you think you could handle the task with basic tools.\n` +
+        `- Err on the side of loading. It is always better to have context you don't need than to miss critical steps, pitfalls, or established workflows.\n` +
+        `- Only proceed without invoking a skill if genuinely none are relevant.`
+      );
     }
     if (capLines.length > 0) {
       sections.push(`# Your Capabilities\n\n${capLines.join("\n")}`);
