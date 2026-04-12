@@ -64,6 +64,7 @@ interface HouseholdMember {
   telegramUserId?: string | null;
   profileContent?: string | null;
   profileUpdatedAt?: string | null;
+  memoryDir?: string | null;
 }
 
 interface HouseholdData {
@@ -242,6 +243,7 @@ function EditMemberForm({
   const [role, setRole] = useState<MemberRole>(member.role);
   const [age, setAge] = useState(String(member.age || ""));
   const [telegramUserId, setTelegramUserId] = useState(member.telegramUserId || "");
+  const [memoryDir, setMemoryDir] = useState(member.memoryDir || "");
 
   const updateMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -271,6 +273,8 @@ function EditMemberForm({
     if (age && parseInt(age, 10) !== member.age) payload.age = parseInt(age, 10);
     const tg = telegramUserId.trim() || null;
     if (tg !== (member.telegramUserId || null)) payload.telegramUserId = tg;
+    const md = memoryDir.trim() || null;
+    if (md !== (member.memoryDir || null)) payload.memoryDir = md;
     if (Object.keys(payload).length === 0) { onClose(); return; }
     updateMutation.mutate(payload);
   }
@@ -303,6 +307,19 @@ function EditMemberForm({
         <div className="grid grid-cols-2 gap-3">
           <Input type="number" placeholder="Age" min={1} max={99} value={age} onChange={(e) => setAge(e.target.value)} />
           <Input placeholder="Telegram ID" value={telegramUserId} onChange={(e) => setTelegramUserId(e.target.value)} />
+        </div>
+        <div>
+          <Input
+            placeholder="Memory folder (leave blank for default)"
+            value={memoryDir}
+            onChange={(e) => setMemoryDir(e.target.value)}
+            style={{ fontFamily: "monospace", fontSize: "12px" }}
+          />
+          {memoryDir && (
+            <p className="text-[10px] mt-1" style={{ color: "#8a8070" }}>
+              Points to an existing QMD-compatible knowledge base instead of ~/.carsonos/memory/{member.name.toLowerCase()}
+            </p>
+          )}
         </div>
         {staffAssignments.length > 0 && (
           <div className="pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
