@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
 import { backupDatabase } from "./services/backup.js";
+import { checkForUpdates } from "./services/update-check.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -252,6 +253,10 @@ async function main() {
     console.log(`  memory:   ${config.memory.rootDir}`);
     console.log(`  ws:       ws://127.0.0.1:${config.port}/ws`);
     console.log();
+
+    // Check for updates in the background (non-blocking)
+    const projectDir = join(import.meta.dirname, "../..");
+    checkForUpdates(projectDir).catch(() => {});
   });
 
   // Graceful shutdown
