@@ -78,7 +78,7 @@ export function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/household" element={<HouseholdPage />} />
           <Route path="/constitution" element={<ConstitutionPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
+          {/* <Route path="/tasks" element={<TasksPage />} /> — hidden until delegation MVP */}
           <Route path="/staff/:staffId" element={<StaffDetailPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

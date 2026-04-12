@@ -11,6 +11,7 @@
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "pnpm --filter @carsonos/server dev",
+    "dev:sandbox": "DATA_DIR=$PWD/.sandbox PORT=3301 pnpm --filter @carsonos/server dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

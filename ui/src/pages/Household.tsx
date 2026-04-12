@@ -27,7 +27,8 @@ import {
   FileUser,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { ProfileInterview } from "@/components/ProfileInterview";
+import { InterviewOverlay } from "@/components/InterviewOverlay";
+import type { ChatMessage } from "@/components/ChatBubble";
 import { useToast } from "@/components/Toast";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -35,7 +36,7 @@ import { useToast } from "@/components/Toast";
 type MemberRole = "parent" | "kid";
 type StaffRole = "head_butler" | "personal" | "tutor" | "coach" | "scheduler" | "custom";
 type AgentStatus = "active" | "paused" | "idle";
-type AutonomyLevel = "supervised" | "trusted" | "autonomous";
+type TrustLevel = "full" | "standard" | "restricted";
 
 interface Assignment {
   memberId: string;
@@ -50,7 +51,8 @@ interface StaffAgent {
   specialty?: string;
   status: AgentStatus;
   isHeadButler?: boolean;
-  autonomyLevel: AutonomyLevel;
+  trustLevel?: string;
+  model?: string;
   assignments?: Assignment[];
 }
 
@@ -78,17 +80,30 @@ const ROLE_OPTIONS: { value: MemberRole; label: string }[] = [
 
 const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
   { value: "personal", label: "Personal Agent" },
-  { value: "head_butler", label: "Head Butler" },
+  { value: "head_butler", label: "Chief of Staff" },
   { value: "tutor", label: "Tutor" },
   { value: "coach", label: "Coach" },
   { value: "scheduler", label: "Scheduler" },
   { value: "custom", label: "Custom" },
 ];
 
-const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string }[] = [
-  { value: "supervised", label: "Supervised" },
-  { value: "trusted", label: "Trusted" },
-  { value: "autonomous", label: "Autonomous" },
+const MODEL_LABELS: Record<string, string> = {
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-opus-4-6": "Opus 4.6",
+  "claude-haiku-4-5-20251001": "Haiku 4.5",
+  "claude-haiku-4-5": "Haiku 4.5",
+};
+
+const TRUST_LEVEL_OPTIONS: { value: TrustLevel; label: string; description: string }[] = [
+  { value: "full", label: "Full", description: "Bash, files, web, skills" },
+  { value: "standard", label: "Standard", description: "Read-only file access" },
+  { value: "restricted", label: "Restricted", description: "Memory tools only" },
+];
+
+const MODEL_OPTIONS = [
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 function statusColor(s: AgentStatus): string {
@@ -98,7 +113,7 @@ function statusColor(s: AgentStatus): string {
 }
 
 function roleLabel(r: StaffRole): string {
-  return r === "head_butler" ? "Head Butler" : r.charAt(0).toUpperCase() + r.slice(1);
+  return r === "head_butler" ? "Chief of Staff" : r.charAt(0).toUpperCase() + r.slice(1);
 }
 
 // ── Add Member Form ────────────────────────────────────────────────
@@ -330,14 +345,14 @@ function MemberCard({
   member,
   householdId,
   staffAssignments,
+  onStartInterview,
 }: {
   member: HouseholdMember;
   householdId: string;
   staffAssignments: { staffName: string; staffRole: string }[];
+  onStartInterview: (memberId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [showInterview, setShowInterview] = useState(false);
-  const queryClient = useQueryClient();
 
   if (editing) {
     return (
@@ -347,21 +362,6 @@ function MemberCard({
         staffAssignments={staffAssignments}
         onClose={() => setEditing(false)}
       />
-    );
-  }
-
-  if (showInterview) {
-    return (
-      <div className="col-span-full max-w-2xl">
-        <ProfileInterview
-          memberId={member.id}
-          memberName={member.name}
-          onClose={() => setShowInterview(false)}
-          onComplete={() => {
-            queryClient.invalidateQueries({ queryKey: ["household"] });
-          }}
-        />
-      </div>
     );
   }
 
@@ -413,7 +413,7 @@ function MemberCard({
             size="sm"
             className="h-7 text-[11px]"
             style={{ color: "#8b6f4e" }}
-            onClick={() => setShowInterview(true)}
+            onClick={() => onStartInterview(member.id)}
           >
             <FileUser className="h-3 w-3 mr-1" />
             {hasProfile ? "Re-interview" : "Build Profile"}
@@ -432,18 +432,27 @@ const ROLE_TEMPLATES: Record<string, string> = {
   tutor: "You create study plans, generate practice questions, review essays, build vocabulary lists, and track learning progress. You coach through problems without giving direct answers unless the constitution allows it.",
   coach: "You build workout schedules, create practice plans, track fitness goals, suggest activities, and encourage physical activity.",
   scheduler: "You manage calendar events, find free time, coordinate family schedules, propose time blocks, and send reminders.",
-  head_butler: "You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal.",
+  head_butler: "You oversee all staff, coordinate family schedules, and ensure the family constitution is upheld. You're the family's primary point of contact.",
   custom: "",
 };
 
-function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: () => void }) {
+function AddStaffModal({
+  householdId,
+  members,
+  onClose,
+}: {
+  householdId: string;
+  members: HouseholdMember[];
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [staffRole, setStaffRole] = useState<StaffRole>("personal");
-  const [specialty, setSpecialty] = useState("");
-  const [autonomyLevel, setAutonomyLevel] = useState<AutonomyLevel>("supervised");
-  const [visibility, setVisibility] = useState<"family" | "internal">("family");
+  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [trustLevel, setTrustLevel] = useState<TrustLevel>("restricted");
+  const [assignTo, setAssignTo] = useState<string>("");
+  const [botToken, setBotToken] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   const mutation = useMutation({
@@ -460,99 +469,137 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
     if (!name.trim()) return;
 
     const template = ROLE_TEMPLATES[staffRole] || "";
-    const roleContent = template.replace(/\{name\}/g, name.trim());
+    const roleContent = template.replace(/\{name\}/g, assignTo ? (members.find((m) => m.id === assignTo)?.name ?? name.trim()) : name.trim());
 
     mutation.mutate({
       householdId,
       name: name.trim(),
       staffRole,
       roleContent,
-      visibility,
-      ...(specialty.trim() ? { specialty: specialty.trim() } : {}),
-      autonomyLevel,
+      model,
+      trustLevel,
+      visibility: "family",
+      ...(botToken.trim() ? { telegramBotToken: botToken.trim() } : {}),
     });
   }
 
   const nameError = submitted && !name.trim();
 
   return (
-    <Card className="border" style={{ borderColor: "#ddd5c8" }}>
-      <CardContent className="p-4">
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>New Staff Agent</span>
-            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-              <X className="h-3.5 w-3.5" />
-            </Button>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.4)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="rounded-lg shadow-xl w-full max-w-md mx-4"
+        style={{ background: "#faf6ef", border: "1px solid #ddd5c8" }}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+            New Staff Agent
+          </h3>
+          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {/* Name */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Name</label>
+            <Input
+              placeholder="e.g., Django"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              style={nameError ? { borderColor: "#c62828" } : undefined}
+            />
+            {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
           </div>
+
+          {/* Role + Assign to */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Input
-                placeholder="Name (e.g., Ms. Hughes) *"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                autoFocus
-                style={nameError ? { borderColor: "#c62828" } : undefined}
-              />
-              {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Role</label>
+              <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {STAFF_ROLE_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-            <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {STAFF_ROLE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Assign to</label>
+              <Select value={assignTo} onValueChange={setAssignTo}>
+                <SelectTrigger><SelectValue placeholder="Select member..." /></SelectTrigger>
+                <SelectContent>
+                  {members.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="flex gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => setVisibility("family")}
-              className="flex-1 py-1.5 rounded text-center transition-colors"
-              style={{
-                background: visibility === "family" ? "#1a1f2e" : "#f5f0e8",
-                color: visibility === "family" ? "#e8dfd0" : "#8a8070",
-                border: "1px solid #ddd5c8",
-              }}
-            >
-              Family-facing (has Telegram bot)
-            </button>
-            <button
-              type="button"
-              onClick={() => setVisibility("internal")}
-              className="flex-1 py-1.5 rounded text-center transition-colors"
-              style={{
-                background: visibility === "internal" ? "#1a1f2e" : "#f5f0e8",
-                color: visibility === "internal" ? "#e8dfd0" : "#8a8070",
-                border: "1px solid #ddd5c8",
-              }}
-            >
-              Internal (works behind the scenes)
-            </button>
-          </div>
+
+          {/* Model + Trust Level */}
           <div className="grid grid-cols-2 gap-3">
-            <Input placeholder="Specialty (optional)" value={specialty} onChange={(e) => setSpecialty(e.target.value)} />
-            <Select value={autonomyLevel} onValueChange={(v) => setAutonomyLevel(v as AutonomyLevel)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {AUTONOMY_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Model</label>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MODEL_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Trust Level</label>
+              <Select value={trustLevel} onValueChange={(v) => setTrustLevel(v as TrustLevel)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {TRUST_LEVEL_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                      <span className="text-[10px] ml-1.5" style={{ color: "#8a8070" }}>{o.description}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="flex items-center justify-end pt-1">
-            <Button type="submit" size="sm" disabled={mutation.isPending}>
-              {mutation.isPending ? "Adding..." : "Add Staff"}
+
+          {/* Telegram Bot Token */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+              Telegram Bot Token <span style={{ color: "#a09080" }}>(optional)</span>
+            </label>
+            <Input
+              type="password"
+              placeholder="123456:ABC-DEF..."
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+            />
+            <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>You can add this later from the agent detail page.</p>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button type="submit" size="sm" disabled={mutation.isPending} style={{ background: "#1a1f2e", color: "#e8dfd0" }}>
+              {mutation.isPending ? "Creating..." : "Create Agent"}
             </Button>
           </div>
           {mutation.isError && (
             <p className="text-xs text-red-600">{(mutation.error as Error).message}</p>
           )}
         </form>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -560,7 +607,6 @@ function AddStaffForm({ householdId, onClose }: { householdId: string; onClose: 
 
 function StaffCard({ agent }: { agent: StaffAgent }) {
   const queryClient = useQueryClient();
-  const [showAssign, setShowAssign] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const deleteMutation = useMutation({
@@ -600,7 +646,7 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
               </Link>
             </div>
             <p className="text-xs" style={{ color: "#8a8070" }}>
-              {roleLabel(agent.staffRole)}
+              {isButler ? "Chief of Staff" : roleLabel(agent.staffRole)}
               {agent.specialty ? ` \u00B7 ${agent.specialty}` : ""}
             </p>
           </div>
@@ -611,7 +657,10 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
             {agent.status}
           </Badge>
           <Badge variant="secondary" className="text-[10px]">
-            {agent.autonomyLevel}
+            {MODEL_LABELS[agent.model ?? "claude-sonnet-4-6"] ?? agent.model}
+          </Badge>
+          <Badge variant="secondary" className="text-[10px]">
+            {(agent.trustLevel ?? "restricted").charAt(0).toUpperCase() + (agent.trustLevel ?? "restricted").slice(1)} trust
           </Badge>
         </div>
 
@@ -672,6 +721,9 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
 export function HouseholdPage() {
   const [showAddMember, setShowAddMember] = useState(false);
   const [showAddStaff, setShowAddStaff] = useState(false);
+  const [interviewMemberId, setInterviewMemberId] = useState<string | null>(null);
+  const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const queryClient = useQueryClient();
 
   const { data: householdData, isLoading: loadingHousehold } = useQuery<HouseholdData>({
     queryKey: ["household"],
@@ -694,6 +746,47 @@ export function HouseholdPage() {
     return staff
       .filter((s) => s.assignments?.some((a) => a.memberId === memberId))
       .map((s) => ({ staffName: s.name, staffRole: roleLabel(s.staffRole) }));
+  }
+
+  // Profile interview
+  const interviewMember = interviewMemberId
+    ? members.find((m) => m.id === interviewMemberId)
+    : null;
+
+  const profileMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; profileDocument?: string }>(
+        `/members/${interviewMemberId}/profile/interview`,
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setInterviewMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.profileDocument) {
+        queryClient.invalidateQueries({ queryKey: ["household"] });
+      }
+    },
+  });
+
+  const isProfileComplete = profileMutation.data?.profileDocument != null;
+
+  function profileGreeting(name: string): string {
+    return `Good, let's build a profile for ${name}. I'll ask a few questions to understand who they are so their agent can serve them well.\n\nLet's start with personality and temperament — how would you describe ${name}? Are they more energetic or reserved? Outgoing or introspective?`;
+  }
+
+  function handleStartInterview(memberId: string) {
+    const member = members.find((m) => m.id === memberId);
+    setInterviewMemberId(memberId);
+    setInterviewMessages([
+      { role: "assistant", content: profileGreeting(member?.name ?? "them") },
+    ]);
+  }
+
+  function handleCloseInterview() {
+    setInterviewMemberId(null);
+    setInterviewMessages([]);
   }
 
   return (
@@ -770,6 +863,7 @@ export function HouseholdPage() {
                         member={m}
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
+                        onStartInterview={handleStartInterview}
                       />
                     ))}
                   </div>
@@ -796,6 +890,7 @@ export function HouseholdPage() {
                         member={m}
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
+                        onStartInterview={handleStartInterview}
                       />
                     ))}
                   </div>
@@ -811,6 +906,42 @@ export function HouseholdPage() {
           );
         })()}
       </div>
+
+      {/* Profile Interview Overlay */}
+      <InterviewOverlay
+        title={interviewMember ? `Profile: ${interviewMember.name}` : "Profile Interview"}
+        subtitle="Carson will ask questions to build a profile"
+        isOpen={!!interviewMemberId}
+        onClose={handleCloseInterview}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["household"] });
+          handleCloseInterview();
+        }}
+        messages={interviewMessages}
+        isLoading={profileMutation.isPending}
+        isComplete={isProfileComplete}
+        onSendMessage={(text) => {
+          setInterviewMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          profileMutation.mutate(text);
+        }}
+        onReset={() => {
+          setInterviewMessages([
+            { role: "assistant", content: profileGreeting(interviewMember?.name ?? "them") },
+          ]);
+        }}
+      />
+
+      {/* Add Staff Modal */}
+      {showAddStaff && householdId && (
+        <AddStaffModal
+          householdId={householdId}
+          members={members}
+          onClose={() => setShowAddStaff(false)}
+        />
+      )}
 
       {/* Staff Agents section */}
       <div>
@@ -845,7 +976,6 @@ export function HouseholdPage() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {showAddStaff && householdId && <AddStaffForm householdId={householdId} onClose={() => setShowAddStaff(false)} />}
           {staff.map((agent) => (
             <StaffCard key={agent.id} agent={agent} />
           ))}

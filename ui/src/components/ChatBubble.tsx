@@ -57,6 +57,7 @@ export function ChatBubble({
               strong: ({ children }) => (
                 <strong className="font-semibold">{children}</strong>
               ),
+              em: ({ children }) => <em className="italic">{children}</em>,
               ol: ({ children }) => (
                 <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>
               ),
@@ -73,6 +74,30 @@ export function ChatBubble({
               h3: ({ children }) => (
                 <h3 className="text-sm font-semibold mb-1">{children}</h3>
               ),
+              code: ({ children, className }) => {
+                const isBlock = className?.startsWith("language-");
+                return isBlock ? (
+                  <pre className="rounded p-3 mb-2 overflow-x-auto text-xs" style={{ background: "var(--carson-ivory, #faf8f4)" }}>
+                    <code>{children}</code>
+                  </pre>
+                ) : (
+                  <code className="rounded px-1 py-0.5 text-xs" style={{ background: "var(--carson-ivory, #faf8f4)" }}>
+                    {children}
+                  </code>
+                );
+              },
+              pre: ({ children }) => <>{children}</>,
+              blockquote: ({ children }) => (
+                <blockquote className="border-l-2 pl-3 my-2 italic text-sm" style={{ borderColor: "var(--carson-accent, #8b6f4e)", color: "#6a6050" }}>
+                  {children}
+                </blockquote>
+              ),
+              a: ({ href, children }) => (
+                <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "var(--carson-accent, #8b6f4e)" }}>
+                  {children}
+                </a>
+              ),
+              hr: () => <hr className="my-3" style={{ borderColor: "var(--carson-border, #ddd5c8)" }} />,
             }}
           >
             {message.content}

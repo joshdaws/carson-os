@@ -14,7 +14,6 @@ import {
 import {
   Settings as SettingsIcon,
   Bot,
-  Key,
   Users,
   Eye,
   EyeOff,
@@ -170,7 +169,10 @@ export function SettingsPage() {
 
   const { data: settings, isLoading } = useQuery<SettingsMap>({
     queryKey: ["settings"],
-    queryFn: () => api.get("/settings"),
+    queryFn: async () => {
+      const res = await api.get<{ settings: SettingsMap }>("/settings");
+      return res.settings;
+    },
   });
 
   const updateSetting = useMutation({
@@ -308,24 +310,6 @@ export function SettingsPage() {
         </div>
       </SettingSection>
 
-      {/* Telegram */}
-      <SettingSection title="Telegram" icon={Bot}>
-        <PasswordField
-          label="Bot Token"
-          value={val("TELEGRAM_BOT_TOKEN")}
-          onChange={(v) => setVal("TELEGRAM_BOT_TOKEN", v)}
-          placeholder="123456:ABC-DEF..."
-        />
-        <div className="flex justify-end">
-          <SaveButton
-            dirty={"TELEGRAM_BOT_TOKEN" in dirty}
-            saved={!!saved["TELEGRAM_BOT_TOKEN"]}
-            loading={updateSetting.isPending}
-            onClick={() => saveKey("TELEGRAM_BOT_TOKEN")}
-          />
-        </div>
-      </SettingSection>
-
       {/* Household */}
       <SettingSection title="Household" icon={Users}>
         <div>
@@ -335,7 +319,7 @@ export function SettingsPage() {
           <Input
             value={val("HOUSEHOLD_NAME")}
             onChange={(e) => setVal("HOUSEHOLD_NAME", e.target.value)}
-            placeholder="The Daws Household"
+            placeholder="The Smith Family"
             style={{ borderColor: "#ddd5c8" }}
           />
         </div>

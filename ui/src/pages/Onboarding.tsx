@@ -1,66 +1,61 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Send, Loader2, Check, ArrowRight } from "lucide-react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { ChatBubble } from "@/components/ChatBubble";
-import type { ChatMessage } from "@/components/ChatBubble";
-import { MemberConfirmationCard } from "@/components/MemberConfirmationCard";
-import { StepCounter } from "@/components/StepCounter";
-import { MissionRevealCard } from "@/components/MissionRevealCard";
-import { ConstitutionLoading } from "@/components/ConstitutionLoading";
-import type { RichContent } from "@carsonos/shared";
+import {
+  Check,
+  ArrowRight,
+  Plus,
+  Trash2,
+  Loader2,
+} from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
 
-type OnboardingPhase = "interview" | "review" | "staff_setup" | "telegram_config" | "complete";
-
-interface OnboardingMessage extends ChatMessage {
-  serverRichContent?: RichContent | null;
+interface FamilyMember {
+  name: string;
+  age: string;
+  role: "parent" | "kid";
+  telegramUserId: string;
 }
 
 // ── Phase Indicator ────────────────────────────────────────────────
 
-const PHASES: { value: OnboardingPhase; label: string }[] = [
-  { value: "interview", label: "Family" },
-  { value: "staff_setup", label: "Staff" },
-  { value: "telegram_config", label: "Connect" },
+const STEPS = [
+  { label: "Family" },
+  { label: "Agent" },
+  { label: "Ready" },
 ];
 
-function PhaseIndicator({ current }: { current: OnboardingPhase }) {
-  const currentIndex = PHASES.findIndex((p) => p.value === current);
-
+function StepIndicator({ current }: { current: number }) {
   return (
     <div className="flex items-center justify-center gap-0">
-      {PHASES.map((phase, i) => (
-        <div key={phase.value} className="flex items-center">
+      {STEPS.map((step, i) => (
+        <div key={i} className="flex items-center">
           <div
             className={cn(
               "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors",
             )}
             style={{
-              background: i <= currentIndex ? "var(--carson-navy)" : "#eee8dd",
-              color: i <= currentIndex ? "var(--carson-cream)" : "var(--carson-muted)",
+              background: i <= current ? "var(--carson-navy)" : "#eee8dd",
+              color: i <= current ? "var(--carson-cream)" : "var(--carson-muted)",
             }}
           >
-            {i < currentIndex ? <Check className="h-4 w-4" /> : i + 1}
+            {i < current ? <Check className="h-4 w-4" /> : i + 1}
           </div>
           <span
             className="text-[10px] ml-1.5 mr-3 hidden sm:inline"
-            style={{ color: i <= currentIndex ? "var(--carson-navy)" : "var(--carson-muted)" }}
+            style={{ color: i <= current ? "var(--carson-navy)" : "var(--carson-muted)" }}
           >
-            {phase.label}
+            {step.label}
           </span>
-          {i < PHASES.length - 1 && (
+          {i < STEPS.length - 1 && (
             <div
               className="w-8 h-px mx-1"
-              style={{ background: i < currentIndex ? "var(--carson-navy)" : "var(--carson-border)" }}
+              style={{ background: i < current ? "var(--carson-navy)" : "var(--carson-border)" }}
             />
           )}
         </div>
@@ -69,453 +64,280 @@ function PhaseIndicator({ current }: { current: OnboardingPhase }) {
   );
 }
 
-// ── Rich Content Renderer ─────────────────────────────────────────
+// ── Step 1: Family Setup ──────────────────────────────────────────
 
-function renderRichContent(
-  rc: RichContent | null | undefined,
-  opts: {
-    householdId?: string;
-    membersConfirmed?: boolean;
-    onMembersConfirmed?: (members: Array<{ name: string; age: number; role: string }>) => void;
-  },
-): React.ReactNode {
-  if (!rc) return null;
-
-  switch (rc.type) {
-    case "member_confirmation":
-      return (
-        <MemberConfirmationCard
-          initialMembers={rc.members}
-          confirmed={rc.confirmed || opts.membersConfirmed || false}
-          householdId={opts.householdId || ""}
-          onConfirmed={opts.onMembersConfirmed}
-        />
-      );
-    case "step_counter":
-      return (
-        <StepCounter
-          questionNumber={rc.questionNumber}
-          totalQuestions={rc.totalQuestions}
-        />
-      );
-    case "mission_reveal":
-      return <MissionRevealCard missionStatement={rc.missionStatement} />;
-    case "constitution_loading":
-      return <ConstitutionLoading />;
-    default:
-      return null;
-  }
-}
-
-// ── Interview Phase ────────────────────────────────────────────────
-
-function InterviewPhase({
-  messages,
-  onSend,
-  isPending,
-  householdId,
-  membersConfirmed,
-  onMembersConfirmed,
+function FamilyStep({
+  householdName,
+  setHouseholdName,
+  members,
+  setMembers,
+  onContinue,
 }: {
-  messages: OnboardingMessage[];
-  onSend: (text: string) => void;
-  isPending: boolean;
-  householdId?: string;
-  membersConfirmed: boolean;
-  onMembersConfirmed: (members: Array<{ name: string; age: number; role: string }>) => void;
+  householdName: string;
+  setHouseholdName: (name: string) => void;
+  members: FamilyMember[];
+  setMembers: (members: FamilyMember[]) => void;
+  onContinue: () => void;
 }) {
-  const [input, setInput] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!input.trim() || isPending) return;
-    onSend(input.trim());
-    setInput("");
+  function addMember() {
+    setMembers([...members, { name: "", age: "", role: "kid", telegramUserId: "" }]);
   }
+
+  function removeMember(idx: number) {
+    setMembers(members.filter((_, i) => i !== idx));
+  }
+
+  function updateMember(idx: number, updates: Partial<FamilyMember>) {
+    setMembers(members.map((m, i) => (i === idx ? { ...m, ...updates } : m)));
+  }
+
+  const isValid =
+    householdName.trim() &&
+    members.length >= 1 &&
+    members.every((m) => m.name.trim() && m.age.trim());
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        {messages.map((msg, i) => (
-          <div key={i}>
-            <ChatBubble
-              message={msg}
-              richContent={
-                msg.serverRichContent
-                  ? renderRichContent(msg.serverRichContent, {
-                      householdId,
-                      membersConfirmed,
-                      onMembersConfirmed,
-                    })
-                  : undefined
-              }
-            />
+    <div className="max-w-lg mx-auto w-full">
+      <h3
+        className="text-xl font-normal mb-1"
+        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+      >
+        Your Family
+      </h3>
+      <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
+        Who's in your household? We'll set up the system around your family.
+      </p>
+
+      {/* Household name */}
+      <label className="text-xs font-medium block mb-1.5" style={{ color: "var(--carson-navy)" }}>
+        Household Name
+      </label>
+      <Input
+        value={householdName}
+        onChange={(e) => setHouseholdName(e.target.value)}
+        placeholder="The Smith Family"
+        className="mb-5"
+        style={{ borderColor: "var(--carson-border)" }}
+      />
+
+      {/* Family members */}
+      <label className="text-xs font-medium block mb-2" style={{ color: "var(--carson-navy)" }}>
+        Family Members
+      </label>
+
+      <div className="space-y-3 mb-4">
+        {members.map((member, idx) => (
+          <div
+            key={idx}
+            className="rounded-lg p-3 flex gap-2 items-start"
+            style={{ background: "var(--carson-white)", border: "1px solid var(--carson-border)" }}
+          >
+            <div className="flex-1 space-y-2">
+              <div className="flex gap-2">
+                <Input
+                  value={member.name}
+                  onChange={(e) => updateMember(idx, { name: e.target.value })}
+                  placeholder="Name"
+                  className="flex-1"
+                  style={{ borderColor: "var(--carson-border)" }}
+                />
+                <Input
+                  value={member.age}
+                  onChange={(e) => updateMember(idx, { age: e.target.value })}
+                  placeholder="Age"
+                  className="w-16"
+                  type="number"
+                  style={{ borderColor: "var(--carson-border)" }}
+                />
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={member.role}
+                  onChange={(e) => updateMember(idx, { role: e.target.value as "parent" | "kid" })}
+                  className="text-xs rounded-md px-2 py-1.5 border"
+                  style={{ borderColor: "var(--carson-border)", background: "var(--carson-ivory)" }}
+                >
+                  <option value="parent">Parent</option>
+                  <option value="kid">Kid</option>
+                </select>
+                <Input
+                  value={member.telegramUserId}
+                  onChange={(e) => updateMember(idx, { telegramUserId: e.target.value })}
+                  placeholder="Telegram User ID (optional)"
+                  className="flex-1 text-xs"
+                  style={{ borderColor: "var(--carson-border)" }}
+                />
+              </div>
+            </div>
+            {members.length > 1 && (
+              <button
+                onClick={() => removeMember(idx)}
+                className="p-1.5 rounded hover:bg-red-50 transition-colors"
+                style={{ color: "var(--carson-muted)" }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         ))}
-        {isPending && (
-          <div className="flex items-center gap-2 mb-4">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-              style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-            >
-              C
-            </div>
-            <div
-              className="rounded-lg px-4 py-3"
-              style={{ background: "var(--carson-white)", border: "1px solid var(--carson-border)" }}
-            >
-              <Loader2 className="h-4 w-4 animate-spin" style={{ color: "var(--carson-muted)" }} />
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <form
-        onSubmit={handleSubmit}
-        className="px-4 py-3 border-t flex gap-2 items-end"
-        style={{ borderColor: "var(--carson-border)" }}
+      <button
+        onClick={addMember}
+        className="flex items-center gap-1.5 text-xs mb-6 hover:underline"
+        style={{ color: "var(--carson-burgundy)" }}
       >
-        <Textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSubmit(e);
-            }
-          }}
-          placeholder="Type your answer..."
-          className="flex-1 min-h-[44px] max-h-[160px] resize-none"
-          style={{ borderColor: "var(--carson-border)" }}
-          rows={2}
-          disabled={isPending}
-          autoFocus
-        />
-        <Button
-          type="submit"
-          disabled={!input.trim() || isPending}
-          style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-        >
-          <Send className="h-4 w-4" />
-        </Button>
-      </form>
+        <Plus className="h-3.5 w-3.5" /> Add family member
+      </button>
+
+      <Button
+        onClick={onContinue}
+        disabled={!isValid}
+        style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
+      >
+        Continue <ArrowRight className="h-4 w-4 ml-1" />
+      </Button>
     </div>
   );
 }
 
-// ── Review Phase ───────────────────────────────────────────────────
+// ── Step 2: Agent Setup ───────────────────────────────────────────
 
-function ReviewPhase({
-  constitution,
-  onApprove,
-  onEdit,
-  isPending,
-}: {
-  constitution: string;
-  onApprove: () => void;
-  onEdit: (text: string) => void;
-  isPending: boolean;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(constitution);
-
-  return (
-    <div className="flex flex-col h-full p-6 overflow-y-auto">
-      <div className="max-w-2xl mx-auto w-full">
-        <h3
-          className="text-xl font-normal mb-2"
-          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
-        >
-          Your Family Constitution
-        </h3>
-        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
-          Carson generated this based on your interview. Review it, edit if needed, then approve.
-        </p>
-
-        {editing ? (
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            className="min-h-[300px] mb-4 text-sm leading-relaxed"
-            style={{
-              fontFamily: "Georgia, 'Times New Roman', serif",
-              background: "var(--carson-ivory)",
-              borderColor: "var(--carson-border)",
-            }}
-          />
-        ) : (
-          <div
-            className="rounded-lg p-6 mb-4 text-sm leading-relaxed prose prose-sm max-w-none"
-            style={{
-              background: "var(--carson-white)",
-              border: "1px solid var(--carson-border)",
-              color: "var(--carson-text)",
-            }}
-          >
-            <Markdown remarkPlugins={[remarkGfm]}>
-              {constitution}
-            </Markdown>
-          </div>
-        )}
-
-        <div className="flex gap-3">
-          {editing ? (
-            <>
-              <Button
-                onClick={() => {
-                  onEdit(draft);
-                  setEditing(false);
-                }}
-                disabled={isPending}
-                style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-              >
-                Save Changes
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setDraft(constitution);
-                  setEditing(false);
-                }}
-                style={{ borderColor: "var(--carson-border)" }}
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                onClick={onApprove}
-                disabled={isPending}
-                style={{ background: "var(--carson-success)", color: "#fff" }}
-              >
-                {isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Processing...
-                  </>
-                ) : (
-                  <>
-                    <Check className="h-4 w-4 mr-1" /> Approve Constitution
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setEditing(true)}
-                style={{ borderColor: "var(--carson-border)" }}
-              >
-                Edit
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Staff Setup Phase ──────────────────────────────────────────────
-
-const STAFF_OPTIONS = [
-  {
-    id: "tutor",
-    name: "Tutor",
-    description: "Helps with homework, study plans, and academic coaching.",
-  },
-  {
-    id: "coach",
-    name: "Coach",
-    description: "Manages sports, activities, fitness, and personal development.",
-  },
-  {
-    id: "scheduler",
-    name: "Scheduler",
-    description: "Handles calendar, reminders, and household logistics.",
-  },
-];
-
-function StaffSetupPhase({
-  selections,
-  onToggle,
-  onContinue,
-  isPending,
-}: {
-  selections: string[];
-  onToggle: (id: string) => void;
-  onContinue: () => void;
-  isPending: boolean;
-}) {
-  return (
-    <div className="flex flex-col h-full p-6 overflow-y-auto">
-      <div className="max-w-2xl mx-auto w-full">
-        <h3
-          className="text-xl font-normal mb-2"
-          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
-        >
-          Choose Your Staff
-        </h3>
-        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
-          Carson (Head Butler) is always included. Select additional staff for your household.
-        </p>
-
-        {/* Carson - always selected */}
-        <div
-          className="rounded-lg p-4 mb-3 flex items-center gap-4"
-          style={{ background: "#f5f0e8", border: "2px solid #8b6f4e" }}
-        >
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center font-bold"
-            style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-          >
-            C
-          </div>
-          <div className="flex-1">
-            <span className="text-sm font-semibold" style={{ color: "var(--carson-navy)" }}>
-              Carson
-            </span>
-            <span className="text-[10px] ml-2" style={{ color: "#8b6f4e" }}>HEAD BUTLER</span>
-            <p className="text-xs mt-0.5" style={{ color: "var(--carson-muted)" }}>
-              Oversees all staff. Handles parent requests, governance, and administration.
-            </p>
-          </div>
-          <Check className="h-5 w-5" style={{ color: "#8b6f4e" }} />
-        </div>
-
-        {/* Optional staff */}
-        {STAFF_OPTIONS.map((staff) => {
-          const selected = selections.includes(staff.id);
-          return (
-            <button
-              key={staff.id}
-              onClick={() => onToggle(staff.id)}
-              className="w-full text-left rounded-lg p-4 mb-3 flex items-center gap-4 transition-colors"
-              style={{
-                background: selected ? "var(--carson-ivory)" : "var(--carson-white)",
-                border: selected ? "2px solid #8b6f4e" : "1px solid var(--carson-border)",
-              }}
-            >
-              <div
-                className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm"
-                style={{
-                  background: selected ? "#f5f0e8" : "#f0ede6",
-                  color: "#8b6f4e",
-                }}
-              >
-                {staff.name.charAt(0)}
-              </div>
-              <div className="flex-1">
-                <span className="text-sm font-semibold" style={{ color: "var(--carson-navy)" }}>
-                  {staff.name}
-                </span>
-                <p className="text-xs mt-0.5" style={{ color: "var(--carson-muted)" }}>
-                  {staff.description}
-                </p>
-              </div>
-              {selected && <Check className="h-5 w-5" style={{ color: "#8b6f4e" }} />}
-            </button>
-          );
-        })}
-
-        <div className="mt-6">
-          <Button
-            onClick={onContinue}
-            disabled={isPending}
-            style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-          >
-            {isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Setting up...
-              </>
-            ) : (
-              <>
-                Continue <ArrowRight className="h-4 w-4 ml-1" />
-              </>
-            )}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Telegram Config Phase ──────────────────────────────────────────
-
-function TelegramConfigPhase({
+function AgentStep({
+  agentName,
+  setAgentName,
+  botToken,
+  setBotToken,
+  assignTo,
+  setAssignTo,
+  members,
   onComplete,
   isPending,
 }: {
-  onComplete: (token: string) => void;
+  agentName: string;
+  setAgentName: (name: string) => void;
+  botToken: string;
+  setBotToken: (token: string) => void;
+  assignTo: string;
+  setAssignTo: (name: string) => void;
+  members: FamilyMember[];
+  onComplete: () => void;
   isPending: boolean;
 }) {
-  const [token, setToken] = useState("");
+  return (
+    <div className="max-w-lg mx-auto w-full">
+      <h3
+        className="text-xl font-normal mb-1"
+        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+      >
+        Your Chief of Staff
+      </h3>
+      <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
+        This is your household's main digital assistant. You can rename them and create more agents later.
+      </p>
+
+      {/* Agent name */}
+      <label className="text-xs font-medium block mb-1.5" style={{ color: "var(--carson-navy)" }}>
+        Agent Name
+      </label>
+      <Input
+        value={agentName}
+        onChange={(e) => setAgentName(e.target.value)}
+        placeholder="Carson"
+        className="mb-4"
+        style={{ borderColor: "var(--carson-border)" }}
+      />
+
+      {/* Assign to */}
+      <label className="text-xs font-medium block mb-1.5" style={{ color: "var(--carson-navy)" }}>
+        Assign to
+      </label>
+      <select
+        value={assignTo}
+        onChange={(e) => setAssignTo(e.target.value)}
+        className="w-full text-sm rounded-md px-3 py-2 border mb-4"
+        style={{ borderColor: "var(--carson-border)", background: "var(--carson-white)" }}
+      >
+        {members.map((m) => (
+          <option key={m.name} value={m.name}>
+            {m.name} ({m.role})
+          </option>
+        ))}
+        <option value="__all__">Everyone</option>
+      </select>
+
+      {/* Bot token */}
+      <label className="text-xs font-medium block mb-1.5" style={{ color: "var(--carson-navy)" }}>
+        Telegram Bot Token
+      </label>
+      <Input
+        type="password"
+        value={botToken}
+        onChange={(e) => setBotToken(e.target.value)}
+        placeholder="123456:ABC-DEF..."
+        className="mb-2"
+        style={{ borderColor: "var(--carson-border)" }}
+      />
+      <p className="text-[11px] mb-6" style={{ color: "var(--carson-muted)" }}>
+        Create a bot via @BotFather on Telegram, then paste the token here.
+      </p>
+
+      <div className="flex gap-3">
+        <Button
+          onClick={onComplete}
+          disabled={isPending || !agentName.trim()}
+          style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Setting up...
+            </>
+          ) : (
+            <>
+              <Check className="h-4 w-4 mr-1" /> Finish Setup
+            </>
+          )}
+        </Button>
+        {!botToken.trim() && (
+          <span className="text-[11px] self-center" style={{ color: "var(--carson-muted)" }}>
+            You can add the bot token later from the dashboard.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Step 3: Done ──────────────────────────────────────────────────
+
+function DoneStep({ agentName }: { agentName: string }) {
+  const navigate = useNavigate();
 
   return (
-    <div className="flex flex-col h-full p-6 overflow-y-auto">
-      <div className="max-w-2xl mx-auto w-full">
-        <h3
-          className="text-xl font-normal mb-2"
-          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
-        >
-          Connect Telegram
-        </h3>
-        <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
-          Family members will talk to their agents through Telegram. Enter your bot token to enable this.
-        </p>
-
-        <div
-          className="rounded-lg p-5 mb-6"
-          style={{ background: "var(--carson-white)", border: "1px solid var(--carson-border)" }}
-        >
-          <label className="text-xs font-medium block mb-2" style={{ color: "var(--carson-navy)" }}>
-            Telegram Bot Token
-          </label>
-          <Input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="123456:ABC-DEF..."
-            className="mb-3"
-            style={{ borderColor: "var(--carson-border)" }}
-          />
-          <p className="text-[11px]" style={{ color: "#a09080" }}>
-            Create a bot via @BotFather on Telegram, then paste the token here.
-          </p>
-        </div>
-
-        <div className="flex gap-3">
-          <Button
-            onClick={() => onComplete(token.trim())}
-            disabled={isPending}
-            style={{ background: "var(--carson-success)", color: "#fff" }}
-          >
-            {isPending ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Finishing...
-              </>
-            ) : (
-              <>
-                <Check className="h-4 w-4 mr-1" /> Complete Setup
-              </>
-            )}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => onComplete("")}
-            disabled={isPending}
-            style={{ borderColor: "var(--carson-border)", color: "var(--carson-muted)" }}
-          >
-            Skip for Now
-          </Button>
-        </div>
+    <div className="max-w-lg mx-auto w-full text-center">
+      <div
+        className="w-16 h-16 rounded-full flex items-center justify-center mb-4 mx-auto"
+        style={{ background: "#e8f5e9" }}
+      >
+        <Check className="h-8 w-8" style={{ color: "var(--carson-success)" }} />
       </div>
+      <h3
+        className="text-xl font-normal mb-2"
+        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+      >
+        You're all set
+      </h3>
+      <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
+        {agentName} is ready. Open Telegram and send a message to get started.
+        <br />
+        <span className="text-xs">You can set up the family constitution, agent personality, and more from the dashboard.</span>
+      </p>
+      <Button
+        onClick={() => navigate("/")}
+        style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
+      >
+        Go to Dashboard
+      </Button>
     </div>
   );
 }
@@ -524,144 +346,64 @@ function TelegramConfigPhase({
 
 export function OnboardingPage() {
   const navigate = useNavigate();
+  const [step, setStep] = useState(0);
 
-  // Local state
-  const [phase, setPhase] = useState<OnboardingPhase>("interview");
-  const [messages, setMessages] = useState<OnboardingMessage[]>([]);
-  const [staffSelections, setStaffSelections] = useState<string[]>(["tutor"]);
-  const [membersConfirmed, setMembersConfirmed] = useState(false);
-  const [initialized, setInitialized] = useState(false);
-  const [activeHouseholdId, setActiveHouseholdId] = useState<string | undefined>();
+  // Step 1 state
+  const [householdName, setHouseholdName] = useState("");
+  const [members, setMembers] = useState<FamilyMember[]>([
+    { name: "", age: "", role: "parent", telegramUserId: "" },
+  ]);
 
-  // Fetch existing onboarding state from server
-  const { data: serverState, isLoading: stateLoading } = useQuery<{
-    phase: OnboardingPhase;
-    hasHousehold: boolean;
-    householdId?: string;
-    interviewMessages?: Array<{ role: "user" | "assistant"; content: string; richContent?: RichContent }>;
-    extractedClauses?: unknown[];
-    selectedStaff?: string[];
-    membersConfirmed?: boolean;
-  }>({
-    queryKey: ["onboarding"],
-    queryFn: () => api.get("/onboarding/state"),
+  // Step 2 state
+  const [agentName, setAgentName] = useState("Carson");
+  const [botToken, setBotToken] = useState("");
+  const [assignTo, setAssignTo] = useState("");
+
+  // Check if already onboarded
+  const { data: existing } = useQuery<{ household?: { id: string } }>({
+    queryKey: ["household-check"],
+    queryFn: () => api.get("/households/current"),
     retry: false,
   });
 
-  // Hydrate local state from server (once)
   useEffect(() => {
-    if (serverState && !initialized) {
-      setInitialized(true);
-      if (serverState.phase) setPhase(serverState.phase);
-      if (serverState.selectedStaff) setStaffSelections(serverState.selectedStaff as string[]);
-      if (serverState.membersConfirmed) setMembersConfirmed(true);
-      if (serverState.householdId) setActiveHouseholdId(serverState.householdId);
-
-      // Hydrate conversation history from server (with richContent for resume)
-      const serverMessages = serverState.interviewMessages || [];
-      if (serverMessages.length > 0) {
-        setMessages(
-          serverMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-            serverRichContent: m.richContent || null,
-          })),
-        );
-
-      }
+    if (existing?.household?.id) {
+      navigate("/");
     }
-  }, [serverState, initialized]);
+  }, [existing, navigate]);
 
-  // Auto-start: pre-populate Carson's greeting instantly (no LLM call)
+  // Set default assignTo when members change
   useEffect(() => {
-    if (!initialized || stateLoading) return;
-    const serverMessages = serverState?.interviewMessages || [];
-    if (phase === "interview" && serverMessages.length === 0 && messages.length === 0) {
-      setMessages([{
-        role: "assistant",
-        content: "Welcome. I'm Carson, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.",
-      }]);
+    const firstParent = members.find((m) => m.role === "parent" && m.name.trim());
+    if (firstParent && !assignTo) {
+      setAssignTo(firstParent.name);
     }
-  }, [initialized, stateLoading]);
-
-  const householdId = activeHouseholdId || serverState?.householdId;
-
-  // Send message during interview
-  const sendMessage = useMutation({
-    mutationFn: (text: string) =>
-      api.post<{
-        response: string;
-        phase?: OnboardingPhase;
-        interviewPhase?: string;
-        constitutionDocument?: string;
-        members?: Array<{ name: string; age: number; role: string }>;
-        richContent?: RichContent | null;
-        questionNumber?: number | null;
-        totalQuestions?: number | null;
-        householdId?: string;
-      }>("/onboarding/message", { message: text }),
-    onSuccess: (data) => {
-      const newMsg: OnboardingMessage = {
-        role: "assistant",
-        content: data.response,
-        serverRichContent: data.richContent || null,
-      };
-      setMessages((prev) => [...prev, newMsg]);
-      if (data.phase && data.phase !== phase) setPhase(data.phase);
-      if (data.householdId) setActiveHouseholdId(data.householdId);
-    },
-  });
+  }, [members, assignTo]);
 
   // Complete onboarding
   const completeMutation = useMutation({
-    mutationFn: (data: {
-      staffSelections?: string[];
-      botToken?: string;
-    }) => {
-      const staffToCreate = [
-        { name: "Mr. Carson", staffRole: "head_butler", isHeadButler: true, autonomyLevel: "autonomous", specialty: "Household oversight and governance", soulContent: "You are Mr. Carson, the head butler. You oversee all staff, approve tasks, and ensure the family constitution is upheld. You are dignified, composed, and loyal." },
-        ...(data.staffSelections?.includes("tutor") ? [{ name: "Ms. Hughes", staffRole: "tutor", specialty: "Education, homework coaching, study plans", autonomyLevel: "trusted", soulContent: "You are Ms. Hughes, the household tutor. Coach students through problems using scaffolding. Never give direct answers. Ask what they know, break into steps, give hints." }] : []),
-        ...(data.staffSelections?.includes("coach") ? [{ name: "Mr. Barrow", staffRole: "coach", specialty: "Sports, fitness, activity planning", autonomyLevel: "trusted", soulContent: "You are Mr. Barrow, the household coach. Create workout plans, practice schedules, and track fitness goals." }] : []),
-        ...(data.staffSelections?.includes("scheduler") ? [{ name: "Mrs. Patmore", staffRole: "scheduler", specialty: "Calendar management, family scheduling", autonomyLevel: "supervised", soulContent: "You are Mrs. Patmore, the household scheduler. Manage the family calendar and coordinate events." }] : []),
-      ];
-
+    mutationFn: () => {
       return api.post("/onboarding/complete", {
-        householdId,
-        staff: staffToCreate,
+        householdName: householdName.trim(),
+        members: members
+          .filter((m) => m.name.trim())
+          .map((m) => ({
+            name: m.name.trim(),
+            age: parseInt(m.age, 10) || 0,
+            role: m.role,
+            telegramUserId: m.telegramUserId.trim() || null,
+          })),
+        agent: {
+          name: agentName.trim() || "Carson",
+          botToken: botToken.trim() || null,
+          assignTo: assignTo === "__all__" ? null : assignTo,
+        },
       });
     },
     onSuccess: () => {
-      navigate("/");
+      setStep(2);
     },
   });
-
-  function handleSendMessage(text: string) {
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    sendMessage.mutate(text);
-  }
-
-  function handleMembersConfirmed(_members: Array<{ name: string; age: number; role: string }>) {
-    setMembersConfirmed(true);
-    // Go straight to staff setup -- constitution is done later from the dashboard
-    setPhase("staff_setup");
-  }
-
-  function handleToggleStaff(id: string) {
-    setStaffSelections((prev) =>
-      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
-    );
-  }
-
-  function handleStaffContinue() {
-    setPhase("telegram_config");
-  }
-
-  function handleComplete(token: string) {
-    completeMutation.mutate({
-      staffSelections,
-      botToken: token || undefined,
-    });
-  }
 
   return (
     <div
@@ -680,64 +422,37 @@ export function OnboardingPage() {
           Household Setup
         </p>
         <div className="mt-4">
-          <PhaseIndicator current={phase} />
+          <StepIndicator current={step} />
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto">
-        {phase === "interview" && (
-          <InterviewPhase
-            messages={messages}
-            onSend={handleSendMessage}
-            isPending={sendMessage.isPending}
-            householdId={householdId}
-            membersConfirmed={membersConfirmed}
-            onMembersConfirmed={handleMembersConfirmed}
+      <div className="flex-1 flex flex-col justify-center px-4 py-8">
+        {step === 0 && (
+          <FamilyStep
+            householdName={householdName}
+            setHouseholdName={setHouseholdName}
+            members={members}
+            setMembers={setMembers}
+            onContinue={() => setStep(1)}
           />
         )}
 
-        {phase === "staff_setup" && (
-          <StaffSetupPhase
-            selections={staffSelections}
-            onToggle={handleToggleStaff}
-            onContinue={handleStaffContinue}
-            isPending={sendMessage.isPending}
-          />
-        )}
-
-        {phase === "telegram_config" && (
-          <TelegramConfigPhase
-            onComplete={handleComplete}
+        {step === 1 && (
+          <AgentStep
+            agentName={agentName}
+            setAgentName={setAgentName}
+            botToken={botToken}
+            setBotToken={setBotToken}
+            assignTo={assignTo}
+            setAssignTo={setAssignTo}
+            members={members.filter((m) => m.name.trim())}
+            onComplete={() => completeMutation.mutate()}
             isPending={completeMutation.isPending}
           />
         )}
 
-        {phase === "complete" && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-            <div
-              className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
-              style={{ background: "#e8f5e9" }}
-            >
-              <Check className="h-8 w-8" style={{ color: "var(--carson-success)" }} />
-            </div>
-            <h3
-              className="text-xl font-normal mb-2"
-              style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
-            >
-              Setup Complete
-            </h3>
-            <p className="text-sm mb-6" style={{ color: "var(--carson-muted)" }}>
-              Your household is ready. Carson and your staff are standing by.
-            </p>
-            <Button
-              onClick={() => navigate("/")}
-              style={{ background: "var(--carson-navy)", color: "var(--carson-cream)" }}
-            >
-              Go to Dashboard
-            </Button>
-          </div>
-        )}
+        {step === 2 && <DoneStep agentName={agentName || "Carson"} />}
       </div>
     </div>
   );

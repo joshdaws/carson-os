@@ -8,6 +8,14 @@ export type AgentStatus = "active" | "paused" | "idle";
 
 export type AutonomyLevel = "supervised" | "trusted" | "autonomous";
 
+/**
+ * Trust levels determine what Claude Code built-in tools an agent gets.
+ *   - full:       All built-ins (Bash, Read, Write, Edit, Web, etc.) — head agent, parent agents
+ *   - standard:   Read-only built-ins (Read, Glob, Grep, WebFetch, WebSearch) — teen/spouse agents
+ *   - restricted: No built-ins — only CarsonOS MCP tools — young kid agents
+ */
+export type TrustLevel = "full" | "standard" | "restricted";
+
 export type EnforcementLevel = "hard" | "soft" | "advisory";
 
 export type EvaluationType =
@@ -118,6 +126,14 @@ export type ProfileInterviewPhase =
   | "boundaries"
   | "review_complete";
 
+export type PersonalityInterviewPhase =
+  | "intro"
+  | "voice"
+  | "humor"
+  | "boundaries"
+  | "style"
+  | "review_complete";
+
 // ── Evaluation config shapes ────────────────────────────────────────
 
 export interface KeywordBlockConfig {
@@ -143,6 +159,99 @@ export interface EvaluationResult {
   reason?: string;
 }
 
+// ── Memory types ───────────────────────────────────────────────────
+
+export type MemoryType =
+  | "fact"
+  | "preference"
+  | "event"
+  | "decision"
+  | "commitment"
+  | "person"
+  | "project"
+  | "media"
+  | "place"
+  | "routine"
+  | "relationship"
+  | "goal"
+  | "skill";
+
+export interface MemorySchemaField {
+  name: string;
+  type: "string" | "string[]" | "date" | "enum";
+  required?: boolean;
+  enumValues?: string[];
+  description?: string;
+}
+
+export interface MemorySchemaType {
+  type: MemoryType;
+  description: string;
+  fields: MemorySchemaField[];
+}
+
+export interface MemorySchema {
+  types: MemorySchemaType[];
+}
+
+export interface MemoryEntry {
+  id: string;
+  type: MemoryType;
+  title: string;
+  content: string;
+  frontmatter: Record<string, unknown>;
+  filePath: string;
+  collection: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MemorySearchResult {
+  entries: Array<{
+    id: string;
+    title: string;
+    snippet: string;
+    score: number;
+    file: string;
+    collection: string;
+  }>;
+}
+
+export interface MemoryProvider {
+  search(query: string, collection: string, limit?: number): Promise<MemorySearchResult>;
+  save(collection: string, entry: {
+    type: MemoryType;
+    title: string;
+    content: string;
+    frontmatter?: Record<string, unknown>;
+  }): Promise<{ id: string; filePath: string }>;
+  update(collection: string, id: string, entry: {
+    title?: string;
+    content?: string;
+    frontmatter?: Record<string, unknown>;
+  }): Promise<{ id: string; filePath: string }>;
+  delete(collection: string, id: string): Promise<void>;
+  list(collection: string, limit?: number): Promise<MemoryEntry[]>;
+}
+
+// ── Tool types ─────────────────────────────────────────────────────
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  content: string;
+  is_error?: boolean;
+}
+
+export type ToolExecutor = (
+  name: string,
+  input: Record<string, unknown>,
+) => Promise<ToolResult>;
+
 // ── Subprocess adapter types ────────────────────────────────────────
 
 export type AdapterType = "claude-code" | "codex" | "anthropic-sdk";
@@ -153,9 +262,23 @@ export interface AdapterExecuteParams {
   systemPrompt: string;
   messages: Array<{ role: string; content: string }>;
   maxTokens?: number;
+  model?: string;
+  tools?: ToolDefinition[];
+  toolExecutor?: ToolExecutor;
+  /** Claude Code built-in tools to enable (e.g., ["Bash", "Read", "Write"]) */
+  builtinTools?: string[];
+  /** Claude Code skill names to enable (e.g., ["content-writer", "web-scraper"]) */
+  enabledSkills?: string[];
+  /** Streaming callback — fired for each text delta as it arrives from the LLM */
+  onTextDelta?: (text: string) => void;
+  /** Resume an existing Agent SDK session instead of starting fresh */
+  resumeSessionId?: string;
 }
 
 export interface AdapterExecuteResult {
   content: string;
+  toolCalls?: Array<{ name: string; input: Record<string, unknown>; result: ToolResult }>;
+  /** Agent SDK session ID — store this to resume the session on the next message */
+  sessionId?: string;
   metadata?: Record<string, unknown>;
 }

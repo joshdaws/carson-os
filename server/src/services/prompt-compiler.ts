@@ -29,6 +29,13 @@ export interface CompilePromptParams {
   taskDescription?: string;
   // Delegation fields (personal agents only)
   delegationInstructions?: string | null;
+  // M1: Memory + operating instructions
+  operatingInstructions?: string | null;
+  ambientMemory?: string | null;
+  memorySchemaInstructions?: string | null;
+  // Trust level + enabled skills (for system capability awareness)
+  trustLevel?: string | null;
+  enabledSkills?: string[] | null;
 }
 
 export interface DelegationEdge {
@@ -40,65 +47,24 @@ export interface DelegationEdge {
 
 // -- Constants -------------------------------------------------------
 
-// Threshold: after this many assistant turns in onboarding, ask agent to compile
-const ONBOARDING_COMPILE_THRESHOLD = 3;
-
-// -- First-contact onboarding ----------------------------------------
+// -- First-contact notice --------------------------------------------
 
 function buildOnboardingInstructions(
   memberName: string,
   memberAge: number,
-  turnCount: number,
+  _turnCount: number,
 ): string {
-  const readyToCompile = turnCount >= ONBOARDING_COMPILE_THRESHOLD;
-
-  const parts: string[] = [
+  return [
     `This is your FIRST conversation with ${memberName}. You don't have a profile for them yet.`,
     "",
-    "Your job right now is to get to know them. Be warm and casual. Match their age.",
-    `${memberName} is ${memberAge} years old, so talk to them at that level.`,
+    `${memberName} is ${memberAge} years old — match their age and energy.`,
     "",
-    "Naturally learn about:",
-    "- What they're into (hobbies, games, subjects, activities)",
-    "- How they like to learn or be helped",
-    "- What they're working on or excited about",
-    "- What frustrates them or what they'd rather not deal with",
+    "Within the first few messages, mention naturally that you don't have a profile on them yet.",
+    `Something like: "By the way, I don't have a profile set up for you yet — it's a quick interview that helps me understand how to help you best. Want to do that sometime? Your parents can set it up from the dashboard."`,
     "",
-    "Don't interrogate. Have a real conversation. Share a bit about yourself too.",
-    "Ask one or two questions at a time, not a list.",
-  ];
-
-  if (readyToCompile) {
-    parts.push(
-      "",
-      "You've had enough conversation to build a basic profile now.",
-      `At the END of your next response, compile what you've learned about ${memberName} into a profile document.`,
-      "Place it between these exact markers (the user won't see this part):",
-      "",
-      "[PROFILE_START]",
-      `# About ${memberName}`,
-      "",
-      "## Personality & Temperament",
-      "(what you've observed)",
-      "",
-      "## Interests & Passions",
-      "(what they told you about)",
-      "",
-      "## Goals & Aspirations",
-      "(what they're working toward, if mentioned)",
-      "",
-      "## Learning Style",
-      "(how they seem to prefer help)",
-      "",
-      "## What the Agent Should Do",
-      "(your best guess at how to help them, based on the conversation)",
-      "[PROFILE_END]",
-      "",
-      "Keep chatting normally above the markers. The profile is extracted automatically.",
-    );
-  }
-
-  return parts.join("\n");
+    "Don't push it. Mention it once, then focus on being helpful. The profile interview",
+    "happens through the dashboard, not here in chat. Your job right now is just to be a good conversation partner.",
+  ].join("\n");
 }
 
 const TASK_COMPLETION_INSTRUCTIONS = [
@@ -177,48 +143,79 @@ function compileChatPrompt(params: CompilePromptParams): string {
     firstContact,
     conversationTurnCount,
     delegationInstructions,
+    operatingInstructions,
+    ambientMemory,
+    memorySchemaInstructions,
   } = params;
 
   const sections: string[] = [];
 
-  // 1. Role (always present)
-  sections.push(`# Your Role\n\n${roleContent}`);
-
-  // 2. Soul (skip if null -- internal agents won't have one)
-  if (soulContent) {
-    sections.push(`# Your Personality\n\n${soulContent}`);
-  }
-
-  // 3. Member intro
-  if (memberName && memberRole != null && memberAge != null) {
-    sections.push(
-      `# Who You're Talking To\n\n${memberName} is a ${memberAge}-year-old ${memberRole}.`,
-    );
-  }
-
-  // 3b. First-contact onboarding (no profile yet, new conversation)
-  if (firstContact && !memberProfile && memberName && memberAge != null) {
-    sections.push(
-      `# Getting to Know ${memberName}\n\n${buildOnboardingInstructions(memberName, memberAge, conversationTurnCount ?? 0)}`,
-    );
-  }
-
-  // 3c. Member profile (detailed knowledge about this person)
-  if (memberProfile) {
-    sections.push(`# About ${memberName ?? "This Person"}\n\n${memberProfile}`);
-  }
-
-  // 4. Constitution document
+  // 1. Family Constitution — THE FRAME (always first)
   if (constitutionDocument) {
     sections.push(`# Family Constitution\n\n${constitutionDocument}`);
   }
 
-  // 5. Soft rules
+  // 1b. Soft rules (behavioral guidelines from constitution clauses)
   if (softRules) {
     sections.push(`# Behavioral Guidelines\n\n${softRules}`);
   }
 
-  // 6. Delegation instructions (personal agents only)
+  // 2. Your Role (always present)
+  sections.push(`# Your Role\n\n${roleContent}`);
+
+  // 3. Your Personality (skip if null — internal agents won't have one)
+  if (soulContent) {
+    sections.push(`# Your Personality\n\n${soulContent}`);
+  }
+
+  // 4. Operating Instructions (self-maintained behavioral notes)
+  if (operatingInstructions) {
+    sections.push(`# Operating Instructions\n\n${operatingInstructions}`);
+  }
+
+  // 5. About [Member Name] — combined intro line + profile
+  if (memberName && memberRole != null && memberAge != null) {
+    const introLine = `${memberName} is a ${memberAge}-year-old ${memberRole}.`;
+
+    if (memberProfile) {
+      sections.push(`# About ${memberName}\n\n${introLine}\n\n${memberProfile}`);
+    } else if (firstContact && memberAge != null) {
+      sections.push(
+        `# Getting to Know ${memberName}\n\n${introLine}\n\n${buildOnboardingInstructions(memberName, memberAge, conversationTurnCount ?? 0)}`,
+      );
+    } else {
+      sections.push(`# About ${memberName}\n\n${introLine}`);
+    }
+  }
+
+  // 6. What You Know — ambient memory (recent/relevant entries)
+  if (ambientMemory) {
+    sections.push(`# What You Know\n\n${ambientMemory}`);
+  }
+
+  // 7. How to Use Memory — from memory schema
+  if (memorySchemaInstructions) {
+    sections.push(`# How to Use Memory\n\n${memorySchemaInstructions}`);
+  }
+
+  // 8. Your Capabilities (trust level + skills)
+  if (params.trustLevel) {
+    const capLines: string[] = [];
+    if (params.trustLevel === "full") {
+      capLines.push("You have full system access including Bash, Read, Write, Edit, Glob, Grep, WebFetch, and WebSearch.");
+      capLines.push("You can run commands, read files, search the web, and investigate errors or issues directly.");
+    } else if (params.trustLevel === "standard") {
+      capLines.push("You have read-only system access: Read, Glob, Grep, WebFetch, and WebSearch.");
+    }
+    if (params.enabledSkills && params.enabledSkills.length > 0) {
+      capLines.push(`You have access to these installed skills: ${params.enabledSkills.join(", ")}.`);
+    }
+    if (capLines.length > 0) {
+      sections.push(`# Your Capabilities\n\n${capLines.join("\n")}`);
+    }
+  }
+
+  // 9. Delegation instructions (personal agents only)
   if (delegationInstructions) {
     sections.push(`# Delegation\n\n${delegationInstructions}`);
   }

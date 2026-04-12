@@ -14,7 +14,8 @@ import {
   constitutionClauses,
 } from "@carsonos/db";
 import type { MemberRole, EnforcementLevel, EvaluationType } from "@carsonos/shared";
-import type { ConstitutionEngine, BroadcastFn } from "./constitution-engine.js";
+import type { ConstitutionEngine } from "./constitution-engine.js";
+import type { BroadcastFn } from "./event-bus.js";
 import {
   evaluateKeywordBlock,
   evaluateAgeGate,

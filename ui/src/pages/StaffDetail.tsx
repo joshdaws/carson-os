@@ -23,13 +23,19 @@ import {
   Pencil,
   MessageSquare,
   Shield,
-  ListTodo,
-  UserPlus,
   UserMinus,
   Users,
+  FileText,
+  Sparkles,
+  Wrench,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/Toast";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { InterviewOverlay } from "@/components/InterviewOverlay";
+import { ToolsManager } from "@/components/ToolsManager";
+import type { ChatMessage } from "@/components/ChatBubble";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -51,6 +57,9 @@ interface StaffAgent {
   status: "active" | "paused" | "idle";
   isHeadButler?: boolean;
   autonomyLevel: string;
+  trustLevel?: string;
+  model?: string;
+  operatingInstructions?: string;
   assignments?: Assignment[];
 }
 
@@ -111,6 +120,18 @@ const AUTONOMY_OPTIONS = [
   { value: "autonomous", label: "Autonomous" },
 ];
 
+const TRUST_LEVEL_OPTIONS = [
+  { value: "full", label: "Full", description: "All built-in tools (Bash, Read, Write...)" },
+  { value: "standard", label: "Standard", description: "Read-only tools (Read, Glob, Grep...)" },
+  { value: "restricted", label: "Restricted", description: "No built-in tools — MCP only" },
+];
+
+const MODEL_OPTIONS = [
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-opus-4-6", label: "Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+];
+
 const TASK_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   pending: { bg: "#fff3e0", text: "#8b6f4e" },
   approved: { bg: "#e8f5e9", text: "#2e7d32" },
@@ -127,9 +148,14 @@ export function StaffDetailPage() {
   const queryClient = useQueryClient();
 
   const [soulDraft, setSoulDraft] = useState<string | null>(null);
+  const [editingSoul, setEditingSoul] = useState(false);
   const [roleDraft, setRoleDraft] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
+  const [showPersonalityInterview, setShowPersonalityInterview] = useState(false);
+  const [personalityMessages, setPersonalityMessages] = useState<ChatMessage[]>([]);
+  const [editingInstructions, setEditingInstructions] = useState(false);
+  const [instructionsDraft, setInstructionsDraft] = useState("");
 
   // Fetch staff agent
   const { data: staffData, isLoading } = useQuery<{ agent: StaffAgent; assignments: Assignment[] }>({
@@ -189,6 +215,37 @@ export function StaffDetailPage() {
     },
   });
 
+  // Personality interview mutation
+  const personalityMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<{ response: string; phase: string; soulDocument?: string }>(
+        `/staff/${staffId}/personality/interview`,
+        { message: text },
+      ),
+    onSuccess: (data) => {
+      setPersonalityMessages((prev) => [
+        ...prev,
+        { role: "assistant" as const, content: data.response },
+      ]);
+      if (data.soulDocument) {
+        queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+      }
+    },
+  });
+
+  const isPersonalityComplete = personalityMutation.data?.soulDocument != null;
+
+  function personalityGreeting(name: string): string {
+    return `Let's define ${name}'s personality. I'll walk you through five areas: voice & tone, humor, communication style, boundaries, and any special touches.\n\nFirst up — voice and tone. Should ${name} be formal or casual? Warm and friendly, or more crisp and professional?`;
+  }
+
+  const handleTrustLevelChange = (level: string) => {
+    api.put(`/tools/agents/${staffId}/trust-level`, { trustLevel: level }).then(() => {
+      queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+      toast.success("Trust level updated");
+    });
+  };
+
   const rawAgent = staffData?.agent;
   const agent = rawAgent
     ? { ...rawAgent, assignments: rawAgent.assignments || staffData?.assignments }
@@ -232,7 +289,7 @@ export function StaffDetailPage() {
   const currentSoul = soulDraft ?? agent.soulContent ?? "";
   const isButler = agent.isHeadButler || agent.staffRole === "head_butler";
   const roleLabel = isButler
-    ? "Head Butler"
+    ? "Chief of Staff"
     : agent.staffRole.charAt(0).toUpperCase() + agent.staffRole.slice(1);
 
   const assignedMemberIds = new Set(agent.assignments?.map((a) => a.memberId) || []);
@@ -330,13 +387,33 @@ export function StaffDetailPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Select value={agent.autonomyLevel} onValueChange={handleAutonomyChange}>
-            <SelectTrigger className="h-8 w-36 text-xs" style={{ borderColor: "#ddd5c8" }}>
-              <SelectValue />
+          <Select
+            value={agent.model ?? "claude-sonnet-4-6"}
+            onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
+          >
+            <SelectTrigger className="h-7 w-auto text-[11px] gap-1 px-2.5" style={{ borderColor: "#ddd5c8", color: "#6b6358" }}>
+              <span style={{ color: "#a09080" }}>Model:</span> <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {AUTONOMY_OPTIONS.map((o) => (
+              {MODEL_OPTIONS.map((o) => (
                 <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
+            <SelectTrigger
+              className="h-7 w-auto text-[11px] gap-1 px-2.5"
+              style={{ borderColor: "#ddd5c8", color: "#6b6358" }}
+              title="Controls which Claude built-in tools this agent can use. Full = all tools. Standard = read-only. Restricted = no built-in tools, only CarsonOS tools."
+            >
+              <span style={{ color: "#a09080" }}>Trust:</span> <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TRUST_LEVEL_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -397,36 +474,237 @@ export function StaffDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Soul editor */}
+      {/* Soul / Personality */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
-          <h3 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <Sparkles className="h-4 w-4" style={{ color: "#8a8070" }} />
             Soul / Personality
           </h3>
-          {soulDraft !== null && (
+          <div className="flex gap-1">
+            {agent.soulContent && !editingSoul && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setEditingSoul(true); setSoulDraft(agent.soulContent ?? ""); }}
+                style={{ borderColor: "#ddd5c8" }}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+              </Button>
+            )}
+            {editingSoul && soulDraft !== null && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSaveSoul}
+                  disabled={patchStaff.isPending}
+                  style={{ borderColor: "#ddd5c8" }}
+                >
+                  <Save className="h-3.5 w-3.5 mr-1" /> Save
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setEditingSoul(false); setSoulDraft(null); }}
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
             <Button
               variant="outline"
               size="sm"
-              onClick={handleSaveSoul}
-              disabled={patchStaff.isPending}
+              onClick={() => {
+              setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
+              setShowPersonalityInterview(true);
+            }}
               style={{ borderColor: "#ddd5c8" }}
             >
-              <Save className="h-3.5 w-3.5 mr-1" /> Save
+              {agent.soulContent ? "Re-interview" : "Build Personality"}
             </Button>
-          )}
+          </div>
         </div>
         <CardContent className="p-4">
-          <Textarea
-            value={currentSoul}
-            onChange={(e) => setSoulDraft(e.target.value)}
-            placeholder="Define this agent's personality, tone, and behavioral guidelines..."
-            className="min-h-[140px] text-sm"
-            style={{
-              fontFamily: "ui-monospace, monospace",
-              background: "#faf8f4",
-              borderColor: "#ddd5c8",
+          {editingSoul ? (
+            <Textarea
+              value={soulDraft ?? ""}
+              onChange={(e) => setSoulDraft(e.target.value)}
+              placeholder="Define this agent's personality, tone, and behavioral guidelines..."
+              className="min-h-[140px] text-sm"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                background: "#faf8f4",
+                borderColor: "#ddd5c8",
+              }}
+            />
+          ) : agent.soulContent ? (
+            <div className="max-w-none text-sm leading-relaxed" style={{ color: "#2c2c2c" }}>
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({ children }) => (
+                    <h1 className="text-lg font-semibold mt-4 mb-2 first:mt-0" style={{ color: "#1a1f2e" }}>{children}</h1>
+                  ),
+                  h2: ({ children }) => (
+                    <h2 className="text-base font-semibold mt-5 mb-1.5" style={{ color: "#1a1f2e" }}>{children}</h2>
+                  ),
+                  h3: ({ children }) => (
+                    <h3 className="text-sm font-semibold mt-4 mb-1" style={{ color: "#1a1f2e" }}>{children}</h3>
+                  ),
+                  p: ({ children }) => (
+                    <p className="mb-2 last:mb-0">{children}</p>
+                  ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc ml-5 mb-2 space-y-0.5">{children}</ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal ml-5 mb-2 space-y-0.5">{children}</ol>
+                  ),
+                  strong: ({ children }) => (
+                    <strong className="font-semibold" style={{ color: "#1a1f2e" }}>{children}</strong>
+                  ),
+                  em: ({ children }) => (
+                    <em style={{ color: "#6a6050" }}>{children}</em>
+                  ),
+                }}
+              >
+                {agent.soulContent}
+              </Markdown>
+            </div>
+          ) : (
+            <div className="text-center py-6">
+              <Sparkles className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
+              <p className="text-sm mb-3" style={{ color: "#8a8070" }}>
+                No personality defined yet. Interview Carson to build one.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => {
+              setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
+              setShowPersonalityInterview(true);
             }}
-          />
+                style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              >
+                <Sparkles className="h-4 w-4 mr-2" />
+                Build Personality
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Personality Interview Overlay */}
+      <InterviewOverlay
+        title={`Personality: ${agent.name}`}
+        subtitle="Define how this agent communicates"
+        isOpen={showPersonalityInterview}
+        onClose={() => {
+          setShowPersonalityInterview(false);
+          setPersonalityMessages([]);
+        }}
+        onComplete={() => {
+          queryClient.invalidateQueries({ queryKey: ["staff", staffId] });
+        }}
+        messages={personalityMessages}
+        isLoading={personalityMutation.isPending}
+        isComplete={isPersonalityComplete}
+        onSendMessage={(text) => {
+          setPersonalityMessages((prev) => [
+            ...prev,
+            { role: "user" as const, content: text },
+          ]);
+          personalityMutation.mutate(text);
+        }}
+        onReset={() => {
+          setPersonalityMessages([{ role: "assistant", content: personalityGreeting(agent.name) }]);
+        }}
+      />
+
+      {/* Operating Instructions */}
+      <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+        <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
+            Operating Instructions
+          </h3>
+          <div className="flex gap-1">
+            {!editingInstructions && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                style={{ color: "#8a8070" }}
+                onClick={() => { setEditingInstructions(true); setInstructionsDraft(agent.operatingInstructions ?? ""); }}
+              >
+                <Pencil className="h-3 w-3 mr-1" /> Edit
+              </Button>
+            )}
+            {editingInstructions && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  style={{ borderColor: "#ddd5c8" }}
+                  disabled={patchStaff.isPending}
+                  onClick={() => {
+                    patchStaff.mutate({ operatingInstructions: instructionsDraft } as Partial<StaffAgent>);
+                    setEditingInstructions(false);
+                  }}
+                >
+                  <Save className="h-3 w-3 mr-1" /> Save
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => setEditingInstructions(false)}
+                >
+                  Cancel
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+        <CardContent className="p-4">
+          {editingInstructions ? (
+            <Textarea
+              value={instructionsDraft}
+              onChange={(e) => setInstructionsDraft(e.target.value)}
+              className="min-h-[120px] text-xs"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                background: "#faf8f4",
+                borderColor: "#ddd5c8",
+              }}
+              placeholder="Add instructions for this agent..."
+              autoFocus
+            />
+          ) : agent.operatingInstructions ? (
+            <pre
+              className="text-xs leading-relaxed whitespace-pre-wrap"
+              style={{
+                fontFamily: "ui-monospace, monospace",
+                color: "#2c2c2c",
+                background: "#faf8f4",
+                padding: "12px",
+                borderRadius: "6px",
+                border: "1px solid #eee8dd",
+              }}
+            >
+              {agent.operatingInstructions}
+            </pre>
+          ) : (
+            <p className="text-sm py-2" style={{ color: "#a09080" }}>
+              No instructions yet.
+            </p>
+          )}
+          <p className="text-[11px] mt-3" style={{ color: "#a09080" }}>
+            The agent writes and updates these notes itself as it learns how to work with its assigned family members.
+            Things like communication preferences, scheduling constraints, and topics to avoid.
+            You can edit them, but generally it's best to let the agent manage these on its own.
+          </p>
         </CardContent>
       </Card>
 
@@ -561,49 +839,21 @@ export function StaffDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Delegation edges */}
-      {agent.staffRole === "personal" || agent.staffRole === "head_butler" ? (
-        <DelegationEdgesCard agentId={agent.id} agentName={agent.name} />
-      ) : null}
-
-      {/* Task history */}
+      {/* Tools */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <ListTodo className="h-4 w-4" style={{ color: "#8a8070" }} />
-            Recent Tasks
+            <Wrench className="h-4 w-4" style={{ color: "#8a8070" }} />
+            Tools
           </h3>
         </div>
-        <div>
-          {tasks.length === 0 && (
-            <p className="text-sm p-4" style={{ color: "#8a8070" }}>Tasks appear when this agent processes requests.</p>
-          )}
-          {tasks.map((task) => {
-            const style = TASK_STATUS_STYLES[task.status] || TASK_STATUS_STYLES.pending;
-            return (
-              <Link
-                key={task.id}
-                to="/tasks"
-                className="flex items-center gap-3 px-4 py-2.5 border-b last:border-0 hover:bg-[#faf8f4] transition-colors"
-                style={{ borderColor: "#eee8dd" }}
-              >
-                <span
-                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase whitespace-nowrap"
-                  style={{ background: style.bg, color: style.text }}
-                >
-                  {task.status.replace(/_/g, " ")}
-                </span>
-                <span className="text-sm flex-1 truncate" style={{ color: "#2c2c2c" }}>
-                  {task.title}
-                </span>
-                <span className="text-xs shrink-0" style={{ color: "#a09080" }}>
-                  {relativeTime(task.createdAt)}
-                </span>
-              </Link>
-            );
-          })}
-        </div>
+        <CardContent className="p-4">
+          <ToolsManager agentId={staffId!} />
+        </CardContent>
       </Card>
+
+      {/* Delegation edges — hidden until delegation MVP */}
+      {/* Task history — hidden until delegation MVP */}
 
       {/* Recent conversations */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>

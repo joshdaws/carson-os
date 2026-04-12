@@ -67,11 +67,12 @@ export function createHouseholdRoutes(db: Db): Router {
         { key: "constitution", label: "Create family constitution", required: true, complete: !!activeConstitution },
         { key: "profiles", label: "Build member profiles", required: false, complete: membersWithProfiles.length === members.length && members.length > 0 },
         { key: "personalities", label: "Configure agent personalities", required: false, complete: agentsWithSoul.length === familyStaff.length && familyStaff.length > 0 },
-        { key: "telegram", label: "Connect Telegram bots", required: false, complete: agentsWithTelegram.length === familyStaff.length && familyStaff.length > 0 },
-        { key: "assignments", label: "Assign agents to family members", required: false, complete: membersWithAssignments.size === nonParentMembers.length && nonParentMembers.length > 0 },
+        { key: "telegram", label: "Connect Telegram bots", required: false, complete: agentsWithTelegram.length > 0 },
+        { key: "assignments", label: "Assign agents to family members", required: false, complete: allAssignments.length > 0 },
+        { key: "google", label: "Connect Google (Calendar, Gmail, Drive)", required: false, complete: false },
       ],
       completedCount: 0,
-      totalCount: 6,
+      totalCount: 7,
     };
     checklist.completedCount = checklist.items.filter((i) => i.complete).length;
 

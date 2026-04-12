@@ -108,7 +108,7 @@ export function Layout() {
           className="text-[11px] uppercase tracking-[2px] mt-1"
           style={{ color: "#8a8070" }}
         >
-          Household Staff
+          Digital Staff
         </p>
       </div>
 
@@ -124,7 +124,6 @@ export function Layout() {
         <NavItem to="/" icon={LayoutDashboard} label="Dashboard" end />
         <NavItem to="/household" icon={Users} label="Household" />
         <NavItem to="/constitution" icon={ScrollText} label="Constitution" />
-        <NavItem to="/tasks" icon={ListTodo} label="Tasks" />
 
         {/* Staff section */}
         {staff.length > 0 && (

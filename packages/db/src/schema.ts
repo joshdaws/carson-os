@@ -32,6 +32,7 @@ export const familyMembers = sqliteTable(
     telegramUserId: text("telegram_user_id").unique(),
     profileContent: text("profile_content"), // Per-person profile document (member.md)
     profileUpdatedAt: integer("profile_updated_at", { mode: "timestamp" }),
+    memoryDir: text("memory_dir"), // Override: point at existing brain directory instead of default
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
   (t) => [index("family_members_household_idx").on(t.householdId)]
@@ -55,10 +56,12 @@ export const staffAgents = sqliteTable(
     soulContent: text("soul_content"), // Personality: voice, tone, values. NULL for internal agents.
     visibility: text("visibility").notNull().default("family"), // family | internal
     telegramBotToken: text("telegram_bot_token"), // Bot token for family-visible agents. NULL for internal.
-    model: text("model").notNull().default("claude-sonnet-4-20250514"),
+    model: text("model").notNull().default("claude-sonnet-4-6"),
     status: text("status").notNull().default("active"), // active | paused | idle
     isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),
     autonomyLevel: text("autonomy_level").notNull().default("supervised"), // supervised | trusted | autonomous
+    trustLevel: text("trust_level").notNull().default("restricted"), // full | standard | restricted — controls Claude built-in tool access
+    operatingInstructions: text("operating_instructions"), // Self-maintained behavioral notes (agent's CLAUDE.md)
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
@@ -341,7 +344,43 @@ export const profileInterviewState = sqliteTable("profile_interview_state", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
 });
 
-// ── 14. instanceSettings ────────────────────────────────────────────
+// ── 13c. personalityInterviewState ─────────────────────────────────
+
+export const personalityInterviewState = sqliteTable("personality_interview_state", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => staffAgents.id),
+  phase: text("phase").notNull().default("intro"),
+  interviewMessages: text("interview_messages", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+});
+
+// ── 14. toolGrants ─────────────────────────────────────────────────
+
+export const toolGrants = sqliteTable(
+  "tool_grants",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    toolName: text("tool_name").notNull(), // e.g. "search_memory", "list_calendar_events"
+    grantedBy: text("granted_by"), // member ID who granted it, null = system default
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("tool_grants_agent_idx").on(t.agentId),
+    uniqueIndex("tool_grants_unique").on(t.agentId, t.toolName),
+  ]
+);
+
+// ── 15. instanceSettings ────────────────────────────────────────────
 
 export const instanceSettings = sqliteTable("instance_settings", {
   id: text("id").primaryKey(),

@@ -106,10 +106,10 @@ function formatTime(dateStr: string | number): string {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function formatStaffRole(role: string): string {
+function formatStaffRole(role: string, isChief: boolean): string {
+  if (isChief) return "Chief of Staff";
   const map: Record<string, string> = {
-    head_butler: "Head Butler",
-    personal: "Personal",
+    personal: "Personal Assistant",
     tutor: "Tutor",
     coach: "Coach",
     scheduler: "Scheduler",
@@ -325,7 +325,7 @@ function PersonalAgentCard({
             borderColor: isButler ? C.burgundy : undefined,
           }}
         >
-          {formatStaffRole(agent.staffRole)}
+          {formatStaffRole(agent.staffRole, agent.isHeadButler)}
         </Badge>
         <span
           className="w-2 h-2 rounded-full shrink-0"
@@ -334,12 +334,10 @@ function PersonalAgentCard({
         />
       </div>
 
-      {/* Setup incomplete badge */}
-      {incomplete && (
-        <div className="mt-1.5">
-          <Badge variant="warning" className="text-[9px] px-1.5 py-0">
-            Setup incomplete
-          </Badge>
+      {/* Personality not set hint */}
+      {incomplete && !isButler && (
+        <div className="mt-1.5 text-[10px]" style={{ color: C.textFaint }}>
+          Personality not set
         </div>
       )}
 
@@ -349,7 +347,7 @@ function PersonalAgentCard({
           className="text-[10px] mt-1.5 italic"
           style={{ color: C.textFaint }}
         >
-          {isButler ? "Oversees all staff" : assignedMembers.join(", ")}
+          {isButler ? "Manages the household" : assignedMembers.join(", ")}
         </div>
       )}
     </Link>
@@ -409,23 +407,23 @@ function PersonalAgentsZone({
         </span>
       </div>
 
-      {/* Upward connection indicators */}
-      <div className="flex justify-center mb-1">
-        <div className="flex gap-3 flex-wrap justify-center">
-          {sorted.map((agent) => (
-            <div key={agent.id} className="flex flex-col items-center">
-              {/* Vertical connector dash */}
+      {/* Agent cards — Chief of Staff at top, others below with connector lines */}
+      <div className="flex flex-col items-center gap-3">
+        {sorted.map((agent) => (
+          <div key={agent.id} className="flex flex-col items-center">
+            {/* Connector line only for non-chief agents (they report to the chief) */}
+            {!agent.isHeadButler && (
               <div
                 className="w-px h-4 mb-1"
                 style={{ background: C.border }}
               />
-              <PersonalAgentCard
-                agent={agent}
-                assignedMembers={agentMemberMap.get(agent.id) || []}
-              />
-            </div>
-          ))}
-        </div>
+            )}
+            <PersonalAgentCard
+              agent={agent}
+              assignedMembers={agentMemberMap.get(agent.id) || []}
+            />
+          </div>
+        ))}
       </div>
 
       {agents.length === 0 && (
@@ -463,7 +461,7 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
           className="text-[10px] px-2 py-0"
           style={{ borderColor: C.textFaint, color: C.textSecondary }}
         >
-          {formatStaffRole(agent.staffRole)}
+          {formatStaffRole(agent.staffRole, agent.isHeadButler)}
         </Badge>
         <span
           className="w-2 h-2 rounded-full shrink-0"
@@ -753,8 +751,7 @@ export function DashboardPage() {
         </h2>
         <p className="text-[13px] mt-1" style={{ color: C.textSecondary }}>
           {members.length} family member{members.length !== 1 ? "s" : ""} &middot;{" "}
-          {familyAgents.length} personal agent{familyAgents.length !== 1 ? "s" : ""} &middot;{" "}
-          {internalAgents.length} internal staff
+          {familyAgents.length} personal agent{familyAgents.length !== 1 ? "s" : ""}
         </p>
       </div>
 
@@ -782,12 +779,7 @@ export function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Zone 3: Internal Agents (collapsible) */}
-          <Card className="border" style={{ borderColor: C.border }}>
-            <CardContent className="p-5 pb-3">
-              <InternalAgentsZone agents={internalAgents} />
-            </CardContent>
-          </Card>
+          {/* Zone 3: Internal Agents — hidden until delegation MVP */}
         </div>
 
         {/* ── Right column: Activity + Projects ────────────────── */}
@@ -815,28 +807,7 @@ export function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Active projects */}
-          <Card className="border" style={{ borderColor: C.border }}>
-            <CardContent className="p-5">
-              <h3
-                className="text-sm font-semibold mb-3 tracking-wide"
-                style={{ color: C.navy, letterSpacing: "0.5px" }}
-              >
-                Active Projects
-              </h3>
-              {projects.length > 0 ? (
-                <div>
-                  {projects.map((p) => (
-                    <ProjectCard key={p.parentTask.id} project={p} />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm" style={{ color: C.textMuted }}>
-                  Projects appear when agents delegate work to specialists.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          {/* Active Projects — hidden until delegation MVP */}
         </div>
       </div>
     </div>

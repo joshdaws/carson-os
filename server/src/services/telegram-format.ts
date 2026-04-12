@@ -230,7 +230,11 @@ export function markdownToTelegramHtml(text: string): string {
     (_match, index) => escapeHtml(escapes[parseInt(index, 10)])
   );
 
-  return result;
+  // --- Collapse excessive newlines ---
+  // 3+ consecutive newlines → 2 (one blank line max between paragraphs)
+  result = result.replace(/\n{3,}/g, "\n\n");
+
+  return result.trim();
 }
 
 // ---------------------------------------------------------------------------
