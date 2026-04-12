@@ -18,6 +18,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
+import { backupDatabase } from "./services/backup.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -51,8 +52,13 @@ async function main() {
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
 
-  // 1. Boot database
-  const db = createDb(dbPath);
+  // 0. Backup database before anything touches it
+  backupDatabase(dbPath, config.dataDir, "boot");
+
+  // 1. Boot database (pre-migration hook creates another backup if schema changes)
+  const db = createDb(dbPath, (reason) => {
+    backupDatabase(dbPath, config.dataDir, reason);
+  });
   console.log(`[db] SQLite open at ${dbPath}`);
 
   // 2. Create adapter

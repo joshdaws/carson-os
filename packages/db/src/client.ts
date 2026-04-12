@@ -2,24 +2,31 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 
-export function createDb(dbPath: string) {
+/**
+ * Optional callback invoked before schema upgrades run.
+ * The server passes a backup function here so the DB package
+ * doesn't need to know about the filesystem layout.
+ */
+export type PreMigrationHook = (reason: string) => void;
+
+export function createDb(dbPath: string, preMigrationHook?: PreMigrationHook) {
   const sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
 
-  ensureTables(sqlite);
+  ensureTables(sqlite, preMigrationHook);
 
   return drizzle({ client: sqlite, schema });
 }
 
 export type Db = ReturnType<typeof createDb>;
 
-function ensureTables(sqlite: Database.Database) {
+function ensureTables(sqlite: Database.Database, preMigrationHook?: PreMigrationHook) {
   const tableCheck = sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='households'")
     .get();
 
   if (tableCheck) {
-    upgradeTables(sqlite);
+    upgradeTables(sqlite, preMigrationHook);
     return;
   }
 
@@ -255,7 +262,7 @@ CREATE TABLE instance_settings (
 }
 
 /** Upgrade existing v3 DB to v4 schema */
-function upgradeTables(sqlite: Database.Database) {
+function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigrationHook) {
   const cols = (table: string) => {
     const rows = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
     return new Set(rows.map((r) => r.name));
@@ -263,6 +270,27 @@ function upgradeTables(sqlite: Database.Database) {
 
   const tableExists = (name: string) =>
     !!sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
+
+  // Check if any upgrades are needed before running the transaction
+  // (so we only backup when there's actually a migration to run)
+  const staffCols = cols("staff_agents");
+  const taskCols = cols("tasks");
+  const teCols = cols("task_events");
+  const memberCols = cols("family_members");
+  const needsUpgrade =
+    !staffCols.has("role_content") || !staffCols.has("visibility") ||
+    !staffCols.has("telegram_bot_token") || !staffCols.has("updated_at") ||
+    !staffCols.has("operating_instructions") || !staffCols.has("trust_level") ||
+    !taskCols.has("parent_task_id") || !taskCols.has("delegation_depth") ||
+    (teCols.has("actor") && !teCols.has("agent_id")) ||
+    !tableExists("delegation_edges") || !tableExists("profile_interview_state") ||
+    !tableExists("tool_grants") || !tableExists("personality_interview_state") ||
+    !memberCols.has("profile_content") || !memberCols.has("profile_updated_at") ||
+    !memberCols.has("memory_dir");
+
+  if (needsUpgrade && preMigrationHook) {
+    preMigrationHook("schema-upgrade");
+  }
 
   const transaction = sqlite.transaction(() => {
     let upgraded = false;
