@@ -29,7 +29,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: "search_memory",
     description:
-      "Search your memory for relevant information. Use this before answering questions about the family, their preferences, past events, or commitments. Searches both the family member's personal memory and the shared household memory.",
+      "Search your memory for relevant information. Use this before answering questions about the family, their preferences, past events, or commitments. Default scope 'both' searches the family member's personal memory and shared household memory together.",
     input_schema: {
       type: "object",
       properties: {
@@ -40,9 +40,9 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         },
         scope: {
           type: "string",
-          enum: ["personal", "household", "both"],
+          enum: ["personal", "household", "both", "all"],
           description:
-            "Where to search. 'personal' = this member's memory. 'household' = shared family memory. 'both' = search both (default).",
+            "Where to search. 'personal' = this member's memory. 'household' = shared family memory. 'both' = personal + household (default). 'all' = every family member's memory + household (Chief of Staff only — use when you need info about another family member).",
         },
       },
       required: ["query"],
@@ -51,7 +51,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: "save_memory",
     description:
-      "Save something to memory. IMPORTANT: Always search_memory first to check for existing entries on the same topic. If one exists, delete it first, then save the updated version. Never create duplicates. Save only lasting facts worth remembering — not every conversational detail.",
+      "Save something to memory. IMPORTANT: Always search_memory first to check for existing entries on the same topic. If one exists, use update_memory instead. Never create duplicates. Save only lasting facts worth remembering — not every conversational detail. Use 'personal' scope for things specific to this person (their preferences, their schedule, their goals). Use 'household' scope for things that affect the whole family (family events, shared decisions, household rules).",
     input_schema: {
       type: "object",
       properties: {
@@ -180,6 +180,12 @@ export interface ToolContext {
   memberCollection: string;
   /** The QMD collection name for shared household memory */
   householdCollection: string;
+  /** Whether this agent is the Chief of Staff (can search all collections) */
+  isChiefOfStaff?: boolean;
+  /** All member collection names in the household (for Chief of Staff "all" scope) */
+  allMemberCollections?: string[];
+  /** Collections this agent is allowed to read/write (for validation) */
+  allowedCollections?: string[];
 }
 
 // ── Executor factory ───────────────────────────────────────────────
@@ -240,16 +246,33 @@ async function handleSearchMemory(
   const query = input.query as string;
   const scope = (input.scope as string) ?? "both";
 
-  const results: Array<{ id: string; title: string; snippet: string; score: number; collection: string }> = [];
-
-  if (scope === "personal" || scope === "both") {
-    const personal = await ctx.memoryProvider.search(query, ctx.memberCollection, 5);
-    results.push(...personal.entries);
+  // "all" scope is only available to the Chief of Staff
+  if (scope === "all" && !ctx.isChiefOfStaff) {
+    return { content: "The 'all' search scope is only available to the Chief of Staff.", is_error: true };
   }
 
-  if (scope === "household" || scope === "both") {
-    const household = await ctx.memoryProvider.search(query, ctx.householdCollection, 3);
-    results.push(...household.entries);
+  const results: Array<{ id: string; title: string; snippet: string; score: number; collection: string }> = [];
+
+  if (scope === "all" && ctx.allMemberCollections) {
+    // Chief of Staff: search every member collection + household
+    const searches = ctx.allMemberCollections.map((col) =>
+      ctx.memoryProvider.search(query, col, 3),
+    );
+    searches.push(ctx.memoryProvider.search(query, ctx.householdCollection, 3));
+    const allResults = await Promise.all(searches);
+    for (const r of allResults) {
+      results.push(...r.entries);
+    }
+  } else {
+    if (scope === "personal" || scope === "both") {
+      const personal = await ctx.memoryProvider.search(query, ctx.memberCollection, 5);
+      results.push(...personal.entries);
+    }
+
+    if (scope === "household" || scope === "both") {
+      const household = await ctx.memoryProvider.search(query, ctx.householdCollection, 3);
+      results.push(...household.entries);
+    }
   }
 
   if (results.length === 0) {
@@ -258,7 +281,7 @@ async function handleSearchMemory(
 
   // Sort by score descending, take top results
   results.sort((a, b) => b.score - a.score);
-  const top = results.slice(0, 8);
+  const top = results.slice(0, 10);
 
   const formatted = top
     .map(
@@ -308,6 +331,11 @@ async function handleUpdateMemory(
   const content = input.content as string | undefined;
   const frontmatter = input.frontmatter as Record<string, unknown> | undefined;
 
+  // Validate collection access
+  if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
+    return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
+  }
+
   if (!title && !content && !frontmatter) {
     return { content: "Nothing to update — provide at least title, content, or frontmatter." };
   }
@@ -329,6 +357,11 @@ async function handleDeleteMemory(
 ): Promise<ToolResult> {
   const id = input.id as string;
   const collection = input.collection as string;
+
+  // Validate collection access
+  if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
+    return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
+  }
 
   await ctx.memoryProvider.delete(collection, id);
   return { content: `Memory "${id}" deleted from ${collection}.` };

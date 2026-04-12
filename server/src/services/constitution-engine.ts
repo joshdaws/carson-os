@@ -390,6 +390,28 @@ export class ConstitutionEngine {
         }
       }
 
+      // -- Memory scoping based on agent role ---
+      const isChiefOfStaff = agent.isHeadButler || agent.staffRole === "head_butler";
+
+      // Load all member slugs for Chief of Staff "all" scope
+      let allMemberCollections: string[] | undefined;
+      let allowedCollections: string[];
+
+      if (isChiefOfStaff) {
+        // Chief of Staff can access all member collections + household
+        const allMembers = await this.db
+          .select({ name: familyMembers.name })
+          .from(familyMembers)
+          .where(eq(familyMembers.householdId, householdId));
+        allMemberCollections = allMembers.map(
+          (m) => m.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+        );
+        allowedCollections = [...allMemberCollections, "household"];
+      } else {
+        // Personal agents can only access their assigned member + household
+        allowedCollections = [memberSlug, "household"];
+      }
+
       const built = await this.toolRegistry.buildExecutor({
         db: this.db,
         memoryProvider: this.memoryProvider,
@@ -399,6 +421,9 @@ export class ConstitutionEngine {
         householdId,
         memberCollection: memberSlug,
         householdCollection: "household",
+        isChiefOfStaff,
+        allMemberCollections,
+        allowedCollections,
       });
 
       if (built) {

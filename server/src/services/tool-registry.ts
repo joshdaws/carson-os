@@ -62,6 +62,12 @@ export interface ToolExecutionContext {
   householdId: string;
   memberCollection: string;
   householdCollection: string;
+  /** Whether this agent is the Chief of Staff (can search all collections) */
+  isChiefOfStaff?: boolean;
+  /** All member collection names in the household (for Chief of Staff "all" scope) */
+  allMemberCollections?: string[];
+  /** Collections this agent is allowed to read/write */
+  allowedCollections?: string[];
 }
 
 // ── Trust level → Claude Code built-in tools ────────────────────────
@@ -308,6 +314,9 @@ export class ToolRegistry {
         householdId: ctx.householdId,
         memberCollection: ctx.memberCollection,
         householdCollection: ctx.householdCollection,
+        isChiefOfStaff: ctx.isChiefOfStaff,
+        allMemberCollections: ctx.allMemberCollections,
+        allowedCollections: ctx.allowedCollections,
       };
       const built = buildToolExecutor(toolCtx);
       memoryExecutor = built.executor;
