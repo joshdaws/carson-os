@@ -326,6 +326,62 @@ describe("compileSystemPrompt", () => {
   });
 });
 
+describe("skill proposals", () => {
+  it("includes skill proposal instructions for full-trust agents when enabled", () => {
+    const prompt = compileSystemPrompt({
+      mode: "chat",
+      roleContent: "You are a personal assistant.",
+      soulContent: null,
+      softRules: "",
+      constitutionDocument: "",
+      memberName: "Josh",
+      memberRole: "admin",
+      memberAge: 40,
+      trustLevel: "full",
+      enableSkillProposals: true,
+    });
+
+    expect(prompt).toContain("Proposing New Skills");
+    expect(prompt).toContain("could this happen again");
+    expect(prompt).toContain("SKILL.md");
+    expect(prompt).toContain("never write the file without approval");
+  });
+
+  it("omits skill proposal instructions when enableSkillProposals is false", () => {
+    const prompt = compileSystemPrompt({
+      mode: "chat",
+      roleContent: "You are a personal assistant.",
+      soulContent: null,
+      softRules: "",
+      constitutionDocument: "",
+      memberName: "Josh",
+      memberRole: "admin",
+      memberAge: 40,
+      trustLevel: "full",
+      enableSkillProposals: false,
+    });
+
+    expect(prompt).not.toContain("Proposing New Skills");
+  });
+
+  it("omits skill proposal instructions for non-full-trust agents even when enabled", () => {
+    const prompt = compileSystemPrompt({
+      mode: "chat",
+      roleContent: "You are a tutor.",
+      soulContent: null,
+      softRules: "",
+      constitutionDocument: "",
+      memberName: "Ethan",
+      memberRole: "child",
+      memberAge: 12,
+      trustLevel: "standard",
+      enableSkillProposals: true,
+    });
+
+    expect(prompt).not.toContain("Proposing New Skills");
+  });
+});
+
 describe("buildDelegationInstructions", () => {
   it("generates instructions with specialist list", () => {
     const instructions = buildDelegationInstructions([
