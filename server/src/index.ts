@@ -18,6 +18,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
+import { backupDatabase } from "./services/backup.js";
+import { checkForUpdates } from "./services/update-check.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -51,8 +53,13 @@ async function main() {
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
 
-  // 1. Boot database
-  const db = createDb(dbPath);
+  // 0. Backup database before anything touches it
+  backupDatabase(dbPath, config.dataDir, "boot");
+
+  // 1. Boot database (pre-migration hook creates another backup if schema changes)
+  const db = createDb(dbPath, (reason) => {
+    backupDatabase(dbPath, config.dataDir, reason);
+  });
   console.log(`[db] SQLite open at ${dbPath}`);
 
   // 2. Create adapter
@@ -177,7 +184,16 @@ async function main() {
   );
   console.log("[engine] Delegation orchestrator ready");
 
-  // 7. Create Express app with all dependencies
+  // 7. Telegram multi-relay (created before app so staff routes can trigger bot starts)
+  const multiRelay = new MultiRelayManager({
+    db,
+    adapter,
+    engine: constitutionEngine,
+    taskEngine,
+    orchestrator,
+  });
+
+  // 8. Create Express app with all dependencies
   const app = await createApp({
     db,
     adapter,
@@ -188,13 +204,14 @@ async function main() {
     profileInterviewEngine,
     personalityInterviewEngine,
     toolRegistry,
+    multiRelay,
   });
 
-  // 8. Create HTTP server and attach WebSocket
+  // 9. Create HTTP server and attach WebSocket
   const server = createServer(app);
   setupWebSocket(server);
 
-  // 9. Wire event consumers
+  // 10. Wire event consumers
   eventBus.on("*", broadcast);
   eventBus.on("project.completed", (event) => {
     if (!event.data) return;
@@ -202,15 +219,6 @@ async function main() {
     orchestrator.handleProjectCompleted(parentTaskId).catch((err) => {
       console.error("[events] Failed to handle project completion:", err);
     });
-  });
-
-  // 10. Telegram relay (multi-bot for per-agent bots, legacy for single-bot fallback)
-  const multiRelay = new MultiRelayManager({
-    db,
-    adapter,
-    engine: constitutionEngine,
-    taskEngine,
-    orchestrator,
   });
 
   eventBus.on("delegation.result", (event) => {
@@ -246,6 +254,10 @@ async function main() {
     console.log(`  memory:   ${config.memory.rootDir}`);
     console.log(`  ws:       ws://127.0.0.1:${config.port}/ws`);
     console.log();
+
+    // Check for updates in the background (non-blocking)
+    const projectDir = join(import.meta.dirname, "../..");
+    checkForUpdates(projectDir).catch(() => {});
   });
 
   // Graceful shutdown

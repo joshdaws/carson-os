@@ -26,7 +26,7 @@ export function createMemberRoutes(db: Db): Router {
 
   // POST /:householdId/members -- create member
   router.post("/:householdId/members", async (req, res) => {
-    const { name, role, age, telegramUserId } = req.body;
+    const { name, role, age, telegramUserId, memoryDir } = req.body;
     const { householdId } = req.params;
 
     if (!name || !role || age === undefined) {
@@ -51,6 +51,7 @@ export function createMemberRoutes(db: Db): Router {
           role,
           age,
           telegramUserId: telegramUserId ?? null,
+          memoryDir: memoryDir ?? null,
         })
         .returning();
 
@@ -67,7 +68,7 @@ export function createMemberRoutes(db: Db): Router {
 
   // PUT /:householdId/members/:id -- update member
   router.put("/:householdId/members/:id", async (req, res) => {
-    const { name, role, age, telegramUserId } = req.body;
+    const { name, role, age, telegramUserId, memoryDir } = req.body;
 
     const existing = await db
       .select()
@@ -92,6 +93,7 @@ export function createMemberRoutes(db: Db): Router {
         ...(role !== undefined && { role }),
         ...(age !== undefined && { age }),
         ...(telegramUserId !== undefined && { telegramUserId }),
+        ...(memoryDir !== undefined && { memoryDir }),
       })
       .where(eq(familyMembers.id, req.params.id))
       .returning();

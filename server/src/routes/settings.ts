@@ -6,6 +6,9 @@
 
 import { Router } from "express";
 import { eq } from "drizzle-orm";
+import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
 import type { Db } from "@carsonos/db";
 import { instanceSettings, households } from "@carsonos/db";
 
@@ -114,6 +117,28 @@ export function createSettingsRoutes(db: Db): Router {
     }
 
     res.json({ settings: results });
+  });
+
+  // GET /validate-path?path=... -- check if a directory exists on disk
+  router.get("/validate-path", (req, res) => {
+    const rawPath = req.query.path as string;
+    if (!rawPath) {
+      res.json({ valid: false, error: "No path provided" });
+      return;
+    }
+
+    // Expand ~ to home directory
+    const expanded = rawPath.startsWith("~")
+      ? resolve(homedir(), rawPath.slice(2))
+      : resolve(rawPath);
+
+    try {
+      const exists = existsSync(expanded);
+      const isDir = exists && statSync(expanded).isDirectory();
+      res.json({ valid: isDir, resolved: expanded, exists, isDir });
+    } catch {
+      res.json({ valid: false, resolved: expanded, exists: false, isDir: false });
+    }
   });
 
   return router;

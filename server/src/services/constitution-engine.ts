@@ -17,6 +17,7 @@ import {
   constitutionClauses,
   staffAgents,
   familyMembers,
+  households,
   conversations,
   messages,
   policyEvents,
@@ -163,8 +164,8 @@ export class ConstitutionEngine {
     const { agentId, memberId, householdId, message, channel } = params;
     const collectedEvents: PolicyEvent[] = [];
 
-    // -- 1. Load agent + member info ---------------------------------
-    const [agent, member] = await Promise.all([
+    // -- 1. Load agent + member + household info ----------------------
+    const [agent, member, household, allMembers] = await Promise.all([
       this.db
         .select()
         .from(staffAgents)
@@ -175,6 +176,15 @@ export class ConstitutionEngine {
         .from(familyMembers)
         .where(eq(familyMembers.id, memberId))
         .then((rows) => rows[0]),
+      this.db
+        .select({ name: households.name })
+        .from(households)
+        .where(eq(households.id, householdId))
+        .then((rows) => rows[0]),
+      this.db
+        .select({ name: familyMembers.name, role: familyMembers.role, age: familyMembers.age })
+        .from(familyMembers)
+        .where(eq(familyMembers.householdId, householdId)),
     ]);
 
     if (!agent || !member) {
@@ -356,6 +366,8 @@ export class ConstitutionEngine {
       memorySchemaInstructions,
       trustLevel: agent.trustLevel,
       enabledSkills: enabledSkills ?? null,
+      householdName: household?.name ?? null,
+      householdMembers: allMembers ?? null,
     });
 
     // -- Build tools for the adapter (registry-based) ----------------
@@ -390,6 +402,28 @@ export class ConstitutionEngine {
         }
       }
 
+      // -- Memory scoping based on agent role ---
+      const isChiefOfStaff = agent.isHeadButler || agent.staffRole === "head_butler";
+
+      // Load all member slugs for Chief of Staff "all" scope
+      let allMemberCollections: string[] | undefined;
+      let allowedCollections: string[];
+
+      if (isChiefOfStaff) {
+        // Chief of Staff can access all member collections + household
+        const allMembers = await this.db
+          .select({ name: familyMembers.name })
+          .from(familyMembers)
+          .where(eq(familyMembers.householdId, householdId));
+        allMemberCollections = allMembers.map(
+          (m) => m.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+        );
+        allowedCollections = [...allMemberCollections, "household"];
+      } else {
+        // Personal agents can only access their assigned member + household
+        allowedCollections = [memberSlug, "household"];
+      }
+
       const built = await this.toolRegistry.buildExecutor({
         db: this.db,
         memoryProvider: this.memoryProvider,
@@ -399,6 +433,9 @@ export class ConstitutionEngine {
         householdId,
         memberCollection: memberSlug,
         householdCollection: "household",
+        isChiefOfStaff,
+        allMemberCollections,
+        allowedCollections,
       });
 
       if (built) {
