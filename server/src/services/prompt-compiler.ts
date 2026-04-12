@@ -36,6 +36,9 @@ export interface CompilePromptParams {
   // Trust level + enabled skills (for system capability awareness)
   trustLevel?: string | null;
   enabledSkills?: string[] | null;
+  // Household roster (all family members)
+  householdName?: string | null;
+  householdMembers?: Array<{ name: string; role: string; age: number }> | null;
 }
 
 export interface DelegationEdge {
@@ -160,7 +163,16 @@ function compileChatPrompt(params: CompilePromptParams): string {
     sections.push(`# Behavioral Guidelines\n\n${softRules}`);
   }
 
-  // 2. Your Role (always present)
+  // 2. Your Family (household roster — who you serve)
+  if (params.householdMembers && params.householdMembers.length > 0) {
+    const roster = params.householdMembers
+      .map((m) => `- **${m.name}** — ${m.role}, age ${m.age}`)
+      .join("\n");
+    const heading = params.householdName ? `# ${params.householdName}` : "# Your Family";
+    sections.push(`${heading}\n\n${roster}`);
+  }
+
+  // 3. Your Role (always present)
   sections.push(`# Your Role\n\n${roleContent}`);
 
   // 3. Your Personality (skip if null — internal agents won't have one)

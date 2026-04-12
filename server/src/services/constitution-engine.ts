@@ -17,6 +17,7 @@ import {
   constitutionClauses,
   staffAgents,
   familyMembers,
+  households,
   conversations,
   messages,
   policyEvents,
@@ -163,8 +164,8 @@ export class ConstitutionEngine {
     const { agentId, memberId, householdId, message, channel } = params;
     const collectedEvents: PolicyEvent[] = [];
 
-    // -- 1. Load agent + member info ---------------------------------
-    const [agent, member] = await Promise.all([
+    // -- 1. Load agent + member + household info ----------------------
+    const [agent, member, household, allMembers] = await Promise.all([
       this.db
         .select()
         .from(staffAgents)
@@ -175,6 +176,15 @@ export class ConstitutionEngine {
         .from(familyMembers)
         .where(eq(familyMembers.id, memberId))
         .then((rows) => rows[0]),
+      this.db
+        .select({ name: households.name })
+        .from(households)
+        .where(eq(households.id, householdId))
+        .then((rows) => rows[0]),
+      this.db
+        .select({ name: familyMembers.name, role: familyMembers.role, age: familyMembers.age })
+        .from(familyMembers)
+        .where(eq(familyMembers.householdId, householdId)),
     ]);
 
     if (!agent || !member) {
@@ -356,6 +366,8 @@ export class ConstitutionEngine {
       memorySchemaInstructions,
       trustLevel: agent.trustLevel,
       enabledSkills: enabledSkills ?? null,
+      householdName: household?.name ?? null,
+      householdMembers: allMembers ?? null,
     });
 
     // -- Build tools for the adapter (registry-based) ----------------
