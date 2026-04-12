@@ -42,7 +42,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
           type: "string",
           enum: ["personal", "household", "both", "all"],
           description:
-            "Where to search. 'personal' = this member's memory. 'household' = shared family memory. 'both' = personal + household (default). 'all' = every family member's memory + household (Chief of Staff only — use when you need info about another family member).",
+            "Where to search. 'personal' = this member's memory. 'household' = shared family memory. 'both' = personal + household (default). 'all' = every family member's memory + household (Chief of Staff only). Use 'all' whenever the conversation mentions or asks about a different family member by name.",
         },
       },
       required: ["query"],
@@ -253,9 +253,9 @@ async function handleSearchMemory(
 
   const results: Array<{ id: string; title: string; snippet: string; score: number; collection: string }> = [];
 
-  // Chief of Staff: "both" and "all" both search all member collections + household.
-  // The Chief of Staff serves the whole family, so default search is broad.
-  if ((scope === "both" || scope === "all") && ctx.isChiefOfStaff && ctx.allMemberCollections) {
+  // "all" scope: Chief of Staff searches every member collection + household.
+  // Default "both" stays narrow (current member + household) to avoid latency.
+  if (scope === "all" && ctx.isChiefOfStaff && ctx.allMemberCollections) {
     const searches = ctx.allMemberCollections.map((col) =>
       ctx.memoryProvider.search(query, col, 3),
     );
