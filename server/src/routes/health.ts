@@ -3,7 +3,18 @@
  */
 
 import { Router } from "express";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Adapter } from "../services/subprocess-adapter.js";
+
+// Read version once at module load
+const VERSION = (() => {
+  try {
+    return readFileSync(join(import.meta.dirname, "../../../VERSION"), "utf-8").trim();
+  } catch {
+    return "unknown";
+  }
+})();
 
 export interface HealthRouteDeps {
   adapter: Adapter;
@@ -25,7 +36,7 @@ export function createHealthRoutes(deps: HealthRouteDeps): Router {
     res.json({
       status: "ok",
       timestamp: Date.now(),
-      version: "0.1.0",
+      version: VERSION,
       adapter: {
         name: adapter.name,
         healthy: adapterHealthy,
