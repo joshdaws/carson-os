@@ -64,6 +64,7 @@ interface HouseholdMember {
   telegramUserId?: string | null;
   profileContent?: string | null;
   profileUpdatedAt?: string | null;
+  memoryDir?: string | null;
 }
 
 interface HouseholdData {
@@ -242,6 +243,9 @@ function EditMemberForm({
   const [role, setRole] = useState<MemberRole>(member.role);
   const [age, setAge] = useState(String(member.age || ""));
   const [telegramUserId, setTelegramUserId] = useState(member.telegramUserId || "");
+  const [memoryDir, setMemoryDir] = useState(member.memoryDir || "");
+  const [memoryDirValid, setMemoryDirValid] = useState<boolean | null>(null);
+  const [memoryDirResolved, setMemoryDirResolved] = useState<string | null>(null);
 
   const updateMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -271,6 +275,8 @@ function EditMemberForm({
     if (age && parseInt(age, 10) !== member.age) payload.age = parseInt(age, 10);
     const tg = telegramUserId.trim() || null;
     if (tg !== (member.telegramUserId || null)) payload.telegramUserId = tg;
+    const md = memoryDir.trim() || null;
+    if (md !== (member.memoryDir || null)) payload.memoryDir = md;
     if (Object.keys(payload).length === 0) { onClose(); return; }
     updateMutation.mutate(payload);
   }
@@ -303,6 +309,35 @@ function EditMemberForm({
         <div className="grid grid-cols-2 gap-3">
           <Input type="number" placeholder="Age" min={1} max={99} value={age} onChange={(e) => setAge(e.target.value)} />
           <Input placeholder="Telegram ID" value={telegramUserId} onChange={(e) => setTelegramUserId(e.target.value)} />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Memory folder (leave blank for default)"
+              value={memoryDir}
+              onChange={(e) => { setMemoryDir(e.target.value); setMemoryDirValid(null); }}
+              onBlur={() => {
+                if (!memoryDir.trim()) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
+                api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(memoryDir.trim())}`)
+                  .then((r) => { setMemoryDirValid(r.valid); setMemoryDirResolved(r.resolved); })
+                  .catch(() => setMemoryDirValid(false));
+              }}
+              style={{ fontFamily: "monospace", fontSize: "12px" }}
+            />
+            {memoryDirValid === true && <Check className="h-4 w-4 shrink-0" style={{ color: "#2e7d32" }} />}
+            {memoryDirValid === false && <X className="h-4 w-4 shrink-0" style={{ color: "#c62828" }} />}
+          </div>
+          {memoryDir && memoryDirValid === true && memoryDirResolved && (
+            <p className="text-[10px] mt-1" style={{ color: "#2e7d32" }}>{memoryDirResolved}</p>
+          )}
+          {memoryDir && memoryDirValid === false && (
+            <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Directory not found</p>
+          )}
+          {!memoryDir && (
+            <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>
+              Default: ~/.carsonos/memory/{member.name.toLowerCase().replace(/\s+/g, "-")}
+            </p>
+          )}
         </div>
         {staffAssignments.length > 0 && (
           <div className="pt-2 border-t" style={{ borderColor: "#eee8dd" }}>

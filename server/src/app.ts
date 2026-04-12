@@ -24,6 +24,7 @@ import type { InterviewEngine } from "./services/interview.js";
 import type { ProfileInterviewEngine } from "./services/profile-interview.js";
 import type { PersonalityInterviewEngine } from "./services/personality-interview.js";
 import type { ToolRegistry } from "./services/tool-registry.js";
+import type { MultiRelayManager } from "./services/multi-relay-manager.js";
 
 import { createHealthRoutes } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
@@ -50,6 +51,7 @@ export interface AppDeps {
   profileInterviewEngine: ProfileInterviewEngine;
   personalityInterviewEngine: PersonalityInterviewEngine;
   toolRegistry: ToolRegistry;
+  multiRelay?: MultiRelayManager;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -89,7 +91,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/health", createHealthRoutes({ adapter }));
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
-  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine }));
+  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight }));
   app.use(
     "/api/constitution",
@@ -120,7 +122,8 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     // Production: serve pre-built static files
     app.use(express.static(resolve(uiRoot, "dist")));
     // SPA fallback: serve index.html for any non-API route
-    app.get("*", (_req: Request, res: Response) => {
+    // Express 5 requires named wildcard params (not bare *)
+    app.get("/{*path}", (_req: Request, res: Response) => {
       res.sendFile(resolve(uiRoot, "dist/index.html"));
     });
   } else {
