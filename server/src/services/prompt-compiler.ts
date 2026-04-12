@@ -36,6 +36,8 @@ export interface CompilePromptParams {
   // Trust level + enabled skills (for system capability awareness)
   trustLevel?: string | null;
   enabledSkills?: string[] | null;
+  // In-loop skill proposals (full-trust agents only)
+  enableSkillProposals?: boolean;
 }
 
 export interface DelegationEdge {
@@ -46,6 +48,45 @@ export interface DelegationEdge {
 }
 
 // -- Constants -------------------------------------------------------
+
+const SKILL_PROPOSAL_INSTRUCTIONS = [
+  "After completing any multi-step task, ask yourself: could this happen again?",
+  "",
+  "If yes — draft a skill proposal. A skill is a reusable procedure that can be",
+  "invoked by name in future sessions, saving you and the user from rediscovering",
+  "the same steps. You don't need to be asked. Notice the pattern, write the draft,",
+  "present it for approval.",
+  "",
+  "Propose a skill when ALL of these are true:",
+  "- The task required 3 or more non-obvious steps",
+  "- The same situation could plausibly arise again",
+  "- The steps aren't already covered by an installed skill",
+  "",
+  "Do NOT propose a skill for:",
+  "- One-off tasks with unique context (specific event, specific person, one-time setup)",
+  "- Tasks fully handled by an existing skill",
+  "- Simple single-step requests",
+  "",
+  "When proposing, draft the SKILL.md frontmatter and a concise procedure body:",
+  "",
+  "```",
+  "---",
+  "name: skill-name-in-kebab-case",
+  "description: |",
+  "  One or two sentences describing what this skill does.",
+  "  Use when: [specific trigger situations].",
+  "  Triggers: \"phrase 1\", \"phrase 2\", \"phrase 3\".",
+  "allowed-tools: Bash, Read",
+  "---",
+  "",
+  "# Skill Name",
+  "",
+  "Step-by-step procedure...",
+  "```",
+  "",
+  "Present the draft with a one-line pitch: what it does, why it's worth keeping.",
+  "The user approves or discards — never write the file without approval.",
+].join("\n");
 
 // -- First-contact notice --------------------------------------------
 
@@ -215,7 +256,12 @@ function compileChatPrompt(params: CompilePromptParams): string {
     }
   }
 
-  // 9. Delegation instructions (personal agents only)
+  // 9. Skill proposals (full-trust agents only — act, notice, write, reuse)
+  if (params.enableSkillProposals && params.trustLevel === "full") {
+    sections.push(`# Proposing New Skills\n\n${SKILL_PROPOSAL_INSTRUCTIONS}`);
+  }
+
+  // 10. Delegation instructions (personal agents only)
   if (delegationInstructions) {
     sections.push(`# Delegation\n\n${delegationInstructions}`);
   }
