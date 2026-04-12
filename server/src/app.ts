@@ -122,7 +122,8 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     // Production: serve pre-built static files
     app.use(express.static(resolve(uiRoot, "dist")));
     // SPA fallback: serve index.html for any non-API route
-    app.get("*", (_req: Request, res: Response) => {
+    // Express 5 requires named wildcard params (not bare *)
+    app.get("/{*path}", (_req: Request, res: Response) => {
       res.sendFile(resolve(uiRoot, "dist/index.html"));
     });
   } else {
