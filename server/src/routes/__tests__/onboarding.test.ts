@@ -6,14 +6,11 @@
  * They mock the database and interview engine.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// -- cleanResponse imported from interview engine --
-import { cleanResponse } from "../../services/interview.js";
+import { describe, it, expect } from "vitest";
 
 describe("confirm-members validation", () => {
   it("1. rejects missing householdId", () => {
-    const body = { members: [{ name: "Josh", age: 40, role: "parent" }] };
+    const body: Record<string, unknown> = { members: [{ name: "Josh", age: 40, role: "parent" }] };
     expect(body.householdId).toBeUndefined();
   });
 

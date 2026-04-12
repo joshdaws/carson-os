@@ -68,7 +68,7 @@ export function createTelegramRelay(config: TelegramRelayConfig) {
 
   // Debug: log ALL updates
   bot.use((ctx, next) => {
-    console.log(`[telegram] Update received: type=${ctx.updateType} from=${ctx.from?.first_name || "unknown"}`);
+    console.log(`[telegram] Update received: from=${ctx.from?.first_name || "unknown"}`);
     return next();
   });
 
