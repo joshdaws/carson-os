@@ -8,6 +8,7 @@ import { TasksPage } from "./pages/Tasks";
 import { StaffDetailPage } from "./pages/StaffDetail";
 import { ConversationsPage } from "./pages/Conversations";
 import { SettingsPage } from "./pages/Settings";
+import { SchedulesPage } from "./pages/Schedules";
 import { OnboardingPage } from "./pages/Onboarding";
 
 class ErrorBoundary extends Component<
@@ -81,6 +82,7 @@ export function App() {
           {/* <Route path="/tasks" element={<TasksPage />} /> — hidden until delegation MVP */}
           <Route path="/staff/:staffId" element={<StaffDetailPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
+          <Route path="/schedules" element={<SchedulesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

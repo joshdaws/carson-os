@@ -20,6 +20,7 @@ import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
 import { backupDatabase } from "./services/backup.js";
 import { checkForUpdates } from "./services/update-check.js";
+import { Scheduler } from "./services/scheduler.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -228,6 +229,10 @@ async function main() {
 
   // Start per-agent bots (agents with telegramBotToken set)
   await multiRelay.startAll();
+
+  // 11. Start the scheduled task ticker
+  const scheduler = new Scheduler(db, constitutionEngine);
+  scheduler.start();
 
   // Legacy single-bot relay as fallback (if TELEGRAM_BOT_TOKEN is set)
   let telegramRelay: ReturnType<typeof createTelegramRelay> | null = null;

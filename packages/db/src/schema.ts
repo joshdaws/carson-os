@@ -380,7 +380,44 @@ export const toolGrants = sqliteTable(
   ]
 );
 
-// ── 15. instanceSettings ────────────────────────────────────────────
+// ── 15. scheduledTasks ─────────────────────────────────────────────
+
+export const scheduledTasks = sqliteTable(
+  "scheduled_tasks",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    memberId: text("member_id")
+      .references(() => familyMembers.id), // null = household-level task
+    name: text("name").notNull(), // "Daily briefing", "Weekly meal plan"
+    prompt: text("prompt").notNull(), // what the agent should do
+    scheduleType: text("schedule_type").notNull(), // "cron" | "interval" | "once"
+    scheduleValue: text("schedule_value").notNull(), // cron: "0 6 * * *", interval: "24h", once: ISO timestamp
+    timezone: text("timezone").notNull().default("America/New_York"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    lastRunAt: integer("last_run_at", { mode: "timestamp" }),
+    nextRunAt: integer("next_run_at", { mode: "timestamp" }),
+    lastStatus: text("last_status"), // "success" | "error" | null
+    lastError: text("last_error"),
+    runCount: integer("run_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("scheduled_tasks_household_idx").on(t.householdId),
+    index("scheduled_tasks_agent_idx").on(t.agentId),
+    index("scheduled_tasks_next_run_idx").on(t.nextRunAt),
+  ]
+);
+
+// ── 16. instanceSettings ────────────────────────────────────────────
 
 export const instanceSettings = sqliteTable("instance_settings", {
   id: text("id").primaryKey(),
