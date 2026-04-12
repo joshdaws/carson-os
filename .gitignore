@@ -10,3 +10,9 @@ dist/
 .sandbox/
 .DS_Store
 *.tsbuildinfo
+
+# Tool/agent artifacts (never commit)
+.context/
+.serena/
+.gstack/
+.playwright-mcp/
