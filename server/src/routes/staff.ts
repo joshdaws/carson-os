@@ -18,14 +18,16 @@ import {
   personalityInterviewState,
 } from "@carsonos/db";
 import type { PersonalityInterviewEngine } from "../services/personality-interview.js";
+import type { MultiRelayManager } from "../services/multi-relay-manager.js";
 
 export interface StaffRouteDeps {
   db: Db;
   personalityInterviewEngine: PersonalityInterviewEngine;
+  multiRelay?: MultiRelayManager;
 }
 
 export function createStaffRoutes(deps: StaffRouteDeps): Router {
-  const { db, personalityInterviewEngine } = deps;
+  const { db, personalityInterviewEngine, multiRelay } = deps;
   const router = Router();
 
   // GET / -- list all staff agents (scoped to household)
@@ -174,6 +176,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       })
       .returning();
 
+    // If created with a bot token, start the Telegram bot immediately
+    if (telegramBotToken && multiRelay) {
+      multiRelay.startBot(agent.id).catch((err) => {
+        console.error(`[staff] Failed to start bot for new agent:`, err);
+      });
+    }
+
     res.status(201).json({ agent });
   });
 
@@ -220,6 +229,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       })
       .where(eq(staffAgents.id, req.params.id))
       .returning();
+
+    // If bot token was added or changed, start/restart the Telegram bot
+    if (telegramBotToken && multiRelay) {
+      multiRelay.startBot(req.params.id).catch((err) => {
+        console.error(`[staff] Failed to start bot after token update:`, err);
+      });
+    }
 
     res.json({ agent: updated });
   });

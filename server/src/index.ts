@@ -184,7 +184,16 @@ async function main() {
   );
   console.log("[engine] Delegation orchestrator ready");
 
-  // 7. Create Express app with all dependencies
+  // 7. Telegram multi-relay (created before app so staff routes can trigger bot starts)
+  const multiRelay = new MultiRelayManager({
+    db,
+    adapter,
+    engine: constitutionEngine,
+    taskEngine,
+    orchestrator,
+  });
+
+  // 8. Create Express app with all dependencies
   const app = await createApp({
     db,
     adapter,
@@ -195,13 +204,14 @@ async function main() {
     profileInterviewEngine,
     personalityInterviewEngine,
     toolRegistry,
+    multiRelay,
   });
 
-  // 8. Create HTTP server and attach WebSocket
+  // 9. Create HTTP server and attach WebSocket
   const server = createServer(app);
   setupWebSocket(server);
 
-  // 9. Wire event consumers
+  // 10. Wire event consumers
   eventBus.on("*", broadcast);
   eventBus.on("project.completed", (event) => {
     if (!event.data) return;
@@ -209,15 +219,6 @@ async function main() {
     orchestrator.handleProjectCompleted(parentTaskId).catch((err) => {
       console.error("[events] Failed to handle project completion:", err);
     });
-  });
-
-  // 10. Telegram relay (multi-bot for per-agent bots, legacy for single-bot fallback)
-  const multiRelay = new MultiRelayManager({
-    db,
-    adapter,
-    engine: constitutionEngine,
-    taskEngine,
-    orchestrator,
   });
 
   eventBus.on("delegation.result", (event) => {
