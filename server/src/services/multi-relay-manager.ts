@@ -788,6 +788,25 @@ export class MultiRelayManager {
     }
   }
 
+  /**
+   * Try to send a message via any running bot (fallback when the primary bot
+   * hasn't been messaged by the user yet). Skips the excluded agent.
+   * Returns true if any bot succeeded.
+   */
+  async sendToAnyBot(telegramUserId: string, text: string, excludeAgentId?: string): Promise<boolean> {
+    for (const [agentId, managed] of this.bots) {
+      if (agentId === excludeAgentId || !managed.running) continue;
+      try {
+        await this.sendMessage(agentId, telegramUserId, text);
+        console.log(`[multi-relay] Fallback delivery via ${managed.agentName} succeeded`);
+        return true;
+      } catch {
+        // This bot can't reach them either, try the next
+      }
+    }
+    return false;
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────
 
   private async getConversationId(

@@ -281,19 +281,33 @@ export class Scheduler {
     try {
       switch (mode) {
         case "telegram": {
-          // Send via the multi-relay's Telegram bot for this agent
           if (this.multiRelay) {
-            // Find the member's Telegram user ID
             const member = this.db
-              .select({ telegramUserId: familyMembers.telegramUserId })
+              .select({ telegramUserId: familyMembers.telegramUserId, name: familyMembers.name })
               .from(familyMembers)
               .where(eq(familyMembers.id, memberId))
               .get();
 
-            if (member?.telegramUserId) {
-              await this.multiRelay.sendMessage(task.agentId, member.telegramUserId, response);
-            } else {
+            if (!member?.telegramUserId) {
               console.warn(`[scheduler] No Telegram ID for member ${memberId} — falling back to log`);
+              break;
+            }
+
+            // Try the assigned agent's bot first, fall back to any bot that works
+            // (Telegram requires the user to message the bot first)
+            try {
+              await this.multiRelay.sendMessage(task.agentId, member.telegramUserId, response);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (msg.includes("chat not found") || msg.includes("bot was blocked")) {
+                console.warn(`[scheduler] ${member.name} hasn't messaged this bot yet — trying other bots`);
+                const sent = await this.multiRelay.sendToAnyBot(member.telegramUserId, response, task.agentId);
+                if (!sent) {
+                  console.warn(`[scheduler] Could not reach ${member.name} on Telegram — they need to message a bot first`);
+                }
+              } else {
+                throw err;
+              }
             }
           }
           break;
