@@ -16,6 +16,7 @@
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
 import { backupDatabase } from "./services/backup.js";
@@ -53,6 +54,19 @@ async function main() {
 
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
+
+  // Kill any stale process holding our port (prevents EADDRINUSE on restart)
+  try {
+    const pids = execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" }).trim();
+    if (pids) {
+      for (const pid of pids.split("\n")) {
+        if (pid && pid !== String(process.pid)) {
+          process.kill(parseInt(pid, 10), "SIGKILL");
+          console.log(`[boot] Killed stale process ${pid} on port ${config.port}`);
+        }
+      }
+    }
+  } catch { /* no process on port — good */ }
 
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");
