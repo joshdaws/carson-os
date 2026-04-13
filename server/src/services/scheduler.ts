@@ -15,6 +15,9 @@ import { eq, and, lte, isNotNull } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { scheduledTasks, staffAgents } from "@carsonos/db";
 import type { ConstitutionEngine } from "./constitution-engine.js";
+import type { MultiRelayManager } from "./multi-relay-manager.js";
+import type { MemoryProvider } from "@carsonos/shared";
+import { familyMembers } from "@carsonos/db";
 
 const TICK_INTERVAL_MS = 60_000; // Check every 60 seconds
 
@@ -103,15 +106,26 @@ export function computeNextRun(
 
 // ── Scheduler ─────────────────────────────────────────────────────
 
+export interface SchedulerDeps {
+  db: Db;
+  engine: ConstitutionEngine;
+  multiRelay?: MultiRelayManager;
+  memoryProvider?: MemoryProvider;
+}
+
 export class Scheduler {
   private db: Db;
   private engine: ConstitutionEngine;
+  private multiRelay?: MultiRelayManager;
+  private memoryProvider?: MemoryProvider;
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
-  constructor(db: Db, engine: ConstitutionEngine) {
-    this.db = db;
-    this.engine = engine;
+  constructor(deps: SchedulerDeps) {
+    this.db = deps.db;
+    this.engine = deps.engine;
+    this.multiRelay = deps.multiRelay;
+    this.memoryProvider = deps.memoryProvider;
   }
 
   /** Start the ticker. */
@@ -185,16 +199,30 @@ export class Scheduler {
         throw new Error("No member associated with this scheduled task");
       }
 
+      // Parse delivery mode from prompt prefix (e.g., "[deliver:memory]\n...")
+      let deliverTo = "telegram";
+      let actualPrompt = task.prompt;
+      const deliverMatch = task.prompt.match(/^\[deliver:(\w+)\]\n/);
+      if (deliverMatch) {
+        deliverTo = deliverMatch[1];
+        actualPrompt = task.prompt.slice(deliverMatch[0].length);
+      }
+
       // Execute through the constitution engine (same as a Telegram message)
       const result = await this.engine.processMessage({
         agentId: task.agentId,
         memberId,
         householdId: task.householdId,
-        message: task.prompt,
+        message: actualPrompt,
         channel: "scheduled",
       });
 
       const durationMs = Date.now() - startTime;
+
+      // Deliver the response
+      if (result.response && !result.blocked) {
+        await this.deliver(deliverTo, result.response, task, memberId);
+      }
 
       // Compute next run
       const nextRun = task.scheduleType === "once"
@@ -241,5 +269,73 @@ export class Scheduler {
         .where(eq(scheduledTasks.id, task.id))
         .run();
     }
+  }
+
+  /** Deliver a scheduled task's response to the appropriate channel. */
+  private async deliver(
+    mode: string,
+    response: string,
+    task: typeof scheduledTasks.$inferSelect,
+    memberId: string,
+  ): Promise<void> {
+    try {
+      switch (mode) {
+        case "telegram": {
+          // Send via the multi-relay's Telegram bot for this agent
+          if (this.multiRelay) {
+            // Find the member's Telegram user ID
+            const member = this.db
+              .select({ telegramUserId: familyMembers.telegramUserId })
+              .from(familyMembers)
+              .where(eq(familyMembers.id, memberId))
+              .get();
+
+            if (member?.telegramUserId) {
+              await this.multiRelay.sendMessage(task.agentId, member.telegramUserId, response);
+            } else {
+              console.warn(`[scheduler] No Telegram ID for member ${memberId} — falling back to log`);
+            }
+          }
+          break;
+        }
+
+        case "memory": {
+          // Save the response as a memory entry
+          if (this.memoryProvider) {
+            const memberSlug = this.getMemberSlug(memberId);
+            if (memberSlug) {
+              await this.memoryProvider.save(memberSlug, {
+                type: "event",
+                title: `${task.name} — ${new Date().toLocaleDateString()}`,
+                content: response,
+                frontmatter: { source: "scheduled-task", taskId: task.id },
+              });
+            }
+          }
+          break;
+        }
+
+        case "log":
+        default:
+          // Just log it — the activity log entry is created by the constitution engine
+          console.log(`[scheduler] "${task.name}" result (${response.length} chars)`);
+          break;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] Delivery failed for "${task.name}" (${mode}):`, msg);
+    }
+  }
+
+  /** Get the member's slug for memory collection lookup. */
+  private getMemberSlug(memberId: string): string | null {
+    const member = this.db
+      .select({ name: familyMembers.name })
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+
+    if (!member) return null;
+    return member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   }
 }

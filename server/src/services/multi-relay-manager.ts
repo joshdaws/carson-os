@@ -762,6 +762,32 @@ export class MultiRelayManager {
     }
   }
 
+  /**
+   * Send a message to a Telegram user via a specific agent's bot.
+   * Used by the scheduler for delivering scheduled task results.
+   */
+  async sendMessage(agentId: string, telegramUserId: string, text: string): Promise<void> {
+    const managed = this.bots.get(agentId);
+    if (!managed?.running) {
+      throw new Error(`Bot for agent ${agentId} is not running`);
+    }
+
+    const { markdownToTelegramHtml, chunkMessage } = await import("./telegram-format.js");
+    const html = markdownToTelegramHtml(text);
+    const chunks = chunkMessage(html);
+
+    for (const chunk of chunks) {
+      if (!chunk.trim()) continue;
+      try {
+        await managed.bot.api.sendMessage(telegramUserId, chunk, { parse_mode: "HTML" });
+      } catch {
+        // Fallback to plain text
+        await managed.bot.api.sendMessage(telegramUserId, text.slice(0, MAX_MESSAGE_LENGTH));
+        break;
+      }
+    }
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────
 
   private async getConversationId(

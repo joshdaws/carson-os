@@ -231,7 +231,12 @@ async function main() {
   await multiRelay.startAll();
 
   // 11. Start the scheduled task ticker
-  const scheduler = new Scheduler(db, constitutionEngine);
+  const scheduler = new Scheduler({
+    db,
+    engine: constitutionEngine,
+    multiRelay,
+    memoryProvider,
+  });
   scheduler.start();
 
   // Legacy single-bot relay as fallback (if TELEGRAM_BOT_TOKEN is set)

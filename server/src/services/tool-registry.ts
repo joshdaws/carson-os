@@ -23,9 +23,10 @@ import type {
 } from "@carsonos/shared";
 import {
   MEMORY_TOOLS,
-  buildToolExecutor,
   type ToolContext,
+  buildToolExecutor,
 } from "./memory/index.js";
+import { SCHEDULE_TOOL, handleScheduleTask } from "./scheduling-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = ["search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions"];
+    const systemTools = ["search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions", "schedule_task"];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
@@ -142,6 +143,13 @@ export class ToolRegistry {
         tier: systemTools.includes(def.name) ? "system" : "builtin",
       });
     }
+
+    // Schedule tool — every agent gets this
+    this.tools.set(SCHEDULE_TOOL.name, {
+      definition: SCHEDULE_TOOL,
+      category: "scheduling",
+      tier: "system",
+    });
   }
 
   /** Register a tool with its handler. */
@@ -363,6 +371,16 @@ export class ToolRegistry {
       const handler = this.handlers.get(name);
       if (handler) {
         const result = await handler(name, input);
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Schedule tool
+      if (name === "schedule_task" && ctx.memoryProvider) {
+        const result = await handleScheduleTask(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
+          input,
+        );
         calls.push({ name, input, result });
         return result;
       }
