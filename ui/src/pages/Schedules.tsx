@@ -317,10 +317,15 @@ function TaskRow({
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(task.name);
-  const [prompt, setPrompt] = useState(task.prompt);
+  // Strip delivery prefix for editing, track separately
+  const existingDeliverTo = task.prompt.startsWith("[deliver:memory]") ? "memory" : task.prompt.startsWith("[deliver:log]") ? "log" : "telegram";
+  const cleanPrompt = task.prompt.replace(/^\[deliver:\w+\]\n/, "");
+  const [prompt, setPrompt] = useState(cleanPrompt);
   const [scheduleType, setScheduleType] = useState(task.scheduleType);
   const [scheduleValue, setScheduleValue] = useState(task.scheduleValue);
   const [agentId, setAgentId] = useState(task.agentId);
+  const [memberId, setMemberId] = useState(task.memberId ?? members[0]?.id ?? "");
+  const [deliverTo, setDeliverTo] = useState(existingDeliverTo);
 
   const toggleMutation = useMutation({
     mutationFn: () => api.post(`/scheduled-tasks/${task.id}/toggle`),
@@ -348,7 +353,8 @@ function TaskRow({
             <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>Edit Schedule</span>
             <div className="flex gap-1">
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => {
-                updateMutation.mutate({ name, prompt, scheduleType, scheduleValue, agentId });
+                const finalPrompt = deliverTo !== "telegram" ? `[deliver:${deliverTo}]\n${prompt}` : prompt;
+                updateMutation.mutate({ name, prompt: finalPrompt, scheduleType, scheduleValue, agentId, memberId });
               }}>
                 <Check className="h-3.5 w-3.5" />
               </Button>
@@ -371,12 +377,37 @@ function TaskRow({
             onTypeChange={setScheduleType}
             onValueChange={setScheduleValue}
           />
-          <Select value={agentId} onValueChange={setAgentId}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Run by</label>
+              <Select value={agentId} onValueChange={setAgentId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Send to</label>
+              <Select value={memberId} onValueChange={setMemberId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {members.map((m) => <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Deliver via</label>
+              <Select value={deliverTo} onValueChange={setDeliverTo}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="telegram">Telegram</SelectItem>
+                  <SelectItem value="memory">Save to memory</SelectItem>
+                  <SelectItem value="log">Log only</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </CardContent>
       </Card>
     );
