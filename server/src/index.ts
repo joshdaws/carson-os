@@ -55,18 +55,28 @@ async function main() {
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
 
-  // Kill any stale process holding our port (prevents EADDRINUSE on restart)
+  // Kill any stale process holding our port (prevents EADDRINUSE on restart).
+  // SIGTERM first (graceful SQLite shutdown), SIGKILL as fallback after 2s.
+  // lsof may not exist on Linux — the catch handles that silently.
   try {
     const pids = execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" }).trim();
     if (pids) {
       for (const pid of pids.split("\n")) {
-        if (pid && pid !== String(process.pid)) {
-          process.kill(parseInt(pid, 10), "SIGKILL");
+        const pidNum = parseInt(pid, 10);
+        if (pid && pidNum !== process.pid) {
+          try {
+            process.kill(pidNum, "SIGTERM");
+            const start = Date.now();
+            while (Date.now() - start < 2000) {
+              try { process.kill(pidNum, 0); } catch { break; }
+            }
+            try { process.kill(pidNum, "SIGKILL"); } catch { /* already gone */ }
+          } catch { /* process already gone */ }
           console.log(`[boot] Killed stale process ${pid} on port ${config.port}`);
         }
       }
     }
-  } catch { /* no process on port — good */ }
+  } catch { /* no process on port, or lsof not available */ }
 
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");

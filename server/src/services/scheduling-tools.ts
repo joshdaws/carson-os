@@ -179,7 +179,8 @@ async function handleList(ctx: ScheduleToolContext): Promise<ToolResult> {
     const status = t.enabled ? "active" : "paused";
     const cleanPrompt = t.prompt.replace(/^\[deliver:\w+\]\n/, "").slice(0, 80);
     const nextRun = t.nextRunAt ? new Date(t.nextRunAt).toLocaleString() : "—";
-    return `- ${t.name} (id: ${t.id})\n  Status: ${status} | Schedule: ${t.scheduleType} ${t.scheduleValue} | Next: ${nextRun}\n  Prompt: ${cleanPrompt}${t.prompt.length > 80 ? "..." : ""}`;
+    const fullClean = t.prompt.replace(/^\[deliver:\w+\]\n/, "");
+    return `- ${t.name} (id: ${t.id})\n  Status: ${status} | Schedule: ${t.scheduleType} ${t.scheduleValue} | Next: ${nextRun}\n  Prompt: ${cleanPrompt}${fullClean.length > 80 ? "..." : ""}`;
   });
 
   return { content: `${tasks.length} scheduled task(s):\n\n${lines.join("\n\n")}` };
@@ -296,12 +297,17 @@ async function handleRunNow(ctx: ScheduleToolContext, input: Record<string, unkn
     return { content: `Task "${taskId}" not found.`, is_error: true };
   }
 
-  // Set nextRunAt to now and ensure it's enabled — the scheduler will pick it up within 60 seconds
+  // Set nextRunAt to now — scheduler picks it up within 60 seconds.
+  // Temporarily enable if paused (scheduler checks enabled), but restore after execution.
+  // For simplicity: just set nextRunAt. If task is paused, warn the user.
+  if (!existing.enabled) {
+    return { content: `Task "${existing.name}" is currently paused. Resume it first, or I can resume and run it. Say "resume and run ${existing.name}".`, is_error: true };
+  }
+
   await ctx.db
     .update(scheduledTasks)
     .set({
       nextRunAt: new Date(),
-      enabled: true,
       updatedAt: new Date(),
     })
     .where(eq(scheduledTasks.id, taskId));

@@ -378,6 +378,7 @@ function TaskRow({
             style={{ fontSize: "13px" }}
           />
           <ScheduleEditor
+            key={`${scheduleType}-${scheduleValue}`}
             scheduleType={scheduleType}
             scheduleValue={scheduleValue}
             onTypeChange={setScheduleType}
@@ -585,6 +586,7 @@ function AddTaskModal({
           </div>
 
           <ScheduleEditor
+            key={`${scheduleType}-${scheduleValue}`}
             scheduleType={scheduleType}
             scheduleValue={scheduleValue}
             onTypeChange={setScheduleType}

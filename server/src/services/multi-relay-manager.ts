@@ -791,17 +791,28 @@ export class MultiRelayManager {
   /**
    * Check if any running bot can reach a Telegram user (via getChat).
    * Used by the scheduler to pre-flight delivery before spending tokens.
+   * Results cached for 5 minutes to avoid N API calls per tick.
    */
+  private reachabilityCache = new Map<string, { reachable: boolean; expiresAt: number }>();
+
   async canReachUser(telegramUserId: string): Promise<boolean> {
+    const cached = this.reachabilityCache.get(telegramUserId);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.reachable;
+    }
+
     for (const [, managed] of this.bots) {
       if (!managed.running) continue;
       try {
         await managed.bot.api.getChat(telegramUserId);
+        this.reachabilityCache.set(telegramUserId, { reachable: true, expiresAt: Date.now() + 5 * 60_000 });
         return true;
       } catch {
         // This bot can't reach them, try the next
       }
     }
+
+    this.reachabilityCache.set(telegramUserId, { reachable: false, expiresAt: Date.now() + 5 * 60_000 });
     return false;
   }
 

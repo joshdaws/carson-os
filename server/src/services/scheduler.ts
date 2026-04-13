@@ -41,34 +41,76 @@ function parseInterval(value: string): number {
 }
 
 /**
- * Compute the next run time for a cron expression.
- * Simple implementation supporting: minute hour day-of-month month day-of-week
+ * Parse a single cron field into a set of matching values.
+ * Supports: *, specific numbers, ranges (1-5), comma lists (1,3,5).
  */
-function nextCronRun(cronExpr: string, after: Date = new Date()): Date {
+function parseCronField(field: string, min: number, max: number): Set<number> | null {
+  if (field === "*") return null; // wildcard = match all
+  const values = new Set<number>();
+  for (const part of field.split(",")) {
+    const rangeMatch = part.match(/^(\d+)-(\d+)$/);
+    if (rangeMatch) {
+      const lo = parseInt(rangeMatch[1], 10);
+      const hi = parseInt(rangeMatch[2], 10);
+      for (let v = lo; v <= hi; v++) values.add(v);
+    } else {
+      values.add(parseInt(part, 10));
+    }
+  }
+  return values;
+}
+
+/**
+ * Compute the next run time for a cron expression.
+ * Supports all 5 fields: minute hour day-of-month month day-of-week
+ * Uses the task's timezone for matching (falls back to system local).
+ */
+function nextCronRun(cronExpr: string, after: Date = new Date(), timezone?: string): Date {
   const parts = cronExpr.trim().split(/\s+/);
   if (parts.length !== 5) throw new Error(`Invalid cron: ${cronExpr}`);
 
-  const [minExpr, hourExpr] = parts;
+  const minSet = parseCronField(parts[0], 0, 59);
+  const hourSet = parseCronField(parts[1], 0, 23);
+  const domSet = parseCronField(parts[2], 1, 31);
+  const monSet = parseCronField(parts[3], 1, 12);
+  const dowSet = parseCronField(parts[4], 0, 6);
 
-  // Simple implementation: supports specific values and wildcards
-  // For MVP, handle the common cases: "0 6 * * *" (daily at 6am), "0 * * * *" (hourly)
-  const targetMin = minExpr === "*" ? null : parseInt(minExpr, 10);
-  const targetHour = hourExpr === "*" ? null : parseInt(hourExpr, 10);
+  const match = (set: Set<number> | null, val: number) => set === null || set.has(val);
 
-  const next = new Date(after.getTime() + 60_000); // start from at least 1 minute after
-  next.setSeconds(0, 0);
+  // Use Intl.DateTimeFormat for timezone-aware field extraction
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "numeric", day: "numeric",
+    hour: "numeric", minute: "numeric", weekday: "short",
+    hour12: false,
+  });
+  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-  // Try each minute for the next 48 hours
-  const limit = 48 * 60;
-  for (let i = 0; i < limit; i++) {
-    const m = next.getMinutes();
-    const h = next.getHours();
+  // Start from 1 minute after the reference time, scan up to 7 days
+  const startMs = after.getTime() - (after.getTime() % 60_000) + 60_000;
+  const limitMs = startMs + 7 * 24 * 60 * 60_000;
 
-    if ((targetMin === null || m === targetMin) && (targetHour === null || h === targetHour)) {
-      return next;
+  for (let ms = startMs; ms <= limitMs; ms += 60_000) {
+    const dateParts = fmt.formatToParts(new Date(ms));
+    const vals: Record<string, string> = {};
+    for (const p of dateParts) vals[p.type] = p.value;
+
+    const minute = Number(vals.minute);
+    const hour = Number(vals.hour);
+    const day = Number(vals.day);
+    const month = Number(vals.month);
+    const weekday = dowMap[vals.weekday] ?? 0;
+
+    if (
+      match(minSet, minute) &&
+      match(hourSet, hour) &&
+      match(domSet, day) &&
+      match(monSet, month) &&
+      match(dowSet, weekday)
+    ) {
+      return new Date(ms);
     }
-
-    next.setMinutes(next.getMinutes() + 1);
   }
 
   // Fallback: 24 hours from now
@@ -82,12 +124,13 @@ export function computeNextRun(
   scheduleType: string,
   scheduleValue: string,
   lastRunAt?: Date | null,
+  timezone?: string,
 ): Date {
   const now = new Date();
 
   switch (scheduleType) {
     case "cron":
-      return nextCronRun(scheduleValue, lastRunAt ?? now);
+      return nextCronRun(scheduleValue, lastRunAt ?? now, timezone);
 
     case "interval": {
       const ms = parseInterval(scheduleValue);
@@ -223,7 +266,7 @@ export class Scheduler {
               lastStatus: "delivery_blocked",
               lastError: reason,
               // Still advance nextRunAt so it doesn't retry every 60 seconds
-              nextRunAt: task.scheduleType === "once" ? null : computeNextRun(task.scheduleType, task.scheduleValue, new Date()),
+              nextRunAt: task.scheduleType === "once" ? null : computeNextRun(task.scheduleType, task.scheduleValue, new Date(), task.timezone),
               updatedAt: new Date(),
             })
             .where(eq(scheduledTasks.id, task.id))
@@ -251,7 +294,7 @@ export class Scheduler {
       // Compute next run
       const nextRun = task.scheduleType === "once"
         ? null
-        : computeNextRun(task.scheduleType, task.scheduleValue, new Date());
+        : computeNextRun(task.scheduleType, task.scheduleValue, new Date(), task.timezone);
 
       // Update task record
       this.db
@@ -277,7 +320,7 @@ export class Scheduler {
       // Compute next run even on failure (don't stop recurring tasks)
       const nextRun = task.scheduleType === "once"
         ? null
-        : computeNextRun(task.scheduleType, task.scheduleValue, new Date());
+        : computeNextRun(task.scheduleType, task.scheduleValue, new Date(), task.timezone);
 
       this.db
         .update(scheduledTasks)
