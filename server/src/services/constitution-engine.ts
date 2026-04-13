@@ -82,6 +82,7 @@ export interface EngineConfig {
   memoryProvider?: MemoryProvider;
   toolRegistry?: ToolRegistry;
   calendarProvider?: GoogleCalendarProvider;
+  multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
     hardEvaluators?: boolean;
@@ -141,6 +142,7 @@ export class ConstitutionEngine {
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
   private hardEvaluatorsEnabled: boolean;
+  private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
 
   constructor(config: EngineConfig) {
     this.db = config.db;
@@ -149,7 +151,13 @@ export class ConstitutionEngine {
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
+    this.multiRelay = config.multiRelay ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
+  }
+
+  /** Set the multi-relay manager (called after construction because of circular dependency). */
+  setMultiRelay(relay: import("./multi-relay-manager.js").MultiRelayManager): void {
+    this.multiRelay = relay;
   }
 
   /** Invalidate the clause cache for a household (call after clause edits). */
@@ -436,6 +444,7 @@ export class ConstitutionEngine {
         isChiefOfStaff,
         allMemberCollections,
         allowedCollections,
+        multiRelay: this.multiRelay ?? undefined,
       });
 
       if (built) {

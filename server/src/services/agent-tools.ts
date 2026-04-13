@@ -13,7 +13,8 @@
 import { eq, and } from "drizzle-orm";
 import type { ToolDefinition, ToolResult } from "@carsonos/shared";
 import type { Db } from "@carsonos/db";
-import { staffAgents, staffAssignments, familyMembers } from "@carsonos/db";
+import { staffAgents, staffAssignments, familyMembers, scheduledTasks } from "@carsonos/db";
+import type { MultiRelayManager } from "./multi-relay-manager.js";
 
 const OPERATING_INSTRUCTIONS_CAP = 2000;
 
@@ -24,12 +25,13 @@ export interface AgentToolContext {
   memberName: string;
   householdId: string;
   isChiefOfStaff?: boolean;
+  multiRelay?: MultiRelayManager;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────
 
 // Self-management tools (every agent)
-const SELF_TOOLS: ToolDefinition[] = [
+export const SELF_TOOLS: ToolDefinition[] = [
   {
     name: "update_instructions",
     description:
@@ -72,7 +74,7 @@ const SELF_TOOLS: ToolDefinition[] = [
 ];
 
 // Staff management tools (Chief of Staff only)
-const STAFF_TOOLS: ToolDefinition[] = [
+export const STAFF_TOOLS: ToolDefinition[] = [
   {
     name: "list_agents",
     description:
@@ -221,6 +223,21 @@ async function handleUpdateRole(ctx: AgentToolContext, input: Record<string, unk
   return { content: `Role updated. Takes effect next conversation.\nReason: ${reason}` };
 }
 
+// ── Helpers ────────────────────────────────────────────────────────
+
+/** Case-insensitive agent lookup by name within household. */
+function findAgent(ctx: AgentToolContext, name: string) {
+  // Try exact match first, then case-insensitive
+  const agents = ctx.db.select().from(staffAgents).where(eq(staffAgents.householdId, ctx.householdId)).all();
+  return agents.find((a) => a.name === name) ?? agents.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
+}
+
+/** Case-insensitive member lookup by name within household. */
+function findMember(ctx: AgentToolContext, name: string) {
+  const members = ctx.db.select().from(familyMembers).where(eq(familyMembers.householdId, ctx.householdId)).all();
+  return members.find((m) => m.name === name) ?? members.find((m) => m.name.toLowerCase() === name.toLowerCase()) ?? null;
+}
+
 // ── Staff management handlers (Chief of Staff only) ───────────────
 
 async function handleListAgents(ctx: AgentToolContext): Promise<ToolResult> {
@@ -249,80 +266,86 @@ async function handleListAgents(ctx: AgentToolContext): Promise<ToolResult> {
 }
 
 async function handleCreateAgent(ctx: AgentToolContext, input: Record<string, unknown>): Promise<ToolResult> {
-  const name = input.name as string;
+  const name = (input.name as string)?.trim();
   const staffRole = input.staff_role as string;
-  const roleContent = input.role_content as string;
+  const roleContent = (input.role_content as string)?.trim();
   const assignToMember = input.assign_to_member as string;
   const trustLevel = (input.trust_level as string) ?? "restricted";
 
-  // Find the member to assign to
-  const member = ctx.db
-    .select()
-    .from(familyMembers)
-    .where(and(eq(familyMembers.householdId, ctx.householdId), eq(familyMembers.name, assignToMember)))
-    .get();
+  // Fix #6: validate required fields
+  if (!name) return { content: "Agent name cannot be empty.", is_error: true };
+  if (!roleContent) return { content: "Role description cannot be empty.", is_error: true };
 
-  if (!member) {
-    return { content: `Family member "${assignToMember}" not found.`, is_error: true };
-  }
+  // Fix #4: check for duplicate name
+  const existing = findAgent(ctx, name);
+  if (existing) return { content: `An agent named "${name}" already exists.`, is_error: true };
 
-  // Create the agent
+  // Fix #5: case-insensitive member lookup
+  const member = findMember(ctx, assignToMember);
+  if (!member) return { content: `Family member "${assignToMember}" not found.`, is_error: true };
+
   const [agent] = await ctx.db
     .insert(staffAgents)
-    .values({
-      householdId: ctx.householdId,
-      name,
-      staffRole,
-      roleContent,
-      trustLevel,
-      visibility: "family",
-    })
+    .values({ householdId: ctx.householdId, name, staffRole, roleContent, trustLevel, visibility: "family" })
     .returning();
 
-  // Create the assignment
-  await ctx.db.insert(staffAssignments).values({
-    agentId: agent.id,
-    memberId: member.id,
-    relationship: "primary",
-  });
+  await ctx.db.insert(staffAssignments).values({ agentId: agent.id, memberId: member.id, relationship: "primary" });
 
-  return { content: `Agent "${name}" created (${staffRole}, trust: ${trustLevel}) and assigned to ${assignToMember}.` };
+  return { content: `Agent "${name}" created (${staffRole}, trust: ${trustLevel}) and assigned to ${member.name}.` };
 }
 
 async function handleDeleteAgent(ctx: AgentToolContext, input: Record<string, unknown>): Promise<ToolResult> {
   const agentName = input.agent_name as string;
 
-  const agent = ctx.db
-    .select()
-    .from(staffAgents)
-    .where(and(eq(staffAgents.householdId, ctx.householdId), eq(staffAgents.name, agentName)))
-    .get();
-
+  const agent = findAgent(ctx, agentName);
   if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
   if (agent.isHeadButler) return { content: "Cannot delete the Chief of Staff.", is_error: true };
+  // Fix #9: prevent self-deletion
+  if (agent.id === ctx.agentId) return { content: "You cannot delete yourself.", is_error: true };
 
-  // Delete assignments first
+  // Fix #3: soft delete — set status to "deleted" instead of removing rows.
+  // Preserves conversation history, activity logs, and audit trail.
+  // Scheduled tasks for this agent are disabled.
+  await ctx.db.update(staffAgents).set({ status: "deleted", updatedAt: new Date() }).where(eq(staffAgents.id, agent.id));
+
+  // Disable any scheduled tasks for this agent
+  ctx.db.update(scheduledTasks).set({ enabled: false }).where(eq(scheduledTasks.agentId, agent.id)).run();
+
+  // Remove assignments (so they don't show in the UI)
   ctx.db.delete(staffAssignments).where(eq(staffAssignments.agentId, agent.id)).run();
-  ctx.db.delete(staffAgents).where(eq(staffAgents.id, agent.id)).run();
 
-  return { content: `Agent "${agentName}" deleted.` };
+  // Stop the bot if running
+  if (ctx.multiRelay) {
+    ctx.multiRelay.stopBot(agent.id).catch(() => {});
+  }
+
+  return { content: `Agent "${agent.name}" deactivated. Scheduled tasks disabled, assignments removed.` };
 }
 
 async function handlePauseResume(ctx: AgentToolContext, input: Record<string, unknown>, newStatus: string): Promise<ToolResult> {
   const agentName = input.agent_name as string;
 
-  const agent = ctx.db
-    .select()
-    .from(staffAgents)
-    .where(and(eq(staffAgents.householdId, ctx.householdId), eq(staffAgents.name, agentName)))
-    .get();
-
+  const agent = findAgent(ctx, agentName);
   if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
   if (agent.isHeadButler && newStatus === "paused") return { content: "Cannot pause the Chief of Staff.", is_error: true };
 
+  // Fix #8: check current status
+  if (agent.status === newStatus) {
+    return { content: `Agent "${agent.name}" is already ${newStatus}.` };
+  }
+
   await ctx.db.update(staffAgents).set({ status: newStatus, updatedAt: new Date() }).where(eq(staffAgents.id, agent.id));
 
-  return { content: `Agent "${agentName}" ${newStatus === "paused" ? "paused" : "resumed"}.` };
+  // Fix #1: actually stop/start the Telegram bot
+  if (ctx.multiRelay) {
+    if (newStatus === "paused") {
+      await ctx.multiRelay.stopBot(agent.id).catch(() => {});
+    } else if (newStatus === "active" && agent.telegramBotToken) {
+      await ctx.multiRelay.startBot(agent.id).catch(() => {});
+    }
+  }
+
+  return { content: `Agent "${agent.name}" ${newStatus === "paused" ? "paused" : "resumed"}.` };
 }
 
 async function handleUpdateAssignment(ctx: AgentToolContext, input: Record<string, unknown>): Promise<ToolResult> {
@@ -330,20 +353,10 @@ async function handleUpdateAssignment(ctx: AgentToolContext, input: Record<strin
   const action = input.action as "assign" | "remove";
   const memberName = input.member_name as string;
 
-  const agent = ctx.db
-    .select()
-    .from(staffAgents)
-    .where(and(eq(staffAgents.householdId, ctx.householdId), eq(staffAgents.name, agentName)))
-    .get();
-
+  const agent = findAgent(ctx, agentName);
   if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
 
-  const member = ctx.db
-    .select()
-    .from(familyMembers)
-    .where(and(eq(familyMembers.householdId, ctx.householdId), eq(familyMembers.name, memberName)))
-    .get();
-
+  const member = findMember(ctx, memberName);
   if (!member) return { content: `Family member "${memberName}" not found.`, is_error: true };
 
   if (action === "assign") {

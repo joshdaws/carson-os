@@ -210,6 +210,9 @@ async function main() {
     orchestrator,
   });
 
+  // Wire multiRelay into the constitution engine (for agent pause/resume tools)
+  constitutionEngine.setMultiRelay(multiRelay);
+
   // 8. Create Express app with all dependencies
   const app = await createApp({
     db,
