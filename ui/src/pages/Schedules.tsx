@@ -112,7 +112,86 @@ function statusColor(status: string | null | undefined): string {
   return "#8a8070";
 }
 
-// ── Schedule Editor ────────────────────────────────────────────────
+// ── Schedule presets ───────────────────────────────────────────────
+
+const FREQUENCY_OPTIONS = [
+  { value: "daily", label: "Every day" },
+  { value: "weekdays", label: "Weekdays (Mon-Fri)" },
+  { value: "weekly", label: "Once a week" },
+  { value: "interval", label: "Every X hours/minutes" },
+  { value: "once", label: "One time only" },
+];
+
+const DAY_OPTIONS = [
+  { value: "1", label: "Monday" },
+  { value: "2", label: "Tuesday" },
+  { value: "3", label: "Wednesday" },
+  { value: "4", label: "Thursday" },
+  { value: "5", label: "Friday" },
+  { value: "6", label: "Saturday" },
+  { value: "0", label: "Sunday" },
+];
+
+/** Convert human-friendly schedule inputs to cron/interval values for the API. */
+function buildScheduleValue(
+  frequency: string,
+  time: string,
+  dayOfWeek: string,
+  intervalAmount: string,
+  intervalUnit: string,
+  onceDate: string,
+): { type: string; value: string } {
+  const [hour, min] = time ? time.split(":").map(Number) : [6, 0];
+
+  switch (frequency) {
+    case "daily":
+      return { type: "cron", value: `${min} ${hour} * * *` };
+    case "weekdays":
+      return { type: "cron", value: `${min} ${hour} * * 1-5` };
+    case "weekly":
+      return { type: "cron", value: `${min} ${hour} * * ${dayOfWeek}` };
+    case "interval":
+      return { type: "interval", value: `${intervalAmount}${intervalUnit}` };
+    case "once":
+      return { type: "once", value: onceDate || new Date().toISOString() };
+    default:
+      return { type: "cron", value: `${min} ${hour} * * *` };
+  }
+}
+
+/** Try to parse existing cron/interval values back to human-friendly inputs. */
+function parseExistingSchedule(type: string, value: string): {
+  frequency: string;
+  time: string;
+  dayOfWeek: string;
+  intervalAmount: string;
+  intervalUnit: string;
+  onceDate: string;
+} {
+  const defaults = { frequency: "daily", time: "06:00", dayOfWeek: "1", intervalAmount: "2", intervalUnit: "h", onceDate: "" };
+
+  if (type === "once") {
+    return { ...defaults, frequency: "once", onceDate: value };
+  }
+
+  if (type === "interval") {
+    const match = value.match(/^(\d+)\s*(m|h|d|w)$/i);
+    if (match) return { ...defaults, frequency: "interval", intervalAmount: match[1], intervalUnit: match[2].toLowerCase() };
+    return { ...defaults, frequency: "interval" };
+  }
+
+  // Parse cron
+  const parts = value.split(" ");
+  if (parts.length !== 5) return defaults;
+  const [min, hour, , , dow] = parts;
+  const time = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+
+  if (dow === "1-5") return { ...defaults, frequency: "weekdays", time };
+  if (dow !== "*") return { ...defaults, frequency: "weekly", time, dayOfWeek: dow };
+  return { ...defaults, frequency: "daily", time };
+}
+
+// ── Schedule Editor ───────────────────────────────────────────────
 
 function ScheduleEditor({
   scheduleType,
@@ -125,39 +204,99 @@ function ScheduleEditor({
   onTypeChange: (v: string) => void;
   onValueChange: (v: string) => void;
 }) {
+  const parsed = parseExistingSchedule(scheduleType, scheduleValue);
+  const [frequency, setFrequency] = useState(parsed.frequency);
+  const [time, setTime] = useState(parsed.time);
+  const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
+  const [intervalAmount, setIntervalAmount] = useState(parsed.intervalAmount);
+  const [intervalUnit, setIntervalUnit] = useState(parsed.intervalUnit);
+  const [onceDate, setOnceDate] = useState(parsed.onceDate);
+
+  function sync(
+    f = frequency, t = time, d = dayOfWeek,
+    ia = intervalAmount, iu = intervalUnit, od = onceDate,
+  ) {
+    const result = buildScheduleValue(f, t, d, ia, iu, od);
+    onTypeChange(result.type);
+    onValueChange(result.value);
+  }
+
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="space-y-3">
       <div>
-        <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Type</label>
-        <Select value={scheduleType} onValueChange={onTypeChange}>
+        <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>How often</label>
+        <Select value={frequency} onValueChange={(v) => { setFrequency(v); sync(v); }}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="cron">Cron (e.g., daily at 6am)</SelectItem>
-            <SelectItem value="interval">Interval (e.g., every 2h)</SelectItem>
-            <SelectItem value="once">One-time</SelectItem>
+            {FREQUENCY_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
-      <div>
-        <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
-          {scheduleType === "cron" ? "Cron expression" : scheduleType === "interval" ? "Interval" : "Run at"}
-        </label>
-        <Input
-          value={scheduleValue}
-          onChange={(e) => onValueChange(e.target.value)}
-          placeholder={
-            scheduleType === "cron" ? "0 6 * * *" :
-            scheduleType === "interval" ? "24h" :
-            "2026-04-15T09:00"
-          }
-          style={{ fontFamily: "monospace", fontSize: "12px" }}
-        />
-        {scheduleType === "cron" && (
-          <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>
-            min hour day month weekday (e.g., 0 6 * * * = daily 6am, 0 9 * * 1 = Mondays 9am)
-          </p>
-        )}
-      </div>
+
+      {(frequency === "daily" || frequency === "weekdays" || frequency === "weekly") && (
+        <div className={frequency === "weekly" ? "grid grid-cols-2 gap-3" : ""}>
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>At what time</label>
+            <Input
+              type="time"
+              value={time}
+              onChange={(e) => { setTime(e.target.value); sync(frequency, e.target.value); }}
+            />
+          </div>
+          {frequency === "weekly" && (
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>On which day</label>
+              <Select value={dayOfWeek} onValueChange={(v) => { setDayOfWeek(v); sync(frequency, time, v); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DAY_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+      )}
+
+      {frequency === "interval" && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Every</label>
+            <Input
+              type="number"
+              min={1}
+              value={intervalAmount}
+              onChange={(e) => { setIntervalAmount(e.target.value); sync(frequency, time, dayOfWeek, e.target.value); }}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Unit</label>
+            <Select value={intervalUnit} onValueChange={(v) => { setIntervalUnit(v); sync(frequency, time, dayOfWeek, intervalAmount, v); }}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="m">Minutes</SelectItem>
+                <SelectItem value="h">Hours</SelectItem>
+                <SelectItem value="d">Days</SelectItem>
+                <SelectItem value="w">Weeks</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+
+      {frequency === "once" && (
+        <div>
+          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Date and time</label>
+          <Input
+            type="datetime-local"
+            value={onceDate}
+            onChange={(e) => { setOnceDate(e.target.value); sync(frequency, time, dayOfWeek, intervalAmount, intervalUnit, e.target.value); }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -321,7 +460,7 @@ function AddTaskModal({
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
   const [memberId, setMemberId] = useState("");
   const [scheduleType, setScheduleType] = useState("cron");
-  const [scheduleValue, setScheduleValue] = useState("0 6 * * *");
+  const [scheduleValue, setScheduleValue] = useState("0 6 * * *"); // default: daily at 6am
   const [submitted, setSubmitted] = useState(false);
 
   const mutation = useMutation({
