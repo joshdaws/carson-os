@@ -26,7 +26,7 @@ import {
   type ToolContext,
   buildToolExecutor,
 } from "./memory/index.js";
-import { SCHEDULE_TOOL, handleScheduleTask } from "./scheduling-tools.js";
+import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -135,7 +135,10 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = ["search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions", "schedule_task"];
+    const systemTools = [
+      "search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions",
+      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task",
+    ];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
@@ -144,12 +147,14 @@ export class ToolRegistry {
       });
     }
 
-    // Schedule tool — every agent gets this
-    this.tools.set(SCHEDULE_TOOL.name, {
-      definition: SCHEDULE_TOOL,
-      category: "scheduling",
-      tier: "system",
-    });
+    // Scheduling tools — every agent gets these
+    for (const def of SCHEDULING_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "scheduling",
+        tier: "system",
+      });
+    }
   }
 
   /** Register a tool with its handler. */
@@ -375,10 +380,12 @@ export class ToolRegistry {
         return result;
       }
 
-      // Schedule tool
-      if (name === "schedule_task" && ctx.memoryProvider) {
-        const result = await handleScheduleTask(
+      // Scheduling tools (create, list, pause, update, delete)
+      const schedulingTools = ["schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task"];
+      if (schedulingTools.includes(name)) {
+        const result = await handleSchedulingTool(
           { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
+          name,
           input,
         );
         calls.push({ name, input, result });
