@@ -11,7 +11,7 @@
  */
 
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { scheduledTasks, staffAgents } from "@carsonos/db";
 import { computeNextRun } from "../services/scheduler.js";
@@ -74,7 +74,7 @@ export function createScheduledTaskRoutes(db: Db): Router {
     // Compute first run time
     let nextRunAt: Date;
     try {
-      nextRunAt = computeNextRun(scheduleType, scheduleValue);
+      nextRunAt = computeNextRun(scheduleType, scheduleValue, null, timezone ?? "America/New_York");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: `Invalid schedule: ${msg}` });

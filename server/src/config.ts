@@ -14,7 +14,6 @@ export interface Config {
   dataDir: string;
   nodeEnv: string;
   anthropicApiKey?: string;
-  telegramBotToken?: string;
   adapterType: AdapterType;
   memory: MemoryConfig;
   featureFlags: {
@@ -41,7 +40,6 @@ export function getConfig(): Config {
     dataDir,
     nodeEnv: process.env.NODE_ENV ?? "development",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
-    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || undefined,
     adapterType,
     memory: {
       kind: process.env.CARSONOS_MEMORY_PROVIDER ?? "qmd",

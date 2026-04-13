@@ -32,7 +32,6 @@ import { CarsonOversight } from "./services/carson-oversight.js";
 import { InterviewEngine } from "./services/interview.js";
 import { ProfileInterviewEngine } from "./services/profile-interview.js";
 import { PersonalityInterviewEngine } from "./services/personality-interview.js";
-import { createTelegramRelay } from "./services/telegram-relay.js";
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
@@ -55,28 +54,21 @@ async function main() {
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
 
-  // Kill any stale process holding our port (prevents EADDRINUSE on restart).
-  // SIGTERM first (graceful SQLite shutdown), SIGKILL as fallback after 2s.
-  // lsof may not exist on Linux — the catch handles that silently.
+  // Check if our port is in use and warn (don't kill — could be unrelated).
+  // If it's a stale CarsonOS, launchd/systemd already stopped the old one.
   try {
     const pids = execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" }).trim();
     if (pids) {
-      for (const pid of pids.split("\n")) {
-        const pidNum = parseInt(pid, 10);
-        if (pid && pidNum !== process.pid) {
-          try {
-            process.kill(pidNum, "SIGTERM");
-            const start = Date.now();
-            while (Date.now() - start < 2000) {
-              try { process.kill(pidNum, 0); } catch { break; }
-            }
-            try { process.kill(pidNum, "SIGKILL"); } catch { /* already gone */ }
-          } catch { /* process already gone */ }
-          console.log(`[boot] Killed stale process ${pid} on port ${config.port}`);
-        }
+      console.warn(`[boot] Port ${config.port} in use by PID(s): ${pids.replace(/\n/g, ", ")}. Will retry...`);
+      // Wait briefly for the old process to finish shutting down
+      const start = Date.now();
+      while (Date.now() - start < 3000) {
+        try {
+          execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" });
+        } catch { break; } // port free
       }
     }
-  } catch { /* no process on port, or lsof not available */ }
+  } catch { /* port free, or lsof not available */ }
 
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");
@@ -263,20 +255,6 @@ async function main() {
   });
   scheduler.start();
 
-  // Legacy single-bot relay as fallback (if TELEGRAM_BOT_TOKEN is set)
-  let telegramRelay: ReturnType<typeof createTelegramRelay> | null = null;
-  if (config.telegramBotToken) {
-    telegramRelay = createTelegramRelay({
-      token: config.telegramBotToken,
-      db,
-      engine: constitutionEngine,
-      taskEngine,
-    });
-    telegramRelay.start();
-  } else {
-    console.log("[telegram] No legacy TELEGRAM_BOT_TOKEN, multi-bot only");
-  }
-
   // Start listening on loopback only
   server.listen(config.port, "127.0.0.1", () => {
     console.log(BANNER);
@@ -298,7 +276,6 @@ async function main() {
   const shutdown = async () => {
     console.log("\n[shutdown] closing...");
     await multiRelay.stopAll();
-    telegramRelay?.stop();
     server.close(() => {
       console.log("[shutdown] done");
       process.exit(0);
