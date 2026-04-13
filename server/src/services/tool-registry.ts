@@ -27,6 +27,7 @@ import {
   buildToolExecutor,
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
+import { AGENT_TOOLS, handleAgentTool } from "./agent-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -135,19 +136,25 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = [
-      "search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions",
-      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task",
-    ];
+    // Memory tools
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
         category: "memory",
-        tier: systemTools.includes(def.name) ? "system" : "builtin",
+        tier: "system",
       });
     }
 
-    // Scheduling tools — every agent gets these
+    // Agent self-management tools
+    for (const def of AGENT_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent",
+        tier: "system",
+      });
+    }
+
+    // Scheduling tools
     for (const def of SCHEDULING_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
@@ -392,7 +399,19 @@ export class ToolRegistry {
         return result;
       }
 
-      // Fall back to memory executor for memory + system tools
+      // Agent self-management tools (personality, role, instructions)
+      const agentTools = ["update_instructions", "update_personality", "update_role"];
+      if (agentTools.includes(name)) {
+        const result = await handleAgentTool(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId },
+          name,
+          input,
+        );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Fall back to memory executor for memory tools
       if (memoryExecutor) {
         return memoryExecutor(name, input);
       }
