@@ -45,9 +45,18 @@ echo "  Installing dependencies..."
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 # Restart service if it's running
-if launchctl list "$PLIST_NAME" &>/dev/null; then
+RESTARTED=false
+if [[ "$(uname)" == "Darwin" ]] && launchctl list "$PLIST_NAME" &>/dev/null; then
   echo "  Restarting service..."
   launchctl kickstart -k "gui/$(id -u)/$PLIST_NAME"
+  RESTARTED=true
+elif command -v systemctl &>/dev/null && systemctl --user is-active carsonos &>/dev/null; then
+  echo "  Restarting service..."
+  systemctl --user restart carsonos
+  RESTARTED=true
+fi
+
+if $RESTARTED; then
   echo -e "  ${GREEN}✓${NC} Service restarted"
 else
   echo -e "  ${YELLOW}○${NC} Service not running (start with ./scripts/install-service.sh)"
