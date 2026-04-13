@@ -44,7 +44,7 @@ function parseInterval(value: string): number {
  * Parse a single cron field into a set of matching values.
  * Supports: *, specific numbers, ranges (1-5), comma lists (1,3,5).
  */
-function parseCronField(field: string, min: number, max: number): Set<number> | null {
+function parseCronField(field: string, _min: number, _max: number): Set<number> | null {
   if (field === "*") return null; // wildcard = match all
   const values = new Set<number>();
   for (const part of field.split(",")) {
@@ -87,9 +87,10 @@ function nextCronRun(cronExpr: string, after: Date = new Date(), timezone?: stri
   });
   const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-  // Start from 1 minute after the reference time, scan up to 7 days
+  // Start from 1 minute after the reference time, scan up to 366 days
+  // (monthly/yearly cron expressions need longer horizon)
   const startMs = after.getTime() - (after.getTime() % 60_000) + 60_000;
-  const limitMs = startMs + 7 * 24 * 60 * 60_000;
+  const limitMs = startMs + 366 * 24 * 60 * 60_000;
 
   for (let ms = startMs; ms <= limitMs; ms += 60_000) {
     const dateParts = fmt.formatToParts(new Date(ms));
@@ -255,7 +256,6 @@ export class Scheduler {
       if (deliverTo === "telegram") {
         const canDeliver = await this.canDeliverTelegram(task.agentId, memberId);
         if (!canDeliver) {
-          const memberName = this.getMemberSlug(memberId) ?? memberId;
           const reason = `Cannot deliver to Telegram: no bot can reach this member. They need to message a bot first.`;
           console.warn(`[scheduler] Skipping "${task.name}" — ${reason}`);
 
@@ -424,7 +424,7 @@ export class Scheduler {
    * Check if we can deliver a Telegram message to a member.
    * Tries getChat on each running bot to see if any has access.
    */
-  private async canDeliverTelegram(agentId: string, memberId: string): Promise<boolean> {
+  private async canDeliverTelegram(_agentId: string, memberId: string): Promise<boolean> {
     if (!this.multiRelay) return false;
 
     const member = this.db
