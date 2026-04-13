@@ -415,9 +415,12 @@ function TaskRow({
           </div>
         </div>
 
-        {/* Schedule + timing */}
-        <div className="flex items-center gap-4 text-xs mb-2" style={{ color: "#8a8070" }}>
-          <span className="font-mono">{formatSchedule(task.scheduleType, task.scheduleValue)}</span>
+        {/* Schedule + delivery + timing */}
+        <div className="flex items-center gap-3 text-xs mb-2 flex-wrap" style={{ color: "#8a8070" }}>
+          <span>{formatSchedule(task.scheduleType, task.scheduleValue)}</span>
+          <span style={{ color: "#a09080" }}>
+            → {task.prompt.startsWith("[deliver:memory]") ? "memory" : task.prompt.startsWith("[deliver:log]") ? "log" : "Telegram"}
+          </span>
           {task.nextRunAt && task.enabled && (
             <span>Next: {formatRelativeTime(task.nextRunAt)}</span>
           )}
@@ -428,8 +431,10 @@ function TaskRow({
           )}
         </div>
 
-        {/* Prompt preview */}
-        <p className="text-xs line-clamp-2" style={{ color: "#5a5a5a" }}>{task.prompt}</p>
+        {/* Prompt preview (strip delivery prefix) */}
+        <p className="text-xs line-clamp-2" style={{ color: "#5a5a5a" }}>
+          {task.prompt.replace(/^\[deliver:\w+\]\n/, "")}
+        </p>
 
         {task.lastError && (
           <p className="text-[10px] mt-2 p-2 rounded" style={{ background: "#fef2f2", color: "#c62828" }}>
@@ -458,7 +463,8 @@ function AddTaskModal({
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
-  const [memberId, setMemberId] = useState("");
+  const [memberId, setMemberId] = useState(members[0]?.id ?? "");
+  const [deliverTo, setDeliverTo] = useState("telegram");
   const [scheduleType, setScheduleType] = useState("cron");
   const [scheduleValue, setScheduleValue] = useState("0 6 * * *"); // default: daily at 6am
   const [submitted, setSubmitted] = useState(false);
@@ -477,12 +483,17 @@ function AddTaskModal({
     setSubmitted(true);
     if (!name.trim() || !prompt.trim()) return;
 
+    // Prefix the prompt with delivery mode so the scheduler knows where to send results
+    const deliveryPrompt = deliverTo !== "telegram"
+      ? `[deliver:${deliverTo}]\n${prompt.trim()}`
+      : prompt.trim();
+
     mutation.mutate({
       householdId,
       agentId,
       memberId: memberId || null,
       name: name.trim(),
-      prompt: prompt.trim(),
+      prompt: deliveryPrompt,
       scheduleType,
       scheduleValue,
     });
@@ -537,9 +548,9 @@ function AddTaskModal({
             onValueChange={setScheduleValue}
           />
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Agent</label>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Run by</label>
               <Select value={agentId} onValueChange={setAgentId}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -548,11 +559,22 @@ function AddTaskModal({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Run as</label>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Send to</label>
               <Select value={memberId} onValueChange={setMemberId}>
-                <SelectTrigger><SelectValue placeholder="Select member..." /></SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {members.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                  {members.map((m) => <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Deliver via</label>
+              <Select value={deliverTo} onValueChange={setDeliverTo}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="telegram">Telegram</SelectItem>
+                  <SelectItem value="memory">Save to memory</SelectItem>
+                  <SelectItem value="log">Log only</SelectItem>
                 </SelectContent>
               </Select>
             </div>
