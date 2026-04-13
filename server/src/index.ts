@@ -16,10 +16,12 @@
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
 import { backupDatabase } from "./services/backup.js";
 import { checkForUpdates } from "./services/update-check.js";
+import { Scheduler } from "./services/scheduler.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -30,7 +32,6 @@ import { CarsonOversight } from "./services/carson-oversight.js";
 import { InterviewEngine } from "./services/interview.js";
 import { ProfileInterviewEngine } from "./services/profile-interview.js";
 import { PersonalityInterviewEngine } from "./services/personality-interview.js";
-import { createTelegramRelay } from "./services/telegram-relay.js";
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
@@ -52,6 +53,22 @@ async function main() {
 
   // Ensure data directory exists
   mkdirSync(config.dataDir, { recursive: true });
+
+  // Check if our port is in use and warn (don't kill — could be unrelated).
+  // If it's a stale CarsonOS, launchd/systemd already stopped the old one.
+  try {
+    const pids = execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" }).trim();
+    if (pids) {
+      console.warn(`[boot] Port ${config.port} in use by PID(s): ${pids.replace(/\n/g, ", ")}. Will retry...`);
+      // Wait briefly for the old process to finish shutting down
+      const start = Date.now();
+      while (Date.now() - start < 3000) {
+        try {
+          execFileSync("lsof", ["-ti", `:${config.port}`], { encoding: "utf-8" });
+        } catch { break; } // port free
+      }
+    }
+  } catch { /* port free, or lsof not available */ }
 
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");
@@ -229,19 +246,14 @@ async function main() {
   // Start per-agent bots (agents with telegramBotToken set)
   await multiRelay.startAll();
 
-  // Legacy single-bot relay as fallback (if TELEGRAM_BOT_TOKEN is set)
-  let telegramRelay: ReturnType<typeof createTelegramRelay> | null = null;
-  if (config.telegramBotToken) {
-    telegramRelay = createTelegramRelay({
-      token: config.telegramBotToken,
-      db,
-      engine: constitutionEngine,
-      taskEngine,
-    });
-    telegramRelay.start();
-  } else {
-    console.log("[telegram] No legacy TELEGRAM_BOT_TOKEN, multi-bot only");
-  }
+  // 11. Start the scheduled task ticker
+  const scheduler = new Scheduler({
+    db,
+    engine: constitutionEngine,
+    multiRelay,
+    memoryProvider,
+  });
+  scheduler.start();
 
   // Start listening on loopback only
   server.listen(config.port, "127.0.0.1", () => {
@@ -264,7 +276,6 @@ async function main() {
   const shutdown = async () => {
     console.log("\n[shutdown] closing...");
     await multiRelay.stopAll();
-    telegramRelay?.stop();
     server.close(() => {
       console.log("[shutdown] done");
       process.exit(0);

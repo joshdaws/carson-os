@@ -59,19 +59,30 @@ Then open [http://localhost:3300/onboarding](http://localhost:3300/onboarding) a
 
 <!-- TODO: Add onboarding screenshot -->
 
-### Development Sandbox
+### Running as a Service
 
-If you're using CarsonOS for your family and also developing on it, use sandbox mode to keep them completely separate:
+For daily use, install CarsonOS as a background service that starts on login and restarts on crash:
 
 ```bash
-# Your family's instance (default — uses ~/.carsonos, port 3300)
-pnpm dev
-
-# Development sandbox (uses .sandbox/ in the project, port 3301)
-pnpm dev:sandbox
+./scripts/install-service.sh    # install and start (macOS launchd or Linux systemd)
+pnpm restart                    # restart after updates
+./scripts/install-service.sh --stop      # stop
+./scripts/install-service.sh --uninstall # remove
 ```
 
-The sandbox gets its own database, memory files, and Google auth directory. You can delete `.sandbox/` anytime without affecting your real data.
+Logs: `tail -f ~/.carsonos/logs/stdout.log`
+
+Or run in the foreground: `pnpm start`
+
+### Development Sandbox
+
+If you're also developing on CarsonOS, use sandbox mode so dev work can't affect your family's data:
+
+```bash
+pnpm dev:sandbox  # port 3301, uses .sandbox/ for data — throwaway
+```
+
+The sandbox gets its own database, memory files, and Google auth directory. Delete `.sandbox/` anytime.
 
 ### Connecting Telegram
 

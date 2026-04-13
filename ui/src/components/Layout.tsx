@@ -10,6 +10,7 @@ import {
   ListTodo,
   MessageSquare,
   Settings,
+  Clock,
   Wifi,
   WifiOff,
   Menu,
@@ -176,6 +177,7 @@ export function Layout() {
           System
         </div>
         <NavItem to="/conversations" icon={MessageSquare} label="Conversations" />
+        <NavItem to="/schedules" icon={Clock} label="Schedules" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
 

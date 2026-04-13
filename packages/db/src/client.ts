@@ -433,8 +433,35 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // Create scheduled_tasks table
+    if (!tableExists("scheduled_tasks")) {
+      sqlite.prepare(`CREATE TABLE scheduled_tasks (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id),
+        agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+        member_id TEXT REFERENCES family_members(id),
+        name TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        schedule_type TEXT NOT NULL,
+        schedule_value TEXT NOT NULL,
+        timezone TEXT NOT NULL DEFAULT 'America/New_York',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_run_at INTEGER,
+        next_run_at INTEGER,
+        last_status TEXT,
+        last_error TEXT,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX scheduled_tasks_household_idx ON scheduled_tasks(household_id)").run();
+      sqlite.prepare("CREATE INDEX scheduled_tasks_agent_idx ON scheduled_tasks(agent_id)").run();
+      sqlite.prepare("CREATE INDEX scheduled_tasks_next_run_idx ON scheduled_tasks(next_run_at)").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded to v8 (personality interviews)");
+      console.log("[db] Schema upgraded to v9 (scheduled tasks)");
     }
   });
 

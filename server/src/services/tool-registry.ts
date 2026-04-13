@@ -23,9 +23,10 @@ import type {
 } from "@carsonos/shared";
 import {
   MEMORY_TOOLS,
-  buildToolExecutor,
   type ToolContext,
+  buildToolExecutor,
 } from "./memory/index.js";
+import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -134,12 +135,24 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = ["search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions"];
+    const systemTools = [
+      "search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions",
+      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task",
+    ];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
         category: "memory",
         tier: systemTools.includes(def.name) ? "system" : "builtin",
+      });
+    }
+
+    // Scheduling tools — every agent gets these
+    for (const def of SCHEDULING_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "scheduling",
+        tier: "system",
       });
     }
   }
@@ -363,6 +376,18 @@ export class ToolRegistry {
       const handler = this.handlers.get(name);
       if (handler) {
         const result = await handler(name, input);
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Scheduling tools (create, list, pause, update, delete)
+      const schedulingTools = ["schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"];
+      if (schedulingTools.includes(name)) {
+        const result = await handleSchedulingTool(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
+          name,
+          input,
+        );
         calls.push({ name, input, result });
         return result;
       }

@@ -762,6 +762,79 @@ export class MultiRelayManager {
     }
   }
 
+  /**
+   * Send a message to a Telegram user via a specific agent's bot.
+   * Used by the scheduler for delivering scheduled task results.
+   */
+  async sendMessage(agentId: string, telegramUserId: string, text: string): Promise<void> {
+    const managed = this.bots.get(agentId);
+    if (!managed?.running) {
+      throw new Error(`Bot for agent ${agentId} is not running`);
+    }
+
+    const { markdownToTelegramHtml, chunkMessage } = await import("./telegram-format.js");
+    const html = markdownToTelegramHtml(text);
+    const chunks = chunkMessage(html);
+
+    for (const chunk of chunks) {
+      if (!chunk.trim()) continue;
+      try {
+        await managed.bot.api.sendMessage(telegramUserId, chunk, { parse_mode: "HTML" });
+      } catch {
+        // Fallback to plain text
+        await managed.bot.api.sendMessage(telegramUserId, text.slice(0, MAX_MESSAGE_LENGTH));
+        break;
+      }
+    }
+  }
+
+  /**
+   * Check if any running bot can reach a Telegram user (via getChat).
+   * Used by the scheduler to pre-flight delivery before spending tokens.
+   * Results cached for 5 minutes to avoid N API calls per tick.
+   */
+  private reachabilityCache = new Map<string, { reachable: boolean; expiresAt: number }>();
+
+  async canReachUser(telegramUserId: string): Promise<boolean> {
+    const cached = this.reachabilityCache.get(telegramUserId);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.reachable;
+    }
+
+    for (const [, managed] of this.bots) {
+      if (!managed.running) continue;
+      try {
+        await managed.bot.api.getChat(telegramUserId);
+        this.reachabilityCache.set(telegramUserId, { reachable: true, expiresAt: Date.now() + 5 * 60_000 });
+        return true;
+      } catch {
+        // This bot can't reach them, try the next
+      }
+    }
+
+    this.reachabilityCache.set(telegramUserId, { reachable: false, expiresAt: Date.now() + 5 * 60_000 });
+    return false;
+  }
+
+  /**
+   * Try to send a message via any running bot (fallback when the primary bot
+   * hasn't been messaged by the user yet). Skips the excluded agent.
+   * Returns true if any bot succeeded.
+   */
+  async sendToAnyBot(telegramUserId: string, text: string, excludeAgentId?: string): Promise<boolean> {
+    for (const [agentId, managed] of this.bots) {
+      if (agentId === excludeAgentId || !managed.running) continue;
+      try {
+        await this.sendMessage(agentId, telegramUserId, text);
+        console.log(`[multi-relay] Fallback delivery via ${managed.agentName} succeeded`);
+        return true;
+      } catch {
+        // This bot can't reach them either, try the next
+      }
+    }
+    return false;
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────
 
   private async getConversationId(
