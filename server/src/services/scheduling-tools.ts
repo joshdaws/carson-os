@@ -92,6 +92,18 @@ export const SCHEDULING_TOOLS: ToolDefinition[] = [
       required: ["task_id"],
     },
   },
+  {
+    name: "run_scheduled_task",
+    description:
+      "Run a scheduled task immediately, right now, without waiting for its next scheduled time. The task stays on its normal schedule too — this is just an extra run. Use when someone says 'run the briefing now', 'give me the report early', etc.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The task ID (from list_scheduled_tasks results)." },
+      },
+      required: ["task_id"],
+    },
+  },
 ];
 
 // ── Handlers ──────────────────────────────────────────────────────
@@ -105,6 +117,7 @@ export async function handleSchedulingTool(
     case "schedule_task": return handleCreate(ctx, input);
     case "list_scheduled_tasks": return handleList(ctx);
     case "pause_scheduled_task": return handlePause(ctx, input);
+    case "run_scheduled_task": return handleRunNow(ctx, input);
     case "update_scheduled_task": return handleUpdate(ctx, input);
     case "delete_scheduled_task": return handleDelete(ctx, input);
     default: return { content: `Unknown scheduling tool: ${name}`, is_error: true };
@@ -268,4 +281,30 @@ async function handleDelete(ctx: ScheduleToolContext, input: Record<string, unkn
   ctx.db.delete(scheduledTasks).where(eq(scheduledTasks.id, taskId)).run();
 
   return { content: `Task "${existing.name}" deleted.` };
+}
+
+async function handleRunNow(ctx: ScheduleToolContext, input: Record<string, unknown>): Promise<ToolResult> {
+  const taskId = input.task_id as string;
+
+  const existing = ctx.db
+    .select()
+    .from(scheduledTasks)
+    .where(and(eq(scheduledTasks.id, taskId), eq(scheduledTasks.householdId, ctx.householdId)))
+    .get();
+
+  if (!existing) {
+    return { content: `Task "${taskId}" not found.`, is_error: true };
+  }
+
+  // Set nextRunAt to now and ensure it's enabled — the scheduler will pick it up within 60 seconds
+  await ctx.db
+    .update(scheduledTasks)
+    .set({
+      nextRunAt: new Date(),
+      enabled: true,
+      updatedAt: new Date(),
+    })
+    .where(eq(scheduledTasks.id, taskId));
+
+  return { content: `Task "${existing.name}" will run within the next minute.` };
 }
