@@ -208,6 +208,30 @@ export class Scheduler {
         actualPrompt = task.prompt.slice(deliverMatch[0].length);
       }
 
+      // Pre-flight: check if delivery is possible BEFORE spending tokens
+      if (deliverTo === "telegram") {
+        const canDeliver = await this.canDeliverTelegram(task.agentId, memberId);
+        if (!canDeliver) {
+          const memberName = this.getMemberSlug(memberId) ?? memberId;
+          const reason = `Cannot deliver to Telegram: no bot can reach this member. They need to message a bot first.`;
+          console.warn(`[scheduler] Skipping "${task.name}" — ${reason}`);
+
+          // Update task with delivery error but don't count as a run
+          this.db
+            .update(scheduledTasks)
+            .set({
+              lastStatus: "delivery_blocked",
+              lastError: reason,
+              // Still advance nextRunAt so it doesn't retry every 60 seconds
+              nextRunAt: task.scheduleType === "once" ? null : computeNextRun(task.scheduleType, task.scheduleValue, new Date()),
+              updatedAt: new Date(),
+            })
+            .where(eq(scheduledTasks.id, task.id))
+            .run();
+          return;
+        }
+      }
+
       // Execute through the constitution engine (same as a Telegram message)
       const result = await this.engine.processMessage({
         agentId: task.agentId,
@@ -351,5 +375,23 @@ export class Scheduler {
 
     if (!member) return null;
     return member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+  }
+
+  /**
+   * Check if we can deliver a Telegram message to a member.
+   * Tries getChat on each running bot to see if any has access.
+   */
+  private async canDeliverTelegram(agentId: string, memberId: string): Promise<boolean> {
+    if (!this.multiRelay) return false;
+
+    const member = this.db
+      .select({ telegramUserId: familyMembers.telegramUserId })
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+
+    if (!member?.telegramUserId) return false;
+
+    return this.multiRelay.canReachUser(member.telegramUserId);
   }
 }

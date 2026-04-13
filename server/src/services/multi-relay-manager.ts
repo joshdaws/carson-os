@@ -789,6 +789,23 @@ export class MultiRelayManager {
   }
 
   /**
+   * Check if any running bot can reach a Telegram user (via getChat).
+   * Used by the scheduler to pre-flight delivery before spending tokens.
+   */
+  async canReachUser(telegramUserId: string): Promise<boolean> {
+    for (const [, managed] of this.bots) {
+      if (!managed.running) continue;
+      try {
+        await managed.bot.api.getChat(telegramUserId);
+        return true;
+      } catch {
+        // This bot can't reach them, try the next
+      }
+    }
+    return false;
+  }
+
+  /**
    * Try to send a message via any running bot (fallback when the primary bot
    * hasn't been messaged by the user yet). Skips the excluded agent.
    * Returns true if any bot succeeded.

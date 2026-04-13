@@ -109,7 +109,13 @@ function statusColor(status: string | null | undefined): string {
   if (status === "success") return "#2e7d32";
   if (status === "error") return "#c62828";
   if (status === "blocked") return "#b8860b";
+  if (status === "delivery_blocked") return "#c62828";
   return "#8a8070";
+}
+
+function statusLabel(status: string | null | undefined): string {
+  if (status === "delivery_blocked") return "can't deliver";
+  return status ?? "—";
 }
 
 // ── Schedule presets ───────────────────────────────────────────────
@@ -457,7 +463,7 @@ function TaskRow({
           )}
           {task.lastRunAt && (
             <span style={{ color: statusColor(task.lastStatus) }}>
-              Last: {formatRelativeTime(task.lastRunAt)} ({task.lastStatus ?? "—"})
+              Last: {formatRelativeTime(task.lastRunAt)} ({statusLabel(task.lastStatus)})
             </span>
           )}
         </div>
@@ -467,7 +473,13 @@ function TaskRow({
           {task.prompt.replace(/^\[deliver:\w+\]\n/, "")}
         </p>
 
-        {task.lastError && (
+        {task.lastStatus === "delivery_blocked" && (
+          <p className="text-[11px] mt-2 p-2 rounded flex items-center gap-1.5" style={{ background: "#fef2f2", color: "#c62828" }}>
+            <span style={{ fontSize: "14px" }}>!</span>
+            {task.lastError ?? "Cannot deliver — recipient needs to message the bot first"}
+          </p>
+        )}
+        {task.lastError && task.lastStatus !== "delivery_blocked" && (
           <p className="text-[10px] mt-2 p-2 rounded" style={{ background: "#fef2f2", color: "#c62828" }}>
             {task.lastError}
           </p>
