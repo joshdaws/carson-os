@@ -137,7 +137,7 @@ export class ToolRegistry {
     // System tools — every agent gets these, not toggleable
     const systemTools = [
       "search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions",
-      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task",
+      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task",
     ];
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
@@ -381,7 +381,7 @@ export class ToolRegistry {
       }
 
       // Scheduling tools (create, list, pause, update, delete)
-      const schedulingTools = ["schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task"];
+      const schedulingTools = ["schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task"];
       if (schedulingTools.includes(name)) {
         const result = await handleSchedulingTool(
           { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
