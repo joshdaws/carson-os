@@ -738,8 +738,8 @@ export class ConstitutionEngine {
       .orderBy(desc(conversations.startedAt))
       .limit(1);
 
-    // Reuse if started today
-    if (existing.length > 0 && existing[0].startedAt.startsWith(today)) {
+    // Reuse if started today (but never reuse for scheduled tasks — they're stateless)
+    if (existing.length > 0 && existing[0].startedAt.startsWith(today) && channel !== "scheduled") {
       return existing[0].id;
     }
 
