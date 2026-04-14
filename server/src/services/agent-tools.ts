@@ -225,10 +225,12 @@ async function handleUpdateRole(ctx: AgentToolContext, input: Record<string, unk
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Case-insensitive agent lookup by name within household. */
+/** Case-insensitive agent lookup by name within household. Excludes soft-deleted agents. */
 function findAgent(ctx: AgentToolContext, name: string) {
-  // Try exact match first, then case-insensitive
-  const agents = ctx.db.select().from(staffAgents).where(eq(staffAgents.householdId, ctx.householdId)).all();
+  const agents = ctx.db.select().from(staffAgents)
+    .where(eq(staffAgents.householdId, ctx.householdId))
+    .all()
+    .filter((a) => a.status !== "deleted");
   return agents.find((a) => a.name === name) ?? agents.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
@@ -327,9 +329,9 @@ async function handlePauseResume(ctx: AgentToolContext, input: Record<string, un
 
   const agent = findAgent(ctx, agentName);
   if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
+  if (agent.status === "deleted") return { content: `Agent "${agent.name}" has been deleted and cannot be ${newStatus === "paused" ? "paused" : "resumed"}.`, is_error: true };
   if (agent.isHeadButler && newStatus === "paused") return { content: "Cannot pause the Chief of Staff.", is_error: true };
 
-  // Fix #8: check current status
   if (agent.status === newStatus) {
     return { content: `Agent "${agent.name}" is already ${newStatus}.` };
   }
