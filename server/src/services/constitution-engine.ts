@@ -321,6 +321,22 @@ export class ConstitutionEngine {
       channel,
     );
 
+    // Persist the user message NOW (before the agent runs) so any MCP tool
+    // called during the agent run that needs to reference the current message
+    // (e.g. redact_recent_user_message after store_secret) can find it in
+    // the DB. The assistant response is appended at the end of the pipeline.
+    const userMessageId = crypto.randomUUID();
+    await this.db.insert(messages).values({
+      id: userMessageId,
+      conversationId,
+      role: "user",
+      content: message,
+    });
+    await this.db
+      .update(conversations)
+      .set({ lastMessageAt: new Date().toISOString() })
+      .where(eq(conversations.id, conversationId));
+
     // Try to resume existing Agent SDK session (check cache first, then DB)
     let resumeSessionId = this.getSessionId(conversationId);
     if (!resumeSessionId) {
@@ -782,25 +798,20 @@ export class ConstitutionEngine {
 
   private async recordMessages(
     conversationId: string,
-    userMessage: string,
+    _userMessage: string,
     assistantMessage: string,
   ): Promise<void> {
     const now = new Date().toISOString();
 
-    await this.db.insert(messages).values([
-      {
-        id: crypto.randomUUID(),
-        conversationId,
-        role: "user",
-        content: userMessage,
-      },
-      {
-        id: crypto.randomUUID(),
-        conversationId,
-        role: "assistant",
-        content: assistantMessage,
-      },
-    ]);
+    // User message is persisted earlier in processMessage so MCP tools called
+    // during the agent run can reference it (e.g. redact_recent_user_message).
+    // Here we only write the assistant response.
+    await this.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "assistant",
+      content: assistantMessage,
+    });
 
     // Update lastMessageAt on the conversation
     await this.db

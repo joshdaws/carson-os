@@ -267,10 +267,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     const MCP_SERVER_NAME = "carsonos-memory";
 
+    // Forward-declared so the tool() callback can call it after a successful
+    // tool-list-modifying tool returns. Assigned below once conversation exists.
+    let triggerRefresh: (toolName: string) => Promise<void> = async () => {};
+
     /**
      * Build an MCP server config from a tool list + executor. Extracted so
      * we can rebuild it mid-session when custom tools are created/updated
-     * via setMcpServers (see refreshTools handling below).
+     * via setMcpServers (see triggerRefresh handling below).
      */
     const buildMcpServer = (
       toolDefs: import("@carsonos/shared").ToolDefinition[],
@@ -302,6 +306,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
           async (input: Record<string, unknown>) => {
             const result = await executor(t.name, input);
             allToolCalls.push({ name: t.name, input, result });
+            // Fire mid-session MCP refresh if this was a tool-list-modifying
+            // success. Swap happens after we return this result to the SDK
+            // so there's no race with the current call.
+            if (!result.is_error && TOOL_LIST_MODIFYING.has(t.name)) {
+              // Don't await — let it run async; if the next turn needs the new
+              // tool it'll be there, and we avoid blocking the current return.
+              void triggerRefresh(t.name);
+            }
             return {
               content: [{ type: "text" as const, text: result.content }],
               isError: result.is_error,
@@ -429,15 +441,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let hitTurnLimit = false;
     let sdkErrorMessage: string | null = null;
 
-    /**
-     * Mid-session tool list refresh. Called after create_custom_tool (etc.)
-     * successfully completes. Pulls the updated tool list from the engine
-     * via the refreshTools callback, rebuilds the MCP server, and calls
-     * setMcpServers — the new tools become visible to the model on its
-     * next turn in THIS conversation.
-     */
-    const maybeRefreshTools = async (lastToolName: string | null) => {
-      if (!lastToolName || !TOOL_LIST_MODIFYING.has(lastToolName)) return;
+    // Assign the refresh function now that `conversation` exists in scope.
+    triggerRefresh = async (lastToolName: string) => {
       if (!params.refreshTools) return;
       try {
         const fresh = await params.refreshTools();
@@ -463,27 +468,6 @@ class ClaudeAgentSdkAdapter implements Adapter {
         // Capture session_id from any message that carries it
         if ("session_id" in message && typeof message.session_id === "string") {
           capturedSessionId = message.session_id;
-        }
-
-        // Detect successful tool calls that modify the tool list and refresh
-        // the MCP server mid-session so newly created tools are immediately
-        // usable on the model's next turn.
-        if (message.type === "user" && "message" in message) {
-          const userMsg = message.message as { content?: unknown[] } | undefined;
-          if (userMsg?.content && Array.isArray(userMsg.content)) {
-            for (const block of userMsg.content) {
-              if (
-                block && typeof block === "object" &&
-                (block as { type: unknown }).type === "tool_result"
-              ) {
-                const tr = block as { tool_use_id?: string; is_error?: boolean };
-                if (tr.is_error) continue;
-                // Find the corresponding tool_use from recent history to learn the name
-                const recent = allToolCalls[allToolCalls.length - 1];
-                if (recent) await maybeRefreshTools(recent.name);
-              }
-            }
-          }
         }
 
         // Stream text deltas to the caller as they arrive
