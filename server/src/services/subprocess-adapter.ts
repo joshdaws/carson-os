@@ -402,7 +402,22 @@ class ClaudeAgentSdkAdapter implements Adapter {
           void triggerRefresh(name);
         }
       };
-      const mcpTools = toolDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
+      // Defensive dedup by tool name. If upstream hands us duplicates (e.g.
+      // a tool resolving via both the bare-name path and the scoped-name
+      // path in getAgentTools), createSdkMcpServer throws "already
+      // registered". Pick the first occurrence.
+      const seenNames = new Set<string>();
+      const uniqueDefs: typeof toolDefs = [];
+      for (const t of toolDefs) {
+        if (seenNames.has(t.name)) {
+          console.warn(`[adapter] buildMcpServer dropping duplicate tool: ${t.name}`);
+          continue;
+        }
+        seenNames.add(t.name);
+        uniqueDefs.push(t);
+      }
+      const mcpTools = uniqueDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
+      console.log(`[adapter] buildMcpServer server=${currentMcpServerName} tools=${uniqueDefs.length}${toolDefs.length !== uniqueDefs.length ? ` (deduped from ${toolDefs.length})` : ""}`);
       return createSdkMcpServer({
         name: currentMcpServerName,
         version: "1.0.0",

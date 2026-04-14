@@ -517,17 +517,28 @@ export class ToolRegistry {
     // under their bare name. Custom tools live under `custom:{householdId}:{name}`
     // because the Map is process-global and has to prevent cross-household
     // collisions. Try bare first, then the household-scoped key.
-    return grantedNames
-      .map((name) => {
-        const direct = this.tools.get(name);
-        if (direct) return direct.definition;
-        if (householdId) {
-          const scoped = this.tools.get(customKey(householdId, name));
-          if (scoped) return scoped.definition;
-        }
-        return undefined;
-      })
-      .filter((d): d is ToolDefinition => d !== undefined);
+    //
+    // Dedupe by the final `definition.name` — different granted names can
+    // resolve to the same tool (e.g., legacy bare grant `ynab_list_budgets`
+    // and post-fix scoped grant `custom:{hh}:ynab_list_budgets` both map to
+    // the same custom tool). Without this dedup, createSdkMcpServer throws
+    // "Tool X is already registered" on the duplicate registration.
+    const resolved: ToolDefinition[] = [];
+    const seen = new Set<string>();
+    for (const name of grantedNames) {
+      const direct = this.tools.get(name);
+      let def: ToolDefinition | undefined;
+      if (direct) def = direct.definition;
+      else if (householdId) {
+        const scoped = this.tools.get(customKey(householdId, name));
+        if (scoped) def = scoped.definition;
+      }
+      if (!def) continue;
+      if (seen.has(def.name)) continue;
+      seen.add(def.name);
+      resolved.push(def);
+    }
+    return resolved;
   }
 
   /**
