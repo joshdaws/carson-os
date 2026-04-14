@@ -217,7 +217,37 @@ class CodexAdapter implements Adapter {
 // -- Claude Agent SDK adapter (with MCP tools) -----------------------
 
 const DEFAULT_MODEL = "sonnet";
-const MAX_TURNS = 15;
+
+/**
+ * Per-session turn limit for the Claude Agent SDK.
+ *
+ * The SDK's circuit breaker against runaway tool-call loops (search → think
+ * → search → ... burning tokens without progress). Configurable because
+ * different use cases want different ceilings:
+ *   - simple Q&A: 10–20 is fine
+ *   - tool creation / multi-step work: 50–80
+ *   - one-shot scripted tasks: can be lower
+ *
+ * Clamped to [1, 200]. Override via CARSONOS_MAX_TURNS env var.
+ *
+ * Hitting the limit is NOT a silent failure — we catch the SDK error and
+ * surface a user-visible "I got stuck" message so the human knows to retry
+ * with tighter scope. See the try/catch around the for-await loop below.
+ */
+function parseMaxTurns(): number {
+  const raw = process.env.CARSONOS_MAX_TURNS;
+  if (!raw) return 50;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return 50;
+  return Math.min(200, Math.floor(n));
+}
+const MAX_TURNS = parseMaxTurns();
+
+/** Matches the SDK's "Reached maximum number of turns (N)" error. */
+function isTurnLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /Reached maximum number of turns/i.test(msg);
+}
 
 class ClaudeAgentSdkAdapter implements Adapter {
   name = "claude-agent-sdk";
@@ -343,75 +373,106 @@ class ClaudeAgentSdkAdapter implements Adapter {
     });
 
     let hasStreamedText = false;
+    let hitTurnLimit = false;
+    let sdkErrorMessage: string | null = null;
 
-    for await (const message of conversation) {
-      // Capture session_id from any message that carries it
-      if ("session_id" in message && typeof message.session_id === "string") {
-        capturedSessionId = message.session_id;
-      }
-
-      // Stream text deltas to the caller as they arrive
-      if (onTextDelta && message.type === "stream_event") {
-        const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
-        if (
-          event?.type === "content_block_delta" &&
-          (event?.delta as Record<string, unknown>)?.type === "text_delta"
-        ) {
-          onTextDelta((event.delta as { text: string }).text);
-          hasStreamedText = true;
+    try {
+      for await (const message of conversation) {
+        // Capture session_id from any message that carries it
+        if ("session_id" in message && typeof message.session_id === "string") {
+          capturedSessionId = message.session_id;
         }
-      }
 
-      // Inject paragraph break when a new assistant turn starts after a tool call
-      // (prevents "Let me check.Here's what I found" with no space)
-      if (message.type === "assistant" && hasStreamedText && onTextDelta) {
-        onTextDelta("\n\n");
-      }
+        // Stream text deltas to the caller as they arrive
+        if (onTextDelta && message.type === "stream_event") {
+          const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
+          if (
+            event?.type === "content_block_delta" &&
+            (event?.delta as Record<string, unknown>)?.type === "text_delta"
+          ) {
+            onTextDelta((event.delta as { text: string }).text);
+            hasStreamedText = true;
+          }
+        }
 
-      // Collect text content blocks from each assistant turn
-      if (message.type === "assistant" && "message" in message) {
-        const msgObj = message.message as { content?: unknown[] } | undefined;
-        if (msgObj?.content && Array.isArray(msgObj.content)) {
-          for (const block of msgObj.content) {
-            if (
-              block &&
-              typeof block === "object" &&
-              "type" in block &&
-              (block as { type: unknown }).type === "text" &&
-              "text" in block &&
-              typeof (block as { text: unknown }).text === "string"
-            ) {
-              const txt = ((block as { text: string }).text).trim();
-              if (txt) assistantTextBlocks.push(txt);
+        // Inject paragraph break when a new assistant turn starts after a tool call
+        // (prevents "Let me check.Here's what I found" with no space)
+        if (message.type === "assistant" && hasStreamedText && onTextDelta) {
+          onTextDelta("\n\n");
+        }
+
+        // Collect text content blocks from each assistant turn
+        if (message.type === "assistant" && "message" in message) {
+          const msgObj = message.message as { content?: unknown[] } | undefined;
+          if (msgObj?.content && Array.isArray(msgObj.content)) {
+            for (const block of msgObj.content) {
+              if (
+                block &&
+                typeof block === "object" &&
+                "type" in block &&
+                (block as { type: unknown }).type === "text" &&
+                "text" in block &&
+                typeof (block as { text: unknown }).text === "string"
+              ) {
+                const txt = ((block as { text: string }).text).trim();
+                if (txt) assistantTextBlocks.push(txt);
+              }
+            }
+          }
+        }
+
+        if (message.type === "result") {
+          if ("total_cost_usd" in message && typeof message.total_cost_usd === "number") {
+            totalCost = message.total_cost_usd;
+          }
+          if ("num_turns" in message && typeof message.num_turns === "number") {
+            numTurns = message.num_turns;
+          }
+
+          if (message.subtype === "success") {
+            const sdkResult = ("result" in message && typeof message.result === "string")
+              ? message.result
+              : "";
+            resultText = assistantTextBlocks.length > 0
+              ? assistantTextBlocks.join("\n\n")
+              : sdkResult;
+          } else {
+            // SDK returned a final result with an error subtype (e.g., error_max_turns).
+            const errors: string[] =
+              "errors" in message && Array.isArray(message.errors)
+                ? message.errors
+                : [];
+            const errorJoined = errors.join("; ");
+            if (isTurnLimitError(errorJoined) || message.subtype === "error_max_turns") {
+              hitTurnLimit = true;
+            } else {
+              sdkErrorMessage = errors.length > 0 ? errorJoined : "Something went wrong.";
             }
           }
         }
       }
+    } catch (err) {
+      // The SDK throws mid-iteration on some failures (including the turn limit
+      // when no final result message is produced). Classify and convert to a
+      // user-facing message instead of bubbling a raw stack trace.
+      if (isTurnLimitError(err)) {
+        hitTurnLimit = true;
+      } else {
+        sdkErrorMessage = err instanceof Error ? err.message : String(err);
+        console.error("[adapter] SDK error:", err);
+      }
+    }
 
-      if (message.type === "result") {
-        if ("total_cost_usd" in message && typeof message.total_cost_usd === "number") {
-          totalCost = message.total_cost_usd;
-        }
-        if ("num_turns" in message && typeof message.num_turns === "number") {
-          numTurns = message.num_turns;
-        }
-
-        if (message.subtype === "success") {
-          const sdkResult = ("result" in message && typeof message.result === "string")
-            ? message.result
-            : "";
-          resultText = assistantTextBlocks.length > 0
-            ? assistantTextBlocks.join("\n\n")
-            : sdkResult;
-        } else {
-          const errors: string[] =
-            "errors" in message && Array.isArray(message.errors)
-              ? message.errors
-              : [];
-          resultText = errors.length > 0
-            ? `Error: ${errors.join("; ")}`
-            : "Something went wrong. Please try again.";
-        }
+    // If we never set resultText from a success path, synthesize one the user
+    // can actually read. Prefer partial assistant text if we captured any
+    // (better than a bare error — user sees what the agent was trying to say).
+    if (!resultText) {
+      if (hitTurnLimit) {
+        const partial = assistantTextBlocks.join("\n\n").trim();
+        const header = `(I got stuck after ${MAX_TURNS} turns. Try breaking the request into smaller steps, or tell me what to focus on first.)`;
+        resultText = partial ? `${partial}\n\n${header}` : header;
+      } else if (sdkErrorMessage) {
+        resultText = `Error: ${sdkErrorMessage}`;
       }
     }
 
