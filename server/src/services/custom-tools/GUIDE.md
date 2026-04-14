@@ -115,7 +115,6 @@ When the user pastes an API token or other secret into the conversation, the
 message is stored in plaintext in the chat history and may still be visible in
 the Telegram chat scrollback. After you successfully call `store_secret`, call
 `redact_recent_user_message({ reason: 'contained API token' })` to:
-  - Delete the user's paste from the Telegram chat (via Bot API)
   - Replace the message content in our DB with `[REDACTED: contained API token]`
   - Log the redaction so there's an audit trail
 

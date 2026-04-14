@@ -11,6 +11,7 @@
  * This is the same pattern mr-carson uses.
  */
 
+import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,6 +35,46 @@ export interface Adapter {
 // -- Constants -------------------------------------------------------
 
 const TIMEOUT_MS = 120_000;
+
+type JsonSchemaProperty = {
+  type?: string;
+  description?: string;
+  enum?: string[];
+  items?: JsonSchemaProperty;
+};
+
+function jsonSchemaPropToZod(prop: JsonSchemaProperty): z.ZodTypeAny {
+  if (prop.enum && prop.enum.length > 0) {
+    return z.enum(prop.enum as [string, ...string[]]);
+  }
+
+  switch (prop.type) {
+    case "object":
+      return z.record(z.string(), z.unknown());
+    case "array":
+      return z.array(prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown());
+    case "number":
+    case "integer":
+      return z.number();
+    case "boolean":
+      return z.boolean();
+    case "string":
+    default:
+      return z.string();
+  }
+}
+
+function computeToolSignature(toolDefs: import("@carsonos/shared").ToolDefinition[]): string {
+  const payload = toolDefs
+    .map((toolDef) => ({
+      name: toolDef.name,
+      description: toolDef.description,
+      input_schema: toolDef.input_schema,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
 
 // -- Claude Code adapter (text only, no tools) -----------------------
 
@@ -281,19 +322,12 @@ class ClaudeAgentSdkAdapter implements Adapter {
       executor: import("@carsonos/shared").ToolExecutor,
     ) => {
       const mcpTools = toolDefs.map((t) => {
-        const properties = (t.input_schema.properties ?? {}) as Record<string, { type: string; description?: string; enum?: string[] }>;
+        const properties = (t.input_schema.properties ?? {}) as Record<string, JsonSchemaProperty>;
         const required = (t.input_schema.required ?? []) as string[];
         const shape: Record<string, z.ZodTypeAny> = {};
 
         for (const [key, prop] of Object.entries(properties)) {
-          let fieldSchema: z.ZodTypeAny;
-          if (prop.enum) {
-            fieldSchema = z.enum(prop.enum as [string, ...string[]]);
-          } else if (prop.type === "object") {
-            fieldSchema = z.record(z.string(), z.unknown());
-          } else {
-            fieldSchema = z.string();
-          }
+          let fieldSchema = jsonSchemaPropToZod(prop);
           if (prop.description) fieldSchema = fieldSchema.describe(prop.description);
           if (!required.includes(key)) fieldSchema = fieldSchema.optional();
           shape[key] = fieldSchema;
@@ -338,7 +372,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
     }
 
     // Track the current tool set for change detection during for-await
-    let currentToolNames = new Set((tools ?? []).map((t) => t.name));
+    let currentMcpToolNames = new Set((tools ?? []).map((t) => t.name));
+    let currentToolSignature = computeToolSignature(tools ?? []);
 
     /**
      * Tool names whose successful execution should trigger a mid-session MCP
@@ -405,8 +440,12 @@ class ClaudeAgentSdkAdapter implements Adapter {
       | { behavior: "allow"; updatedInput: Record<string, unknown> }
       | { behavior: "deny"; message: string }
     > => {
-      // MCP tools (our memory/scheduling/agent/custom-tools modules) are our own surface
-      if (toolName.startsWith("mcp__")) return { behavior: "allow", updatedInput: input };
+      if (toolName.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
+        const bareName = toolName.slice(`mcp__${MCP_SERVER_NAME}__`.length);
+        if (currentMcpToolNames.has(bareName)) {
+          return { behavior: "allow", updatedInput: input };
+        }
+      }
       // Claude Code built-ins: only allow if granted by trust level
       if (grantedBuiltins.has(toolName)) return { behavior: "allow", updatedInput: input };
       // Anything else: deny with a pointer to the right approach
@@ -446,18 +485,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
       if (!params.refreshTools) return;
       try {
         const fresh = await params.refreshTools();
-        const newNames = new Set<string>(fresh.tools.map((t: { name: string }) => t.name));
-        // Skip if nothing actually changed (e.g. an update that didn't change
-        // the tool's name and didn't add/remove anything).
-        if (
-          newNames.size === currentToolNames.size &&
-          [...newNames].every((n: string) => currentToolNames.has(n))
-        ) {
+        const newSignature = computeToolSignature(fresh.tools);
+        if (newSignature === currentToolSignature) {
           return;
         }
         const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
         await conversation.setMcpServers({ [MCP_SERVER_NAME]: newServer });
-        currentToolNames = newNames;
+        currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
+        currentToolSignature = newSignature;
         console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools)`);
       } catch (err) {
         console.warn(`[adapter] Failed to refresh MCP tools after ${lastToolName}:`, err);

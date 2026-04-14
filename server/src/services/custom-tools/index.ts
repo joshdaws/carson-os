@@ -11,7 +11,8 @@ export {
   type CustomToolHandlerContext,
   type ToolChangeEvent,
 } from "./handlers.js";
-export { loadCustomTools, type LoadStats, type CustomRegistration } from "./loader.js";
+export { loadCustomTools, type LoadStats } from "./loader.js";
+export { buildRegistrationFromRow, type CustomRegistration } from "./registration.js";
 export {
   executeHttpTool,
   executePromptTool,
@@ -20,4 +21,4 @@ export {
 } from "./executors.js";
 export { parseSkillMd, writeSkillMd, type SkillDoc, type ToolKind, type HttpConfig, type HttpAuth } from "./skill-md.js";
 export { encryptSecret, decryptSecret, redactSecrets, getEncryptionKey } from "./secrets.js";
-export { TOOLS_ROOT, hashToolDir } from "./fs-helpers.js";
+export { TOOLS_ROOT, bundleFromPath, hashToolDir } from "./fs-helpers.js";

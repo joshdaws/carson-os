@@ -21,9 +21,18 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
   const { db, toolRegistry } = deps;
   const router = Router();
 
+  const listRegistryTools = (householdId?: string) => {
+    const sharedTools = toolRegistry.listAll().filter((t) => t.tier !== "custom");
+    const customToolsForHousehold = householdId
+      ? toolRegistry.listCustom(householdId).map((t) => t.registered)
+      : toolRegistry.listAll().filter((t) => t.tier === "custom");
+    return [...sharedTools, ...customToolsForHousehold];
+  };
+
   // GET /registry -- all registered tools
-  router.get("/registry", async (_req, res) => {
-    const tools = toolRegistry.listAll().map((t) => ({
+  router.get("/registry", async (req, res) => {
+    const householdId = typeof req.query.household_id === "string" ? req.query.household_id : undefined;
+    const tools = listRegistryTools(householdId).map((t) => ({
       name: t.definition.name,
       description: t.definition.description,
       category: t.category,
@@ -52,7 +61,7 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
     const grantedNames = new Set(grantedTools.map((t) => t.name));
 
     // Build full tool list with grant status
-    const allTools = toolRegistry.listAll().map((t) => ({
+    const allTools = listRegistryTools(agent.householdId).map((t) => ({
       name: t.definition.name,
       description: t.definition.description,
       category: t.category,
@@ -122,6 +131,16 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
       ? db.select().from(customTools).where(eq(customTools.householdId, String(householdId))).all()
       : db.select().from(customTools).all();
     res.json({ customTools: rows });
+  });
+
+  // GET /custom/pending — convenience endpoint for the admin approvals queue
+  router.get("/custom/pending", async (req, res) => {
+    const { household_id: householdId } = req.query;
+    const where = householdId
+      ? and(eq(customTools.householdId, String(householdId)), inArray(customTools.status, ["pending_approval", "broken"]))
+      : inArray(customTools.status, ["pending_approval", "broken"]);
+    const rows = db.select().from(customTools).where(where).all();
+    res.json({ pending: rows });
   });
 
   // GET /custom/:id — full detail including SKILL.md body and, for script tools, handler.ts
@@ -221,16 +240,6 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
     db.delete(toolSecrets).where(eq(toolSecrets.id, row.id)).run();
     res.json({ ok: true });
-  });
-
-  // GET /custom/pending — convenience endpoint for the admin approvals queue
-  router.get("/custom/pending", async (req, res) => {
-    const { household_id: householdId } = req.query;
-    const where = householdId
-      ? and(eq(customTools.householdId, String(householdId)), inArray(customTools.status, ["pending_approval", "broken"]))
-      : inArray(customTools.status, ["pending_approval", "broken"]);
-    const rows = db.select().from(customTools).where(where).all();
-    res.json({ pending: rows });
   });
 
   return router;

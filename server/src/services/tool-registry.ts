@@ -34,6 +34,7 @@ import {
   CUSTOM_TOOL_SYSTEM_TOOLS,
   CUSTOM_TOOL_NAMES,
   handleCustomToolSystemTool,
+  buildRegistrationFromRow,
   executeHttpTool,
   executePromptTool,
   executeScriptTool,
@@ -107,8 +108,8 @@ export const TRUST_LEVEL_BUILTINS: Record<TrustLevel, string[]> = {
 
 // ── Default tool grants per role ────────────────────────────────────
 
-// Custom tool management capabilities — granted by default to head_butler and
-// full-trust personal agents. Toggleable per-agent via the admin UI.
+// Custom tool management capabilities — granted by default to head_butler.
+// Other agents can be granted them explicitly via the admin UI.
 const CUSTOM_TOOL_MGMT_GRANTS = [
   "create_http_tool", "create_prompt_tool", "create_script_tool",
   "list_custom_tools", "update_custom_tool", "disable_custom_tool",
@@ -129,7 +130,6 @@ const DEFAULT_GRANTS: Record<string, string[]> = {
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
-    ...CUSTOM_TOOL_MGMT_GRANTS,
   ],
   tutor: [
     "search_memory", "save_memory", "update_instructions",
@@ -269,14 +269,6 @@ export class ToolRegistry {
     return this.customByKey.get(customKey(householdId, toolName));
   }
 
-  getCustomByName(toolName: string): CustomRegistration | undefined {
-    // fallback scan — only used for tools routing where household is known
-    for (const reg of this.customByKey.values()) {
-      if (reg.name === toolName) return reg;
-    }
-    return undefined;
-  }
-
   listCustom(householdId: string): CustomRegistration[] {
     const names = this.customByHousehold.get(householdId);
     if (!names) return [];
@@ -318,29 +310,7 @@ export class ToolRegistry {
       const { TOOLS_ROOT } = await import("./custom-tools/fs-helpers.js");
       const dir = join(TOOLS_ROOT, householdId, tool.path);
       const doc = parseSkillMd(readFileSync(join(dir, "SKILL.md"), "utf8"));
-      this.registerCustom(householdId, {
-        toolId: tool.id,
-        householdId,
-        name: tool.name,
-        kind: tool.kind as "http" | "prompt" | "script",
-        generation: tool.generation,
-        schemaVersion: tool.schemaVersion,
-        absDir: dir,
-        body: doc.body,
-        httpConfig: doc.frontmatter.http,
-        registered: {
-          definition: {
-            name: doc.frontmatter.name,
-            description: doc.frontmatter.description,
-            input_schema: (doc.frontmatter.input_schema as Record<string, unknown>) ?? {
-              type: "object",
-              properties: {},
-            },
-          },
-          category: `custom-${tool.kind}`,
-          tier: "custom",
-        },
-      });
+      this.registerCustom(householdId, buildRegistrationFromRow(tool, doc.frontmatter, doc.body, dir));
     } catch (err) {
       console.error(`[tool-registry] Failed to reload custom tool ${tool.name}:`, err);
       // Fall back to loading everything
@@ -665,6 +635,7 @@ export class ToolRegistry {
             db: ctx.db,
             agentId: ctx.agentId,
             householdId: ctx.householdId,
+            toolRegistry: this,
             dataDir: this.dataDir,
             isChiefOfStaff: ctx.isChiefOfStaff ?? false,
             onToolChanged: async (event) => this.handleToolChange(ctx.householdId, event),
@@ -756,25 +727,45 @@ export class ToolRegistry {
   }
 
   async grant(agentId: string, toolName: string, grantedBy?: string): Promise<void> {
-    if (!this.tools.has(toolName)) {
+    const resolvedToolName = await this.resolveGrantToolName(agentId, toolName);
+    if (!resolvedToolName) {
       throw new Error(`Tool "${toolName}" is not registered`);
     }
     await this.materializeDefaults(agentId);
     await this.db
       .insert(toolGrants)
-      .values({ agentId, toolName, grantedBy: grantedBy ?? null })
+      .values({ agentId, toolName: resolvedToolName, grantedBy: grantedBy ?? null })
       .onConflictDoNothing();
   }
 
   async revoke(agentId: string, toolName: string): Promise<void> {
+    const resolvedToolName = await this.resolveGrantToolName(agentId, toolName);
+    if (!resolvedToolName) {
+      throw new Error(`Tool "${toolName}" is not registered`);
+    }
     await this.materializeDefaults(agentId);
     await this.db
       .delete(toolGrants)
-      .where(and(eq(toolGrants.agentId, agentId), eq(toolGrants.toolName, toolName)));
+      .where(and(eq(toolGrants.agentId, agentId), eq(toolGrants.toolName, resolvedToolName)));
   }
 
   async listAgentGrants(agentId: string): Promise<string[]> {
     const tools = await this.getAgentTools(agentId);
     return tools.map((t) => t.name);
+  }
+
+  private async resolveGrantToolName(agentId: string, toolName: string): Promise<string | null> {
+    if (this.tools.has(toolName)) return toolName;
+
+    const [agent] = await this.db
+      .select({ householdId: staffAgents.householdId })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .limit(1);
+
+    if (!agent?.householdId) return null;
+
+    const scopedName = customKey(agent.householdId, toolName);
+    return this.tools.has(scopedName) ? scopedName : null;
   }
 }

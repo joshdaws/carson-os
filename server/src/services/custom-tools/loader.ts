@@ -11,11 +11,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
 import { customTools } from "@carsonos/db";
-import type { ToolDefinition } from "@carsonos/shared";
 
-import type { ToolRegistry, RegisteredTool } from "../tool-registry.js";
+import type { ToolRegistry } from "../tool-registry.js";
 import { parseSkillMd } from "./skill-md.js";
 import { cleanupTmpFiles, ensureToolsDir, hashToolDir, TOOLS_ROOT, walkForSkills } from "./fs-helpers.js";
+import { buildRegistrationFromRow, type CustomRegistration } from "./registration.js";
 
 export interface LoadStats {
   loaded: number;
@@ -126,7 +126,7 @@ export async function loadCustomTools(db: Db, registry: ToolRegistry): Promise<L
       }
 
       // 3. Register in in-memory registry
-      const registered = buildRegisteredTool(row, doc.frontmatter, doc.body, dir);
+      const registered = buildRegistrationFromRow(row, doc.frontmatter, doc.body, dir);
       registry.registerCustom(householdId, registered);
       stats.loaded++;
     }
@@ -146,58 +146,4 @@ export async function loadCustomTools(db: Db, registry: ToolRegistry): Promise<L
     `[custom-tools] Loaded ${stats.loaded} tools (${stats.broken} broken, ${stats.pending} pending, ${stats.orphanFiles} orphans)`,
   );
   return stats;
-}
-
-function buildRegisteredTool(
-  row: typeof customTools.$inferSelect,
-  frontmatter: ReturnType<typeof parseSkillMd>["frontmatter"],
-  body: string,
-  absDir: string,
-): CustomRegistration {
-  const definition: ToolDefinition = {
-    name: frontmatter.name,
-    description: frontmatter.description,
-    input_schema: (frontmatter.input_schema as Record<string, unknown>) ?? { type: "object", properties: {} },
-  };
-
-  const category =
-    row.source === "installed-skill"
-      ? "installed-skill"
-      : bundleFromPath(row.path) ?? `custom-${row.kind}`;
-
-  return {
-    toolId: row.id,
-    householdId: row.householdId,
-    name: row.name,
-    kind: row.kind as "http" | "prompt" | "script",
-    generation: row.generation,
-    schemaVersion: row.schemaVersion,
-    absDir,
-    body,
-    httpConfig: (frontmatter.http as CustomRegistration["httpConfig"]) ?? undefined,
-    registered: {
-      definition,
-      category,
-      tier: "custom",
-    },
-  };
-}
-
-function bundleFromPath(path: string): string | undefined {
-  const parts = path.split("/");
-  return parts.length > 1 ? parts[0] : undefined;
-}
-
-/** The shape stored in the registry's internal map for custom tools. */
-export interface CustomRegistration {
-  toolId: string;
-  householdId: string;
-  name: string;
-  kind: "http" | "prompt" | "script";
-  generation: number;
-  schemaVersion: number;
-  absDir: string;
-  body: string;
-  httpConfig?: import("./skill-md.js").HttpConfig;
-  registered: RegisteredTool;
 }

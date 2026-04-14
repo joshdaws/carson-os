@@ -27,25 +27,25 @@ export const TOOLS_ROOT = process.env.CARSONOS_TOOLS_DIR ?? join(homedir(), ".ca
 
 // ── Path validation ───────────────────────────────────────────────────
 
-const NAME_RE = /^[a-zA-Z0-9_-]+$/;
+const TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
+const BUNDLE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MAX_NAME_LEN = 64;
 
 export function validateToolName(name: string): void {
   if (!name) throw new PathError("Tool name cannot be empty");
   if (name.length > MAX_NAME_LEN) throw new PathError(`Tool name exceeds ${MAX_NAME_LEN} chars`);
-  if (!NAME_RE.test(name)) {
+  if (!TOOL_NAME_RE.test(name)) {
     throw new PathError(
-      `Tool name '${name}' must contain only letters, numbers, underscores, hyphens`,
+      `Tool name '${name}' must be snake_case: start with a lowercase letter, then use lowercase letters, numbers, or underscores`,
     );
   }
-  if (name.startsWith(".")) throw new PathError("Tool name cannot start with '.'");
   if (name === "_shared") throw new PathError("'_shared' is reserved for bundle helper files");
 }
 
 export function validateBundleName(bundle: string | undefined): void {
   if (bundle === undefined || bundle === "") return;
   if (bundle.length > MAX_NAME_LEN) throw new PathError(`Bundle name exceeds ${MAX_NAME_LEN} chars`);
-  if (!NAME_RE.test(bundle)) {
+  if (!BUNDLE_NAME_RE.test(bundle)) {
     throw new PathError(
       `Bundle name '${bundle}' must contain only letters, numbers, underscores, hyphens`,
     );
@@ -71,6 +71,11 @@ export function toolDirPath(householdId: string, bundle: string | undefined, nam
 /** Get the relative path under ~/.carsonos/tools/{householdId}/ for a tool. */
 export function toolRelPath(bundle: string | undefined, name: string): string {
   return bundle ? `${bundle}/${name}` : name;
+}
+
+export function bundleFromPath(path: string): string | undefined {
+  const parts = path.split("/");
+  return parts.length > 1 ? parts[0] : undefined;
 }
 
 export class PathError extends Error {

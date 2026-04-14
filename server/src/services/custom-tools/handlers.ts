@@ -10,11 +10,13 @@ import { and, eq, inArray } from "drizzle-orm";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
-import { customTools, staffAgents, toolGrants, toolSecrets } from "@carsonos/db";
+import { customTools, toolSecrets } from "@carsonos/db";
 import type { ToolResult } from "@carsonos/shared";
+import type { ToolRegistry } from "../tool-registry.js";
 
 import {
   atomicWriteFile,
+  bundleFromPath,
   ensureToolsDir,
   hashToolDir,
   toolDirPath,
@@ -36,6 +38,7 @@ export interface CustomToolHandlerContext {
   db: Db;
   agentId: string;
   householdId: string;
+  toolRegistry: ToolRegistry;
   dataDir?: string;
   isChiefOfStaff: boolean;
   /** Called when a tool is created/updated/disabled so the registry can refresh. */
@@ -45,8 +48,7 @@ export interface CustomToolHandlerContext {
 export type ToolChangeEvent =
   | { type: "created"; toolId: string }
   | { type: "updated"; toolId: string; affectsScript: boolean }
-  | { type: "disabled"; toolId: string }
-  | { type: "activated"; toolId: string };
+  | { type: "disabled"; toolId: string };
 
 // ── Per-tool mutex ────────────────────────────────────────────────────
 
@@ -58,15 +60,15 @@ async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const p = new Promise<void>((resolve) => {
     release = resolve;
   });
-  locks.set(key, prev.then(() => p));
+  const tail = prev.then(() => p);
+  locks.set(key, tail);
   try {
     await prev;
     return await fn();
   } finally {
     release();
-    // Clean up if we're still the tail
-    if (locks.get(key) === prev.then(() => p)) {
-      // noop — best-effort; map can be cleaned on next create
+    if (locks.get(key) === tail) {
+      locks.delete(key);
     }
   }
 }
@@ -110,41 +112,11 @@ async function handleCreateHttpTool(
   const description = String(input.description ?? "").trim();
   const method = input.method as HttpConfig["method"];
   const urlTemplate = String(input.urlTemplate ?? "");
+  const auth = input.auth as HttpConfig["auth"] | undefined;
   const bundle = input.bundle ? String(input.bundle) : undefined;
 
   const basic = validateBasic(name, description, input.input_schema);
   if (basic) return basic;
-
-  if (!method || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    return errResult("validation_error", `method must be one of GET, POST, PUT, PATCH, DELETE. Got '${method ?? ""}'.`);
-  }
-  if (!urlTemplate || !urlTemplate.startsWith("https://")) {
-    return errResult(
-      "validation_error",
-      `urlTemplate must be an HTTPS URL. Got '${urlTemplate}'. Retry with a URL starting with 'https://'.`,
-    );
-  }
-
-  // Validate auth if present
-  const auth = input.auth as HttpConfig["auth"] | undefined;
-  if (auth) {
-    const authErr = validateAuth(auth);
-    if (authErr) return authErr;
-  }
-
-  // Validate domainAllowlist
-  if (input.domainAllowlist !== undefined) {
-    if (!Array.isArray(input.domainAllowlist)) {
-      return errResult("validation_error", "domainAllowlist must be an array. Omit to allow only urlTemplate's domain.");
-    }
-    if (input.domainAllowlist.length === 0) {
-      return errResult(
-        "validation_error",
-        "domainAllowlist cannot be empty []. Omit the field entirely to allow only urlTemplate's domain.",
-      );
-    }
-  }
-
   const config: HttpConfig = {
     method,
     urlTemplate,
@@ -154,6 +126,8 @@ async function handleCreateHttpTool(
     ...(input.responseExtract ? { responseExtract: String(input.responseExtract) } : {}),
     ...(input.domainAllowlist ? { domainAllowlist: input.domainAllowlist as string[] } : {}),
   };
+  const configErr = validateHttpConfig(config);
+  if (configErr) return configErr;
 
   const doc: SkillDoc = {
     frontmatter: {
@@ -182,10 +156,8 @@ async function handleCreatePromptTool(
 
   const basic = validateBasic(name, description, input.input_schema);
   if (basic) return basic;
-
-  if (!body.trim()) {
-    return errResult("validation_error", "body must be a non-empty markdown template. Example: 'Steps: 1. Do X. 2. Do Y.'");
-  }
+  const bodyErr = validatePromptBody(body);
+  if (bodyErr) return bodyErr;
 
   const doc: SkillDoc = {
     frontmatter: {
@@ -213,27 +185,8 @@ async function handleCreateScriptTool(
 
   const basic = validateBasic(name, description, input.input_schema);
   if (basic) return basic;
-
-  if (!handlerCode.trim()) {
-    return errResult("validation_error", "handler_code must be non-empty TypeScript. Include an 'export async function handler(input, ctx)' definition.");
-  }
-
-  // Pre-validate by running esbuild (no disk write yet)
-  try {
-    await esbuildBuild({
-      stdin: { contents: handlerCode, loader: "ts", resolveDir: process.cwd() },
-      bundle: false,
-      write: false,
-      platform: "node",
-      format: "esm",
-      target: "node20",
-    });
-  } catch (err) {
-    return errResult(
-      "validation_error",
-      `handler_code has a TypeScript/esbuild error: ${(err as Error).message}. Fix the syntax and retry.`,
-    );
-  }
+  const handlerErr = await validateScriptHandler(handlerCode);
+  if (handlerErr) return handlerErr;
 
   const doc: SkillDoc = {
     frontmatter: {
@@ -322,16 +275,13 @@ async function writeAndRegisterTool(
       })
       .returning();
 
-    // 6. Auto-grant to creator (only if active)
-    if (initialStatus === "active") {
-      await ctx.db
-        .insert(toolGrants)
-        .values({ agentId: ctx.agentId, toolName: name, grantedBy: ctx.agentId })
-        .onConflictDoNothing();
-    }
-
-    // 7. Notify registry
+    // 6. Notify registry
     await ctx.onToolChanged({ type: "created", toolId: row.id });
+
+    // 7. Auto-grant to creator (only if active)
+    if (initialStatus === "active") {
+      await ctx.toolRegistry.grant(ctx.agentId, name, ctx.agentId);
+    }
 
     if (initialStatus === "pending_approval") {
       return {
@@ -433,16 +383,11 @@ async function handleUpdateCustomTool(
       if (input.urlTemplate !== undefined) http.urlTemplate = String(input.urlTemplate);
       if (input.headers !== undefined) http.headers = input.headers as Record<string, string>;
       if (input.auth !== undefined) {
-        const authErr = validateAuth(input.auth as HttpConfig["auth"]);
-        if (authErr) return authErr;
         http.auth = input.auth as HttpConfig["auth"];
       }
       if (input.bodyTemplate !== undefined) http.bodyTemplate = String(input.bodyTemplate);
       if (input.responseExtract !== undefined) http.responseExtract = String(input.responseExtract);
       if (input.domainAllowlist !== undefined) {
-        if (!Array.isArray(input.domainAllowlist) || input.domainAllowlist.length === 0) {
-          return errResult("validation_error", "domainAllowlist, if provided, must be a non-empty array. Omit to allow only urlTemplate's domain.");
-        }
         http.domainAllowlist = input.domainAllowlist as string[];
       }
       doc.frontmatter.http = http;
@@ -450,23 +395,15 @@ async function handleUpdateCustomTool(
       if (input.body !== undefined) doc.body = String(input.body);
     } else if (row.kind === "script") {
       if (input.handler_code !== undefined) {
-        // Validate before writing
-        try {
-          await esbuildBuild({
-            stdin: { contents: String(input.handler_code), loader: "ts", resolveDir: process.cwd() },
-            bundle: false,
-            write: false,
-            platform: "node",
-            format: "esm",
-            target: "node20",
-          });
-        } catch (err) {
-          return errResult("validation_error", `handler_code has a TypeScript/esbuild error: ${(err as Error).message}`);
-        }
+        const handlerErr = await validateScriptHandler(String(input.handler_code));
+        if (handlerErr) return handlerErr;
         atomicWriteFile(join(dir, "handler.ts"), String(input.handler_code));
         affectsScript = true;
       }
     }
+
+    const validationErr = validateUpdatedToolDoc(row.kind as ToolKind, doc);
+    if (validationErr) return validationErr;
 
     atomicWriteFile(skillPath, writeSkillMd(doc));
 
@@ -644,6 +581,81 @@ function validateBasic(
   return null;
 }
 
+function validatePromptBody(body: string): ToolResult | null {
+  if (!body.trim()) {
+    return errResult("validation_error", "body must be a non-empty markdown template. Example: 'Steps: 1. Do X. 2. Do Y.'");
+  }
+  return null;
+}
+
+function validateHttpConfig(http: HttpConfig): ToolResult | null {
+  if (!http.method || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(http.method)) {
+    return errResult("validation_error", `method must be one of GET, POST, PUT, PATCH, DELETE. Got '${http.method ?? ""}'.`);
+  }
+  if (!http.urlTemplate || !http.urlTemplate.startsWith("https://")) {
+    return errResult(
+      "validation_error",
+      `urlTemplate must be an HTTPS URL. Got '${http.urlTemplate ?? ""}'. Retry with a URL starting with 'https://'.`,
+    );
+  }
+  if (http.auth) {
+    const authErr = validateAuth(http.auth);
+    if (authErr) return authErr;
+  }
+  if (http.domainAllowlist !== undefined) {
+    if (!Array.isArray(http.domainAllowlist)) {
+      return errResult("validation_error", "domainAllowlist must be an array. Omit to allow only urlTemplate's domain.");
+    }
+    if (http.domainAllowlist.length === 0) {
+      return errResult(
+        "validation_error",
+        "domainAllowlist cannot be empty []. Omit the field entirely to allow only urlTemplate's domain.",
+      );
+    }
+  }
+  return null;
+}
+
+async function validateScriptHandler(handlerCode: string): Promise<ToolResult | null> {
+  if (!handlerCode.trim()) {
+    return errResult("validation_error", "handler_code must be non-empty TypeScript. Include an 'export async function handler(input, ctx)' definition.");
+  }
+
+  try {
+    await esbuildBuild({
+      stdin: { contents: handlerCode, loader: "ts", resolveDir: process.cwd() },
+      bundle: false,
+      write: false,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+    });
+  } catch (err) {
+    return errResult(
+      "validation_error",
+      `handler_code has a TypeScript/esbuild error: ${(err as Error).message}. Fix the syntax and retry.`,
+    );
+  }
+  return null;
+}
+
+function validateUpdatedToolDoc(kind: ToolKind, doc: SkillDoc): ToolResult | null {
+  const basic = validateBasic(
+    String(doc.frontmatter.name ?? "").trim(),
+    String(doc.frontmatter.description ?? "").trim(),
+    doc.frontmatter.input_schema,
+  );
+  if (basic) return basic;
+
+  if (kind === "http") {
+    return validateHttpConfig((doc.frontmatter.http ?? {}) as HttpConfig);
+  }
+  if (kind === "prompt") {
+    return validatePromptBody(doc.body);
+  }
+  return null;
+}
+
 function validateAuth(auth: unknown): ToolResult | null {
   if (!auth || typeof auth !== "object") {
     return errResult("validation_error", "auth must be an object like { method: 'bearer', secretKey: 'my_token' }.");
@@ -685,18 +697,4 @@ function errResult(code: string, content: string): ToolResult {
     is_error: true,
     ...(code ? { error_code: code as never } : {}),
   } as ToolResult;
-}
-
-function bundleFromPath(path: string): string | undefined {
-  const parts = path.split("/");
-  return parts.length > 1 ? parts[0] : undefined;
-}
-
-/** Helper used by boot reconciliation. */
-export async function loadHouseholdList(db: Db): Promise<string[]> {
-  const agents = db
-    .select({ householdId: staffAgents.householdId })
-    .from(staffAgents)
-    .all();
-  return Array.from(new Set(agents.map((a) => a.householdId)));
 }

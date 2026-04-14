@@ -119,8 +119,8 @@ export const CUSTOM_TOOL_SYSTEM_TOOLS: ToolDefinition[] = [
       "Create a script custom tool with a TypeScript handler running server-side in the main Node process with household-scoped context. " +
       "Use this for complex workflows, multi-step API calls, or data transformation. Your handler receives (input, ctx) where ctx contains: " +
       "db (household-scoped Drizzle client), fetch (standard Fetch API, unrestricted), getSecret(key_name) => Promise<string | null>, " +
-      "memory (household's MemoryProvider), householdId, memberId?, memberName?, log(msg) (writes to activity_log with secret redaction). " +
-      "Imports allowed: any installed npm package, plus relative imports from _shared/ in your bundle. " +
+      "memory (household's MemoryProvider), householdId, memberId?, memberName?, log(msg) (writes to server stdout). " +
+      "Imports allowed: any installed npm package. " +
       "Example handler_code: `import type { CustomToolContext, ToolResult } from '@carsonos/shared'; " +
       "export async function handler(input: any, ctx: CustomToolContext): Promise<ToolResult> { " +
       "const token = await ctx.getSecret('ynab_api_token'); " +

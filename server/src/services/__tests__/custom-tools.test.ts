@@ -109,8 +109,8 @@ Body
 describe("path validation", () => {
   it("accepts valid tool names", () => {
     expect(() => validateToolName("check_ynab")).not.toThrow();
-    expect(() => validateToolName("tool-123")).not.toThrow();
-    expect(() => validateToolName("A_tool")).not.toThrow();
+    expect(() => validateToolName("tool_123")).not.toThrow();
+    expect(() => validateToolName("a_tool")).not.toThrow();
   });
 
   it("rejects empty name", () => {
@@ -122,6 +122,8 @@ describe("path validation", () => {
     expect(() => validateToolName("a/b")).toThrow(PathError);
     expect(() => validateToolName("..")).toThrow(PathError);
     expect(() => validateToolName("with space")).toThrow(PathError);
+    expect(() => validateToolName("tool-123")).toThrow(PathError);
+    expect(() => validateToolName("A_tool")).toThrow(PathError);
   });
 
   it("rejects _shared (reserved)", () => {

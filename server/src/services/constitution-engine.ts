@@ -123,6 +123,14 @@ const FRIENDLY_ERROR_MESSAGE =
 const FRIENDLY_SCAN_REPLACEMENT =
   "I generated a response that didn't meet the family's content rules, so I've held it back. Try rephrasing your question.";
 
+function redactToolLogInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (name !== "store_secret") return input;
+  return {
+    ...input,
+    ...(Object.prototype.hasOwnProperty.call(input, "value") ? { value: "[REDACTED]" } : {}),
+  };
+}
+
 // -- Engine ----------------------------------------------------------
 
 interface SessionCacheEntry {
@@ -321,13 +329,19 @@ export class ConstitutionEngine {
       channel,
     );
 
-    // Persist the user message NOW (before the agent runs) so any MCP tool
-    // called during the agent run that needs to reference the current message
-    // (e.g. redact_recent_user_message after store_secret) can find it in
-    // the DB. The assistant response is appended at the end of the pipeline.
-    const userMessageId = crypto.randomUUID();
+    // Try to resume existing Agent SDK session (check cache first, then DB)
+    let resumeSessionId = this.getSessionId(conversationId);
+    if (!resumeSessionId) {
+      resumeSessionId = await this.loadSessionFromDb(conversationId);
+    }
+
+    // Persist the user message BEFORE loading history so:
+    //   (a) tools invoked during this turn (e.g. redact_recent_user_message)
+    //       can find it in the DB
+    //   (b) `history` includes the current message exactly once, so
+    //       `messagesForLlm = history` doesn't double-append it
     await this.db.insert(messages).values({
-      id: userMessageId,
+      id: crypto.randomUUID(),
       conversationId,
       role: "user",
       content: message,
@@ -336,12 +350,6 @@ export class ConstitutionEngine {
       .update(conversations)
       .set({ lastMessageAt: new Date().toISOString() })
       .where(eq(conversations.id, conversationId));
-
-    // Try to resume existing Agent SDK session (check cache first, then DB)
-    let resumeSessionId = this.getSessionId(conversationId);
-    if (!resumeSessionId) {
-      resumeSessionId = await this.loadSessionFromDb(conversationId);
-    }
 
     const history = await this.getConversationHistory(conversationId);
 
@@ -476,10 +484,7 @@ export class ConstitutionEngine {
     }
 
     // Add the current user message to history for the LLM call
-    const messagesForLlm = [
-      ...history,
-      { role: "user", content: message },
-    ];
+    const messagesForLlm = history;
 
     let llmResponse: string;
 
@@ -516,7 +521,7 @@ export class ConstitutionEngine {
               householdId,
               agentId,
               action: `tool:${call.name}`,
-              details: { input: call.input, result: call.result },
+              details: { input: redactToolLogInput(call.name, call.input), result: call.result },
             });
           } catch {
             // Don't let logging failures break the pipeline
