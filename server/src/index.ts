@@ -103,6 +103,7 @@ async function main() {
 
   // 2d. Tool registry
   const toolRegistry = new ToolRegistry(db);
+  toolRegistry.setDataDir(config.dataDir);
 
   // Register calendar tools (per-member handler created at call time)
   if (gwsHealthy) {
@@ -130,6 +131,10 @@ async function main() {
 
   // Skills are enabled via trust level ("Skill" built-in for full trust).
   // No need to discover/register them — the SDK handles skill loading.
+
+  // Load custom tools (SKILL.md files on disk) into the registry
+  const { loadCustomTools } = await import("./services/custom-tools/index.js");
+  await loadCustomTools(db, toolRegistry);
 
   console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
 

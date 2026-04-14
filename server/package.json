@@ -21,6 +21,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cors": "^2.8.6",
     "drizzle-orm": "^0.38.0",
+    "esbuild": "^0.28.0",
     "express": "^5.1.0",
     "grammy": "^1.35.0",
     "pino": "^9.6.0",

@@ -28,6 +28,15 @@ import {
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
+import {
+  CUSTOM_TOOL_SYSTEM_TOOLS,
+  CUSTOM_TOOL_NAMES,
+  handleCustomToolSystemTool,
+  executeHttpTool,
+  executePromptTool,
+  executeScriptTool,
+} from "./custom-tools/index.js";
+import type { CustomRegistration } from "./custom-tools/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -36,6 +45,11 @@ export type ToolHandler = (
   name: string,
   input: Record<string, unknown>,
 ) => Promise<ToolResult>;
+
+/** Registry key helper for custom tools — household-scoped to prevent collisions. */
+export function customKey(householdId: string, toolName: string): string {
+  return `custom:${householdId}:${toolName}`;
+}
 
 /**
  * Tool tiers:
@@ -130,9 +144,20 @@ export class ToolRegistry {
   handlers = new Map<string, ToolHandler>(); // toolName → handler (public for per-member binding)
   private db: Db;
 
+  /** Namespaced custom tool entries: key is `custom:{householdId}:{toolName}`. */
+  private customByKey = new Map<string, CustomRegistration>();
+  /** Per-household quick lookup: `householdId` → Set of tool names. */
+  private customByHousehold = new Map<string, Set<string>>();
+  /** Data dir for secret key lookups. Wired at boot. */
+  private dataDir: string | undefined;
+
   constructor(db: Db) {
     this.db = db;
     this.registerBuiltins();
+  }
+
+  setDataDir(dataDir: string): void {
+    this.dataDir = dataDir;
   }
 
   /** Register all built-in tools (memory, operating instructions). */
@@ -172,6 +197,139 @@ export class ToolRegistry {
         category: "scheduling",
         tier: "system",
       });
+    }
+
+    // Custom tool management tools — builtin tier, toggleable per agent
+    for (const def of CUSTOM_TOOL_SYSTEM_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "custom-tools",
+        tier: "builtin",
+      });
+    }
+  }
+
+  // ── Custom tool registry (namespaced per-household) ──────────────
+
+  /** Register a custom tool (from boot loader or runtime create). */
+  registerCustom(householdId: string, reg: CustomRegistration): void {
+    const key = customKey(householdId, reg.name);
+    this.customByKey.set(key, reg);
+    let set = this.customByHousehold.get(householdId);
+    if (!set) {
+      set = new Set();
+      this.customByHousehold.set(householdId, set);
+    }
+    set.add(reg.name);
+    // Also place a thin entry in the main registry so listAll/UI show it
+    this.tools.set(key, reg.registered);
+  }
+
+  /** Remove a custom tool from the in-memory registry (on disable). */
+  unregisterCustom(householdId: string, toolName: string): void {
+    const key = customKey(householdId, toolName);
+    this.customByKey.delete(key);
+    this.customByHousehold.get(householdId)?.delete(toolName);
+    this.tools.delete(key);
+  }
+
+  getCustom(householdId: string, toolName: string): CustomRegistration | undefined {
+    return this.customByKey.get(customKey(householdId, toolName));
+  }
+
+  getCustomByName(toolName: string): CustomRegistration | undefined {
+    // fallback scan — only used for tools routing where household is known
+    for (const reg of this.customByKey.values()) {
+      if (reg.name === toolName) return reg;
+    }
+    return undefined;
+  }
+
+  listCustom(householdId: string): CustomRegistration[] {
+    const names = this.customByHousehold.get(householdId);
+    if (!names) return [];
+    const out: CustomRegistration[] = [];
+    for (const name of names) {
+      const reg = this.customByKey.get(customKey(householdId, name));
+      if (reg) out.push(reg);
+    }
+    return out;
+  }
+
+  /** Callback from handlers.ts when a tool's lifecycle event fires. */
+  private async handleToolChange(
+    householdId: string,
+    event: { type: string; toolId: string; affectsScript?: boolean },
+  ): Promise<void> {
+    const { customTools } = await import("@carsonos/db");
+    const row = await this.db
+      .select()
+      .from(customTools)
+      .where(eq(customTools.id, event.toolId))
+      .limit(1);
+    if (!row[0]) return;
+    const tool = row[0];
+
+    if (event.type === "disabled" || tool.status !== "active") {
+      this.unregisterCustom(householdId, tool.name);
+      return;
+    }
+
+    // For created/updated: re-read the SKILL.md and re-register
+    const { loadCustomTools } = await import("./custom-tools/index.js");
+    // Simple approach: re-run the loader for this household. Cheap enough.
+    // For M1 we can re-register the single tool by reading its file.
+    try {
+      const { parseSkillMd } = await import("./custom-tools/skill-md.js");
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { TOOLS_ROOT } = await import("./custom-tools/fs-helpers.js");
+      const dir = join(TOOLS_ROOT, householdId, tool.path);
+      const doc = parseSkillMd(readFileSync(join(dir, "SKILL.md"), "utf8"));
+      this.registerCustom(householdId, {
+        toolId: tool.id,
+        householdId,
+        name: tool.name,
+        kind: tool.kind as "http" | "prompt" | "script",
+        generation: tool.generation,
+        schemaVersion: tool.schemaVersion,
+        absDir: dir,
+        body: doc.body,
+        httpConfig: doc.frontmatter.http,
+        registered: {
+          definition: {
+            name: doc.frontmatter.name,
+            description: doc.frontmatter.description,
+            input_schema: (doc.frontmatter.input_schema as Record<string, unknown>) ?? {
+              type: "object",
+              properties: {},
+            },
+          },
+          category: `custom-${tool.kind}`,
+          tier: "custom",
+        },
+      });
+    } catch (err) {
+      console.error(`[tool-registry] Failed to reload custom tool ${tool.name}:`, err);
+      // Fall back to loading everything
+      void loadCustomTools(this.db, this).catch(() => {});
+    }
+  }
+
+  /** Increment usage_count + last_used_at for a custom tool. Fire-and-forget. */
+  private async bumpUsage(toolId: string): Promise<void> {
+    try {
+      const { customTools } = await import("@carsonos/db");
+      await this.db
+        .update(customTools)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(customTools.id, toolId));
+      // Raw SQL for atomic increment
+      (this.db as unknown as { $client: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).$client
+        .prepare("UPDATE custom_tools SET usage_count = usage_count + 1 WHERE id = ?")
+        .run(toolId);
+    } catch {
+      /* non-critical */
     }
   }
 
@@ -430,6 +588,52 @@ export class ToolRegistry {
           name,
           input,
         );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Custom tool system tools (create_http_tool, store_secret, etc.)
+      if (CUSTOM_TOOL_NAMES.has(name)) {
+        const result = await handleCustomToolSystemTool(
+          {
+            db: ctx.db,
+            agentId: ctx.agentId,
+            householdId: ctx.householdId,
+            dataDir: this.dataDir,
+            isChiefOfStaff: ctx.isChiefOfStaff ?? false,
+            onToolChanged: async (event) => this.handleToolChange(ctx.householdId, event),
+          },
+          name,
+          input,
+        );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Household-scoped custom tool invocation
+      const customReg = this.getCustom(ctx.householdId, name);
+      if (customReg) {
+        const execCtx = {
+          db: ctx.db,
+          householdId: ctx.householdId,
+          memberId: ctx.memberId,
+          memberName: ctx.memberName,
+          memoryProvider: ctx.memoryProvider,
+          dataDir: this.dataDir,
+        };
+        let result: ToolResult;
+        if (customReg.kind === "http" && customReg.httpConfig) {
+          result = await executeHttpTool(customReg.httpConfig, input, execCtx);
+        } else if (customReg.kind === "prompt") {
+          result = executePromptTool(customReg.body, input);
+        } else if (customReg.kind === "script") {
+          const handlerPath = `${customReg.absDir}/handler.ts`;
+          result = await executeScriptTool(handlerPath, customReg.generation, input, execCtx);
+        } else {
+          result = { content: `Custom tool '${name}' has unknown kind`, is_error: true };
+        }
+        // Update usage stats asynchronously (non-blocking)
+        void this.bumpUsage(customReg.toolId);
         calls.push({ name, input, result });
         return result;
       }
