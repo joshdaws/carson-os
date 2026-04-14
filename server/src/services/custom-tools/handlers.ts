@@ -674,7 +674,17 @@ function validateAuth(auth: unknown): ToolResult | null {
 }
 
 function errResult(code: string, content: string): ToolResult {
-  return { content, is_error: true, ...(code ? { error_code: code as never } : {}) } as ToolResult;
+  // Append a pointer to the tool-creation guide for validation failures so
+  // the agent has a cheap recovery path when inputs are malformed.
+  const withGuidePointer =
+    code === "validation_error"
+      ? `${content} For the full tool-creation playbook, call get_agent_guide({ name: 'tool-creation' }).`
+      : content;
+  return {
+    content: withGuidePointer,
+    is_error: true,
+    ...(code ? { error_code: code as never } : {}),
+  } as ToolResult;
 }
 
 function bundleFromPath(path: string): string | undefined {

@@ -28,6 +28,7 @@ import {
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
+import { AGENT_GUIDE_TOOLS, handleAgentGuideTool } from "./agent-guides.js";
 import {
   CUSTOM_TOOL_SYSTEM_TOOLS,
   CUSTOM_TOOL_NAMES,
@@ -205,6 +206,15 @@ export class ToolRegistry {
         definition: def,
         category: "custom-tools",
         tier: "builtin",
+      });
+    }
+
+    // Agent guides — system tier, always available. Cheap markdown loader.
+    for (const def of AGENT_GUIDE_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent-guides",
+        tier: "system",
       });
     }
   }
@@ -588,6 +598,13 @@ export class ToolRegistry {
           name,
           input,
         );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Agent guide loader
+      if (name === "get_agent_guide") {
+        const result = await handleAgentGuideTool(name, input);
         calls.push({ name, input, result });
         return result;
       }

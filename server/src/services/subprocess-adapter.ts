@@ -351,6 +351,38 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     const isResume = !!params.resumeSessionId;
 
+    // Trust-level enforcement via canUseTool callback.
+    //
+    // `bypassPermissions` skips the interactive "Allow this tool?" prompt (we
+    // have no human operator to prompt), but empirically the declarative
+    // `tools`/`disallowedTools` lists do NOT reliably block tool calls when
+    // bypassPermissions is set. The SDK's `canUseTool` hook is the real
+    // enforcement point: it's invoked on EVERY tool call and its decision is
+    // authoritative.
+    //
+    // Rules:
+    //   - Built-in tools (Bash/Read/Write/etc) must be in params.builtinTools
+    //   - MCP tools (prefix `mcp__`) always allowed (they're our own)
+    //   - Anything else: deny with a retry hint the model can act on
+    const grantedBuiltins = new Set(params.builtinTools ?? []);
+    const canUseToolCallback = async (
+      toolName: string,
+      input: Record<string, unknown>,
+    ): Promise<
+      | { behavior: "allow"; updatedInput: Record<string, unknown> }
+      | { behavior: "deny"; message: string }
+    > => {
+      // MCP tools (our memory/scheduling/agent/custom-tools modules) are our own surface
+      if (toolName.startsWith("mcp__")) return { behavior: "allow", updatedInput: input };
+      // Claude Code built-ins: only allow if granted by trust level
+      if (grantedBuiltins.has(toolName)) return { behavior: "allow", updatedInput: input };
+      // Anything else: deny with a pointer to the right approach
+      return {
+        behavior: "deny",
+        message: `'${toolName}' is not available at this agent's trust level. To build a tool, call one of: create_http_tool, create_prompt_tool, create_script_tool, store_secret, list_custom_tools. Do not write installer scripts.`,
+      };
+    };
+
     const conversation = query({
       prompt: userPrompt,
       options: {
@@ -360,7 +392,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
         allowDangerouslySkipPermissions: true,
         settingSources: ["user"],
         maxTurns: MAX_TURNS,
-        // Built-in tools controlled by trust level (includes "Skill" for full trust)
+        canUseTool: canUseToolCallback,
         tools: params.builtinTools ?? [],
         allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
