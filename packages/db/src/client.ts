@@ -244,6 +244,40 @@ CREATE TABLE instance_settings (
   key TEXT NOT NULL UNIQUE,
   value TEXT
 );
+
+CREATE TABLE custom_tools (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_by_agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+  source TEXT NOT NULL DEFAULT 'agent',
+  source_url TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  approved_content_hash TEXT,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  generation INTEGER NOT NULL DEFAULT 1,
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX custom_tools_household_idx ON custom_tools(household_id);
+CREATE INDEX custom_tools_status_idx ON custom_tools(status);
+CREATE UNIQUE INDEX custom_tools_household_name_unique ON custom_tools(household_id, name);
+
+CREATE TABLE tool_secrets (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  key_name TEXT NOT NULL,
+  encrypted_value TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX tool_secrets_household_idx ON tool_secrets(household_id);
+CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_id, key_name);
   `;
 
   const transaction = sqlite.transaction(() => {
@@ -460,8 +494,49 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // Create custom_tools + tool_secrets tables (v10 — custom tool registry)
+    if (!tableExists("custom_tools")) {
+      sqlite.prepare(`CREATE TABLE custom_tools (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id),
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_by_agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+        source TEXT NOT NULL DEFAULT 'agent',
+        source_url TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        approved_content_hash TEXT,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        generation INTEGER NOT NULL DEFAULT 1,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX custom_tools_household_idx ON custom_tools(household_id)").run();
+      sqlite.prepare("CREATE INDEX custom_tools_status_idx ON custom_tools(status)").run();
+      sqlite.prepare("CREATE UNIQUE INDEX custom_tools_household_name_unique ON custom_tools(household_id, name)").run();
+      upgraded = true;
+    }
+
+    if (!tableExists("tool_secrets")) {
+      sqlite.prepare(`CREATE TABLE tool_secrets (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id),
+        key_name TEXT NOT NULL,
+        encrypted_value TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX tool_secrets_household_idx ON tool_secrets(household_id)").run();
+      sqlite.prepare("CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_id, key_name)").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded to v9 (scheduled tasks)");
+      console.log("[db] Schema upgraded (v10 — custom tool registry)");
     }
   });
 
