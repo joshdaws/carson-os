@@ -10,12 +10,13 @@ import { eq } from "drizzle-orm";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
-import { customTools } from "@carsonos/db";
+import { customTools, toolSecrets } from "@carsonos/db";
 
 import type { ToolRegistry } from "../tool-registry.js";
 import { parseSkillMd } from "./skill-md.js";
 import { cleanupTmpFiles, ensureToolsDir, hashToolDir, TOOLS_ROOT, walkForSkills } from "./fs-helpers.js";
 import { buildRegistrationFromRow, type CustomRegistration } from "./registration.js";
+import { decryptSecret } from "./secrets.js";
 
 export interface LoadStats {
   loaded: number;
@@ -30,6 +31,13 @@ export interface LoadStats {
  */
 export async function loadCustomTools(db: Db, registry: ToolRegistry): Promise<LoadStats> {
   const stats: LoadStats = { loaded: 0, broken: 0, pending: 0, orphanFiles: 0 };
+
+  // 0. Secret health check — if any tool_secrets exist, confirm the current key
+  // can decrypt one. Catches the case where CARSONOS_SECRET changed or the
+  // keyfile was lost/restored incorrectly. Non-fatal; logs a loud warning so
+  // the operator can restore from backup before any HTTP tool tries to use
+  // auth and fails mid-conversation.
+  checkSecretHealth(db);
 
   // 1. Get distinct household IDs from custom_tools AND from the tools directory
   const dbHouseholdsRows = db
@@ -146,4 +154,26 @@ export async function loadCustomTools(db: Db, registry: ToolRegistry): Promise<L
     `[custom-tools] Loaded ${stats.loaded} tools (${stats.broken} broken, ${stats.pending} pending, ${stats.orphanFiles} orphans)`,
   );
   return stats;
+}
+
+/**
+ * Attempt to decrypt one stored secret. If it fails, log a loud warning.
+ * This catches the "CARSONOS_SECRET changed" / "lost .secret keyfile" case
+ * at boot instead of mid-conversation when an HTTP tool tries to inject auth.
+ */
+function checkSecretHealth(db: Db): void {
+  try {
+    const sample = db.select().from(toolSecrets).limit(1).all();
+    if (sample.length === 0) return; // no secrets stored yet, nothing to check
+
+    decryptSecret(sample[0].encryptedValue);
+    // success — key material is valid
+  } catch (err) {
+    console.warn(
+      `[tool-secrets] HEALTH CHECK FAILED: cannot decrypt stored secret (${(err as Error).message}). ` +
+        `The encryption key (CARSONOS_SECRET env var or ~/.carsonos/.secret keyfile) likely changed or was lost. ` +
+        `Restore the original key from backup, or delete affected tool_secrets rows and re-enter them via store_secret. ` +
+        `Custom HTTP tools requiring auth will fail until this is resolved.`,
+    );
+  }
 }

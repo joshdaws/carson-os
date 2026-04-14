@@ -235,6 +235,29 @@ ui/
 | `CARSONOS_MEMORY_PROVIDER` | `qmd` | Memory backend |
 | `CARSONOS_MEMORY_DIR` | `{DATA_DIR}/memory` | Memory file root |
 | `CARSONOS_HARD_EVALUATORS` | `false` | Hard clause evaluators (off for v1.0) |
+| `CARSONOS_SECRET` | _(unset)_ | Master key for encrypting custom tool secrets. If unset, a random key is generated at `~/.carsonos/.secret`. See [Backing Up Your Secret Key](#backing-up-your-secret-key). |
+| `CARSONOS_MAX_TURNS` | `50` | Max LLM turns per message (1–200). Raise for complex multi-tool workflows. |
+
+### Backing Up Your Secret Key
+
+Custom tools can store API keys (YNAB token, email credentials, etc.) encrypted with AES-256-GCM. The encryption key comes from one of two sources, in order:
+
+1. **`CARSONOS_SECRET` env var** (recommended for production) — any high-entropy string. Store it in your password manager. PBKDF2-derived at boot.
+2. **Keyfile at `~/.carsonos/.secret`** — auto-generated on first boot if the env var is unset. Mode 0600. 32 random bytes.
+
+**If you lose the key, every stored secret becomes unrecoverable.** You'll have to delete `tool_secrets` rows and re-enter each credential via `store_secret`.
+
+Back up whichever one you use:
+
+```bash
+# If using CARSONOS_SECRET: save the value in your password manager.
+
+# If using the auto-generated keyfile:
+cp ~/.carsonos/.secret ~/path/to/your/backup/carsonos-secret-$(date +%Y%m%d).bin
+chmod 600 ~/path/to/your/backup/carsonos-secret-*.bin
+```
+
+At boot, CarsonOS performs a health check: if any `tool_secrets` rows exist, it tries to decrypt one. If decryption fails (key changed, keyfile lost), the server logs a loud warning but continues running. Non-secret tool features still work; HTTP tools with auth injection will fail until you restore the original key or re-enter credentials.
 
 ## Architecture
 
