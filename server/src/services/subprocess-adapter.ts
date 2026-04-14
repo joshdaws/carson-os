@@ -306,7 +306,16 @@ class ClaudeAgentSdkAdapter implements Adapter {
     const allowedTools: string[] = [];
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
 
-    const MCP_SERVER_NAME = "carsonos-memory";
+    // Each execute() invocation + each mid-session refresh gets a unique MCP
+    // server name. createSdkMcpServer / tool() retain process-global state
+    // about registered tool names, so re-creating a server with the same name
+    // and overlapping tools throws "Tool X is already registered". Unique
+    // names force the SDK to cleanly disconnect the prior server via
+    // setMcpServers (or avoid the collision on initial init across calls).
+    const MCP_SERVER_BASE = "carsonos-memory";
+    let mcpServerCounter = 0;
+    const nextMcpServerName = () => `${MCP_SERVER_BASE}-${Date.now()}-${++mcpServerCounter}`;
+    let currentMcpServerName = nextMcpServerName();
 
     // Forward-declared so the tool() callback can call it after a successful
     // tool-list-modifying tool returns. Assigned below once conversation exists.
@@ -357,7 +366,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
       });
 
       return createSdkMcpServer({
-        name: MCP_SERVER_NAME,
+        name: currentMcpServerName,
         version: "1.0.0",
         tools: mcpTools,
       });
@@ -365,9 +374,9 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     if (tools && tools.length > 0 && toolExecutor) {
       const mcpServer = buildMcpServer(tools, toolExecutor);
-      mcpConfig = { [MCP_SERVER_NAME]: mcpServer };
+      mcpConfig = { [currentMcpServerName]: mcpServer };
       for (const t of tools) {
-        allowedTools.push(`mcp__${MCP_SERVER_NAME}__${t.name}`);
+        allowedTools.push(`mcp__${currentMcpServerName}__${t.name}`);
       }
     }
 
@@ -440,8 +449,12 @@ class ClaudeAgentSdkAdapter implements Adapter {
       | { behavior: "allow"; updatedInput: Record<string, unknown> }
       | { behavior: "deny"; message: string }
     > => {
-      if (toolName.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
-        const bareName = toolName.slice(`mcp__${MCP_SERVER_NAME}__`.length);
+      // MCP tool prefix starts with mcp__{currentMcpServerName}__, but since
+      // the server name is versioned and may change via setMcpServers, accept
+      // any mcp__{base}-*__ prefix for the duration of this execute() call.
+      if (toolName.startsWith(`mcp__${MCP_SERVER_BASE}`)) {
+        const match = toolName.match(/^mcp__[^_]+(?:-[^_]+)*__(.+)$/);
+        const bareName = match ? match[1] : toolName.split("__").slice(-1)[0];
         if (currentMcpToolNames.has(bareName)) {
           return { behavior: "allow", updatedInput: input };
         }
@@ -489,11 +502,14 @@ class ClaudeAgentSdkAdapter implements Adapter {
         if (newSignature === currentToolSignature) {
           return;
         }
+        // Rotate server name so the SDK disconnects the previous server cleanly
+        // (avoids "Tool X is already registered" from overlapping tool names).
+        currentMcpServerName = nextMcpServerName();
         const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
-        await conversation.setMcpServers({ [MCP_SERVER_NAME]: newServer });
+        await conversation.setMcpServers({ [currentMcpServerName]: newServer });
         currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
         currentToolSignature = newSignature;
-        console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools)`);
+        console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
       } catch (err) {
         console.warn(`[adapter] Failed to refresh MCP tools after ${lastToolName}:`, err);
       }
