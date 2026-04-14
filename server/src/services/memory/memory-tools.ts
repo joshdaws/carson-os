@@ -20,8 +20,6 @@ import type {
   MemoryType,
 } from "@carsonos/shared";
 import type { Db } from "@carsonos/db";
-import { staffAgents } from "@carsonos/db";
-import { eq } from "drizzle-orm";
 
 // ── Tool definitions (Anthropic SDK format) ────────────────────────
 
@@ -143,28 +141,6 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
       required: ["id", "collection"],
     },
   },
-  {
-    name: "update_instructions",
-    description:
-      "Update your own operating instructions — your personal notes about how to behave with this family. Add observations like 'Josh prefers bullet points' or 'Never suggest pork recipes'. These persist across conversations and are injected into your system prompt.",
-    input_schema: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["add", "replace"],
-          description:
-            "'add' appends a new instruction. 'replace' replaces the entire document.",
-        },
-        content: {
-          type: "string",
-          description:
-            "For 'add': the new instruction to append. For 'replace': the full replacement document.",
-        },
-      },
-      required: ["action", "content"],
-    },
-  },
 ];
 
 // ── Tool context ───────────────────────────────────────────────────
@@ -190,7 +166,6 @@ export interface ToolContext {
 
 // ── Executor factory ───────────────────────────────────────────────
 
-const OPERATING_INSTRUCTIONS_CAP = 2000; // ~500 tokens
 
 /**
  * Build a tool executor bound to a specific agent + member context.
@@ -218,9 +193,6 @@ export function buildToolExecutor(
           break;
         case "delete_memory":
           result = await handleDeleteMemory(ctx, input);
-          break;
-        case "update_instructions":
-          result = await handleUpdateInstructions(ctx, input);
           break;
         default:
           result = { content: `Unknown tool: ${name}`, is_error: true };
@@ -368,37 +340,3 @@ async function handleDeleteMemory(
   return { content: `Memory "${id}" deleted from ${collection}.` };
 }
 
-async function handleUpdateInstructions(
-  ctx: ToolContext,
-  input: Record<string, unknown>,
-): Promise<ToolResult> {
-  const action = input.action as "add" | "replace";
-  const content = input.content as string;
-
-  // Load current instructions
-  const [agent] = await ctx.db
-    .select({ operatingInstructions: staffAgents.operatingInstructions })
-    .from(staffAgents)
-    .where(eq(staffAgents.id, ctx.agentId))
-    .limit(1);
-
-  let newInstructions: string;
-
-  if (action === "replace") {
-    newInstructions = content.slice(0, OPERATING_INSTRUCTIONS_CAP);
-  } else {
-    const current = agent?.operatingInstructions ?? "";
-    const appended = current ? `${current}\n- ${content}` : `- ${content}`;
-    newInstructions = appended.slice(0, OPERATING_INSTRUCTIONS_CAP);
-  }
-
-  await ctx.db
-    .update(staffAgents)
-    .set({ operatingInstructions: newInstructions })
-    .where(eq(staffAgents.id, ctx.agentId));
-
-  const charCount = newInstructions.length;
-  return {
-    content: `Operating instructions updated (${charCount}/${OPERATING_INSTRUCTIONS_CAP} chars used).`,
-  };
-}

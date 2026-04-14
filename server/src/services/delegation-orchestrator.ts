@@ -8,7 +8,7 @@
  * kid via broadcast events -- the relay handles the actual Telegram send.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   staffAgents,
@@ -489,7 +489,7 @@ export class DelegationOrchestrator {
     const [agent] = await this.db
       .select()
       .from(staffAgents)
-      .where(eq(staffAgents.id, agentId));
+      .where(and(eq(staffAgents.id, agentId), eq(staffAgents.status, "active")));
 
     return agent ?? null;
   }

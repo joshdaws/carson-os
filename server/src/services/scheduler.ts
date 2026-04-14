@@ -237,6 +237,12 @@ export class Scheduler {
         throw new Error(`Agent ${task.agentId} not found`);
       }
 
+      // Don't execute for paused or deleted agents
+      if (agent.status !== "active") {
+        console.log(`[scheduler] Skipping "${task.name}" — agent ${agent.name} is ${agent.status}`);
+        return;
+      }
+
       // Use the task's memberId, or fall back to the first assigned member
       const memberId = task.memberId;
       if (!memberId) {

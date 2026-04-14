@@ -27,6 +27,7 @@ import {
   buildToolExecutor,
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
+import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -43,7 +44,7 @@ export type ToolHandler = (
  *   - custom:     Created by agents, imported from skills.sh, or user-installed
  *   - discovered: Found in ~/.claude/skills/, off by default, labeled in UI as global Claude skills
  */
-export type ToolTier = "system" | "builtin" | "custom" | "discovered";
+export type ToolTier = "system" | "system-chief" | "builtin" | "custom" | "discovered";
 
 export interface RegisteredTool {
   definition: ToolDefinition;
@@ -69,6 +70,8 @@ export interface ToolExecutionContext {
   allMemberCollections?: string[];
   /** Collections this agent is allowed to read/write */
   allowedCollections?: string[];
+  /** Multi-relay manager for bot control (pause/resume agents) */
+  multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
 }
 
 // ── Trust level → Claude Code built-in tools ────────────────────────
@@ -135,19 +138,34 @@ export class ToolRegistry {
   /** Register all built-in tools (memory, operating instructions). */
   private registerBuiltins(): void {
     // System tools — every agent gets these, not toggleable
-    const systemTools = [
-      "search_memory", "save_memory", "update_memory", "delete_memory", "update_instructions",
-      "schedule_task", "list_scheduled_tasks", "pause_scheduled_task", "update_scheduled_task", "delete_scheduled_task", "run_scheduled_task",
-    ];
+    // Memory tools
     for (const def of MEMORY_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
         category: "memory",
-        tier: systemTools.includes(def.name) ? "system" : "builtin",
+        tier: "system",
       });
     }
 
-    // Scheduling tools — every agent gets these
+    // Agent self-management tools (every agent)
+    for (const def of SELF_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent",
+        tier: "system",
+      });
+    }
+
+    // Staff management tools (Chief of Staff only — conditionally included)
+    for (const def of STAFF_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent-staff",
+        tier: "system-chief",
+      });
+    }
+
+    // Scheduling tools
     for (const def of SCHEDULING_TOOLS) {
       this.tools.set(def.name, {
         definition: def,
@@ -293,10 +311,27 @@ export class ToolRegistry {
    * if no explicit grants exist.
    */
   async getAgentTools(agentId: string): Promise<ToolDefinition[]> {
-    // System tools — every agent gets these, always
+    // Load agent to check if Chief of Staff
+    const [agent] = await this.db
+      .select({ staffRole: staffAgents.staffRole, isHeadButler: staffAgents.isHeadButler })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .limit(1);
+
+    const isChief = agent?.isHeadButler || agent?.staffRole === "head_butler";
+
+    // System tools — every agent gets these
     const systemTools = [...this.tools.values()]
       .filter((t) => t.tier === "system")
       .map((t) => t.definition.name);
+
+    // Chief of Staff also gets staff management tools
+    if (isChief) {
+      const chiefTools = [...this.tools.values()]
+        .filter((t) => t.tier === "system-chief")
+        .map((t) => t.definition.name);
+      systemTools.push(...chiefTools);
+    }
 
     // Check for explicit grants (builtin + custom tools)
     const grants = await this.db
@@ -307,16 +342,8 @@ export class ToolRegistry {
     let grantedNames: string[];
 
     if (grants.length > 0) {
-      // Explicit grants exist — use them + system tools
       grantedNames = [...new Set([...systemTools, ...grants.map((g) => g.toolName)])];
     } else {
-      // No explicit grants — use role defaults (which already include system tools)
-      const [agent] = await this.db
-        .select({ staffRole: staffAgents.staffRole })
-        .from(staffAgents)
-        .where(eq(staffAgents.id, agentId))
-        .limit(1);
-
       const role = agent?.staffRole ?? "custom";
       grantedNames = [...new Set([...systemTools, ...(DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom)])];
     }
@@ -392,7 +419,22 @@ export class ToolRegistry {
         return result;
       }
 
-      // Fall back to memory executor for memory + system tools
+      // Agent management tools (self + staff management for Chief of Staff)
+      const agentToolNames = [
+        "update_instructions", "update_personality", "update_role",
+        "list_agents", "create_agent", "delete_agent", "pause_agent", "resume_agent", "update_agent_assignment",
+      ];
+      if (agentToolNames.includes(name)) {
+        const result = await handleAgentTool(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId, isChiefOfStaff: ctx.isChiefOfStaff, multiRelay: ctx.multiRelay },
+          name,
+          input,
+        );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Fall back to memory executor for memory tools
       if (memoryExecutor) {
         return memoryExecutor(name, input);
       }

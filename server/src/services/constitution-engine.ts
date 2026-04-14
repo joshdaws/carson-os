@@ -41,8 +41,8 @@ import {
   scanResponse,
   type EvaluationResult,
 } from "./evaluators.js";
-import { compileSystemPrompt, buildDelegationInstructions } from "./prompt-compiler.js";
-import { delegationEdges, activityLog } from "@carsonos/db";
+import { compileSystemPrompt } from "./prompt-compiler.js";
+import { activityLog } from "@carsonos/db";
 import {
   buildMemorySchemaInstructions,
   DEFAULT_MEMORY_SCHEMA,
@@ -82,6 +82,7 @@ export interface EngineConfig {
   memoryProvider?: MemoryProvider;
   toolRegistry?: ToolRegistry;
   calendarProvider?: GoogleCalendarProvider;
+  multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
     hardEvaluators?: boolean;
@@ -141,6 +142,7 @@ export class ConstitutionEngine {
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
   private hardEvaluatorsEnabled: boolean;
+  private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
 
   constructor(config: EngineConfig) {
     this.db = config.db;
@@ -149,7 +151,13 @@ export class ConstitutionEngine {
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
+    this.multiRelay = config.multiRelay ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
+  }
+
+  /** Set the multi-relay manager (called after construction because of circular dependency). */
+  setMultiRelay(relay: import("./multi-relay-manager.js").MultiRelayManager): void {
+    this.multiRelay = relay;
   }
 
   /** Invalidate the clause cache for a household (call after clause edits). */
@@ -190,6 +198,15 @@ export class ConstitutionEngine {
     if (!agent || !member) {
       return {
         response: FRIENDLY_ERROR_MESSAGE,
+        blocked: true,
+        policyEvents: [],
+      };
+    }
+
+    // Reject messages for paused or deleted agents
+    if (agent.status !== "active") {
+      return {
+        response: "This agent is currently unavailable.",
         blocked: true,
         policyEvents: [],
       };
@@ -292,24 +309,9 @@ export class ConstitutionEngine {
       agentId,
     );
 
-    // Load delegation instructions for personal agents
-    let delegationInstr: string | null = null;
-    if (agent.staffRole === "personal") {
-      const edges = await this.db
-        .select({
-          agentId: staffAgents.id,
-          agentName: staffAgents.name,
-          staffRole: staffAgents.staffRole,
-          specialty: staffAgents.specialty,
-        })
-        .from(delegationEdges)
-        .innerJoin(staffAgents, eq(staffAgents.id, delegationEdges.toAgentId))
-        .where(eq(delegationEdges.fromAgentId, agentId));
-
-      if (edges.length > 0) {
-        delegationInstr = buildDelegationInstructions(edges);
-      }
-    }
+    // Delegation is not active in v0.1 — will be enabled in a future version.
+    // When re-enabled, filter delegation targets by status === "active".
+    const delegationInstr: string | null = null;
 
     // -- 5. Load conversation history + session state -----------------
     const conversationId = await this.getOrCreateConversation(
@@ -436,6 +438,7 @@ export class ConstitutionEngine {
         isChiefOfStaff,
         allMemberCollections,
         allowedCollections,
+        multiRelay: this.multiRelay ?? undefined,
       });
 
       if (built) {
