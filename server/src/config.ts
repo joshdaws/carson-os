@@ -1,6 +1,7 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { AdapterType } from "@carsonos/shared";
+import 'dotenv/config';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import type { AdapterType } from '@carsonos/shared';
 
 export interface MemoryConfig {
   /** Memory provider kind: "qmd" (default) or a module path for custom providers */
@@ -22,31 +23,30 @@ export interface Config {
 }
 
 export function getConfig(): Config {
-  const dataDir =
-    process.env.DATA_DIR ?? join(homedir(), ".carsonos");
+  const dataDir = process.env.DATA_DIR ?? join(homedir(), '.carsonos');
 
   // Determine adapter: default to Agent SDK (uses Claude subscription, no API key needed)
-  let adapterType: AdapterType = "anthropic-sdk";
-  if (process.env.CARSONOS_ADAPTER === "claude-code") {
-    adapterType = "claude-code";
-  } else if (process.env.CARSONOS_ADAPTER === "codex") {
-    adapterType = "codex";
-  } else if (process.env.CARSONOS_ADAPTER === "anthropic-sdk") {
-    adapterType = "anthropic-sdk";
+  let adapterType: AdapterType = 'anthropic-sdk';
+  if (process.env.CARSONOS_ADAPTER === 'claude-code') {
+    adapterType = 'claude-code';
+  } else if (process.env.CARSONOS_ADAPTER === 'codex') {
+    adapterType = 'codex';
+  } else if (process.env.CARSONOS_ADAPTER === 'anthropic-sdk') {
+    adapterType = 'anthropic-sdk';
   }
 
   return {
     port: Number(process.env.PORT) || 3300,
     dataDir,
-    nodeEnv: process.env.NODE_ENV ?? "development",
+    nodeEnv: process.env.NODE_ENV ?? 'development',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
     adapterType,
     memory: {
-      kind: process.env.CARSONOS_MEMORY_PROVIDER ?? "qmd",
-      rootDir: process.env.CARSONOS_MEMORY_DIR ?? join(dataDir, "memory"),
+      kind: process.env.CARSONOS_MEMORY_PROVIDER ?? 'qmd',
+      rootDir: process.env.CARSONOS_MEMORY_DIR ?? join(dataDir, 'memory'),
     },
     featureFlags: {
-      hardEvaluators: process.env.CARSONOS_HARD_EVALUATORS === "true",
+      hardEvaluators: process.env.CARSONOS_HARD_EVALUATORS === 'true',
     },
   };
 }

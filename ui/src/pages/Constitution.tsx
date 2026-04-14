@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollText, Edit3, Save, X, Clock, Loader2, RotateCcw } from "lucide-react";
+import { ScrollText, Edit3, Save, X, Clock, Loader2, RotateCcw, MessageSquare } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InterviewOverlay } from "@/components/InterviewOverlay";
 import type { ChatMessage } from "@/components/ChatBubble";
@@ -31,6 +31,12 @@ interface VersionEntry {
   documentPreview: string;
 }
 
+interface InterviewState {
+  phase: string;
+  messageCount: number;
+  messages: ChatMessage[];
+}
+
 function constitutionGreeting(agentName: string): string {
   return `Welcome. I'm ${agentName}, and I'll be heading up your household staff.\n\nBefore we begin, I'll need to learn a bit about your family so I can set things up properly. Let's start with the basics.\n\nWhat are the names and ages of everyone in the household? Parents and children.`;
 }
@@ -52,6 +58,7 @@ export function ConstitutionPage() {
   const [viewingVersion, setViewingVersion] = useState<VersionEntry | null>(null);
   const [showInterview, setShowInterview] = useState(false);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [hydratedInterview, setHydratedInterview] = useState(false);
 
   const { data, isLoading } = useQuery<ConstitutionData>({
     queryKey: ["constitution"],
@@ -74,6 +81,22 @@ export function ConstitutionPage() {
     enabled: showHistory,
   });
 
+  // Server-side interview state — hydrated into local state on mount
+  // so navigating away and back preserves the chat history.
+  const { data: interviewState } = useQuery<InterviewState>({
+    queryKey: ["constitution", "interview"],
+    queryFn: () => api.get("/constitution/interview"),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (hydratedInterview || !interviewState) return;
+    setHydratedInterview(true);
+    if (interviewState.messages && interviewState.messages.length > 0) {
+      setInterviewMessages(interviewState.messages);
+    }
+  }, [interviewState, hydratedInterview]);
+
   const saveMutation = useMutation({
     mutationFn: (document: string) =>
       api.put("/constitution/document", { document }),
@@ -95,6 +118,7 @@ export function ConstitutionPage() {
         ...prev,
         { role: "assistant" as const, content: data.response },
       ]);
+      queryClient.invalidateQueries({ queryKey: ["constitution", "interview"] });
       if (data.constitutionDocument) {
         queryClient.invalidateQueries({ queryKey: ["constitution"] });
       }
@@ -102,6 +126,8 @@ export function ConstitutionPage() {
   });
 
   const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
+  const hasInProgressInterview =
+    interviewState?.phase === "interview" && interviewMessages.length > 0;
 
   const constitution = data?.constitution;
 
@@ -172,18 +198,30 @@ export function ConstitutionPage() {
             History
           </Button>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
-              setShowInterview(true);
-            }}
-            style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
-          >
-            <RotateCcw className="h-3.5 w-3.5 mr-1" />
-            Rebuild
-          </Button>
+          {hasInProgressInterview ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowInterview(true)}
+              style={{ borderColor: "#8b6f4e", color: "#8b6f4e" }}
+            >
+              <MessageSquare className="h-3.5 w-3.5 mr-1" />
+              Resume Interview
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
+                setShowInterview(true);
+              }}
+              style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+            >
+              <RotateCcw className="h-3.5 w-3.5 mr-1" />
+              Rebuild
+            </Button>
+          )}
 
           {!editing && !viewingVersion && (
             <Button
@@ -251,10 +289,7 @@ export function ConstitutionPage() {
         title="Constitution Builder"
         subtitle="Carson will interview you to build your family constitution"
         isOpen={showInterview}
-        onClose={() => {
-          setShowInterview(false);
-          setInterviewMessages([]);
-        }}
+        onClose={() => setShowInterview(false)}
         onComplete={() => {
           queryClient.invalidateQueries({ queryKey: ["constitution"] });
         }}
@@ -429,6 +464,7 @@ function ConstitutionEmptyState() {
   const queryClient = useQueryClient();
   const [showInterview, setShowInterview] = useState(false);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [hydratedInterview, setHydratedInterview] = useState(false);
 
   const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
     queryKey: ["staff"],
@@ -438,6 +474,20 @@ function ConstitutionEmptyState() {
   const headAgentName = staffData?.staff?.find(
     (a) => a.isHeadButler || a.staffRole === "head_butler",
   )?.name ?? "your Chief of Staff";
+
+  const { data: interviewState } = useQuery<InterviewState>({
+    queryKey: ["constitution", "interview"],
+    queryFn: () => api.get("/constitution/interview"),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (hydratedInterview || !interviewState) return;
+    setHydratedInterview(true);
+    if (interviewState.messages && interviewState.messages.length > 0) {
+      setInterviewMessages(interviewState.messages);
+    }
+  }, [interviewState, hydratedInterview]);
 
   const interviewMutation = useMutation({
     mutationFn: (text: string) =>
@@ -450,6 +500,7 @@ function ConstitutionEmptyState() {
         ...prev,
         { role: "assistant" as const, content: data.response },
       ]);
+      queryClient.invalidateQueries({ queryKey: ["constitution", "interview"] });
       if (data.constitutionDocument) {
         queryClient.invalidateQueries({ queryKey: ["constitution"] });
       }
@@ -457,6 +508,8 @@ function ConstitutionEmptyState() {
   });
 
   const isInterviewComplete = interviewMutation.data?.constitutionDocument != null;
+  const hasInProgressInterview =
+    interviewState?.phase === "interview" && interviewMessages.length > 0;
 
   return (
     <div className="p-6 lg:p-8 max-w-4xl">
@@ -486,11 +539,27 @@ function ConstitutionEmptyState() {
         </p>
         <Button
           size="sm"
-          onClick={() => setShowInterview(true)}
+          onClick={() => {
+            if (!hasInProgressInterview) {
+              setInterviewMessages([
+                { role: "assistant", content: constitutionGreeting(headAgentName) },
+              ]);
+            }
+            setShowInterview(true);
+          }}
           style={{ background: "#1a1f2e", color: "#e8dfd0" }}
         >
-          <ScrollText className="h-4 w-4 mr-2" />
-          Start Interview
+          {hasInProgressInterview ? (
+            <>
+              <MessageSquare className="h-4 w-4 mr-2" />
+              Resume Interview
+            </>
+          ) : (
+            <>
+              <ScrollText className="h-4 w-4 mr-2" />
+              Start Interview
+            </>
+          )}
         </Button>
       </div>
 
@@ -498,10 +567,7 @@ function ConstitutionEmptyState() {
         title="Constitution Builder"
         subtitle="Carson will interview you to build your family constitution"
         isOpen={showInterview}
-        onClose={() => {
-          setShowInterview(false);
-          setInterviewMessages([]);
-        }}
+        onClose={() => setShowInterview(false)}
         onComplete={() => {
           queryClient.invalidateQueries({ queryKey: ["constitution"] });
         }}

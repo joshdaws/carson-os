@@ -17,15 +17,16 @@ CarsonOS is a self-hosted AI staff platform for families. Each family member get
 
 ## Prerequisites
 
-| Dependency | Install | Why |
-|------------|---------|-----|
-| **Node.js 20+** | [nodejs.org](https://nodejs.org) or `nvm install 20` | Runtime |
-| **pnpm** | `npm install -g pnpm` | Package manager (monorepo) |
-| **Claude CLI** | `npm install -g @anthropic-ai/claude-code` | Agent runtime (uses your Claude subscription) |
-| **QMD** | `npm install -g @anthropic-ai/qmd` | Local markdown search engine for memory |
+| Dependency      | Install                                              | Why                                           |
+| --------------- | ---------------------------------------------------- | --------------------------------------------- |
+| **Node.js 20+** | [nodejs.org](https://nodejs.org) or `nvm install 20` | Runtime                                       |
+| **pnpm**        | `npm install -g pnpm`                                | Package manager (monorepo)                    |
+| **Claude CLI**  | `npm install -g @anthropic-ai/claude-code`           | Agent runtime (uses your Claude subscription) |
+| **QMD**         | `npm install -g @tobilu/qmd`                         | Local markdown search engine for memory       |
 
 Optional:
-- **gws** — `npm install -g @anthropic-ai/gws` — Google Workspace CLI (Calendar, Gmail, Drive)
+
+- **gws** — `npm install -g googleworkspace/cli` — Google Workspace CLI (Calendar, Gmail, Drive)
 
 ## Quick Start
 
@@ -167,29 +168,30 @@ Members can override their memory directory to point at an existing QMD-compatib
 
 Agents get tools based on their role and trust level:
 
-| Tool | Description |
-|------|-------------|
-| `search_memory` | Search personal + household memory |
-| `save_memory` | Save new memories (facts, events, etc.) |
-| `update_memory` | Update existing memory entries in-place |
-| `delete_memory` | Remove outdated memories |
-| `update_instructions` | Maintain operating instructions |
-| `list_calendar_events` | Check schedules (requires gws) |
-| `create_calendar_event` | Create events (requires gws) |
-| `gmail_*` | Read, draft, and manage email (requires gws) |
-| `drive_*` | Search and list Drive files (requires gws) |
+| Tool                    | Description                                  |
+| ----------------------- | -------------------------------------------- |
+| `search_memory`         | Search personal + household memory           |
+| `save_memory`           | Save new memories (facts, events, etc.)      |
+| `update_memory`         | Update existing memory entries in-place      |
+| `delete_memory`         | Remove outdated memories                     |
+| `update_instructions`   | Maintain operating instructions              |
+| `list_calendar_events`  | Check schedules (requires gws)               |
+| `create_calendar_event` | Create events (requires gws)                 |
+| `gmail_*`               | Read, draft, and manage email (requires gws) |
+| `drive_*`               | Search and list Drive files (requires gws)   |
 
 ### Trust Levels
 
-| Level | Built-in Tools | For |
-|-------|----------------|-----|
-| **Full** | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Skill | Parents |
-| **Standard** | Read, Glob, Grep, WebFetch, WebSearch | Teenagers |
-| **Restricted** | None (MCP tools only) | Young kids |
+| Level          | Built-in Tools                                                  | For        |
+| -------------- | --------------------------------------------------------------- | ---------- |
+| **Full**       | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Skill | Parents    |
+| **Standard**   | Read, Glob, Grep, WebFetch, WebSearch                           | Teenagers  |
+| **Restricted** | None (MCP tools only)                                           | Young kids |
 
 ### Model Selection
 
 Agents can use different Claude models:
+
 - **Sonnet 4.6** (default) — Fast and capable
 - **Opus 4.6** — Most capable
 - **Haiku 4.5** — Fastest, lightest
@@ -227,18 +229,19 @@ ui/
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3300` | Server port |
-| `DATA_DIR` | `~/.carsonos` | Data directory (DB, memory, Google auth) |
-| `CARSONOS_ADAPTER` | `anthropic-sdk` | Adapter: `anthropic-sdk`, `claude-code`, or `codex` |
-| `CARSONOS_MEMORY_PROVIDER` | `qmd` | Memory backend |
-| `CARSONOS_MEMORY_DIR` | `{DATA_DIR}/memory` | Memory file root |
-| `CARSONOS_HARD_EVALUATORS` | `false` | Hard clause evaluators (off for v1.0) |
+| Variable                   | Default             | Description                                         |
+| -------------------------- | ------------------- | --------------------------------------------------- |
+| `PORT`                     | `3300`              | Server port                                         |
+| `DATA_DIR`                 | `~/.carsonos`       | Data directory (DB, memory, Google auth)            |
+| `CARSONOS_ADAPTER`         | `anthropic-sdk`     | Adapter: `anthropic-sdk`, `claude-code`, or `codex` |
+| `CARSONOS_MEMORY_PROVIDER` | `qmd`               | Memory backend                                      |
+| `CARSONOS_MEMORY_DIR`      | `{DATA_DIR}/memory` | Memory file root                                    |
+| `CARSONOS_HARD_EVALUATORS` | `false`             | Hard clause evaluators (off for v1.0)               |
 
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document covering:
+
 - The message pipeline (Telegram → Constitution → Agent SDK → Tools → Response)
 - Memory system (MemoryProvider interface, QMD backend, 13 memory types)
 - Tool registry (4 tiers: system, builtin, custom, discovered)

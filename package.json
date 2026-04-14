@@ -11,6 +11,7 @@
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "pnpm --filter @carsonos/server dev",
+    "dev:nowatch": "pnpm --filter @carsonos/server dev:nowatch",
     "dev:sandbox": "DATA_DIR=$PWD/.sandbox PORT=3301 pnpm --filter @carsonos/server dev",
     "start": "pnpm --filter @carsonos/server start",
     "service:restart": "scripts/restart-service.sh",
