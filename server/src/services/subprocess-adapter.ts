@@ -310,9 +310,12 @@ class ClaudeAgentSdkAdapter implements Adapter {
             // success. Swap happens after we return this result to the SDK
             // so there's no race with the current call.
             if (!result.is_error && TOOL_LIST_MODIFYING.has(t.name)) {
+              console.log(`[adapter] ${t.name} succeeded, firing MCP refresh`);
               // Don't await — let it run async; if the next turn needs the new
               // tool it'll be there, and we avoid blocking the current return.
               void triggerRefresh(t.name);
+            } else if (TOOL_LIST_MODIFYING.has(t.name)) {
+              console.log(`[adapter] ${t.name} failed (is_error=${result.is_error}), skipping refresh`);
             }
             return {
               content: [{ type: "text" as const, text: result.content }],
@@ -443,19 +446,29 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     // Assign the refresh function now that `conversation` exists in scope.
     triggerRefresh = async (lastToolName: string) => {
-      if (!params.refreshTools) return;
+      if (!params.refreshTools) {
+        console.log(`[adapter] triggerRefresh called for ${lastToolName} but no refreshTools callback`);
+        return;
+      }
+      console.log(`[adapter] triggerRefresh entering for ${lastToolName}`);
       try {
+        console.log(`[adapter] [refresh] calling params.refreshTools()`);
         const fresh = await params.refreshTools();
+        console.log(`[adapter] [refresh] got fresh list: ${fresh.tools.length} tools`);
         const newNames = new Set<string>(fresh.tools.map((t: { name: string }) => t.name));
         // Skip if nothing actually changed (e.g. update without new name)
         if (
           newNames.size === currentToolNames.size &&
           [...newNames].every((n: string) => currentToolNames.has(n))
         ) {
+          console.log(`[adapter] [refresh] no change detected (${currentToolNames.size} → ${newNames.size}), skip`);
           return;
         }
+        console.log(`[adapter] [refresh] building new MCP server (was ${currentToolNames.size}, now ${newNames.size})`);
         const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
+        console.log(`[adapter] [refresh] calling conversation.setMcpServers()`);
         await conversation.setMcpServers({ [MCP_SERVER_NAME]: newServer });
+        console.log(`[adapter] [refresh] setMcpServers returned`);
         currentToolNames = newNames;
         console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools)`);
       } catch (err) {

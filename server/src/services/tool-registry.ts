@@ -501,14 +501,19 @@ export class ToolRegistry {
    * if no explicit grants exist.
    */
   async getAgentTools(agentId: string): Promise<ToolDefinition[]> {
-    // Load agent to check if Chief of Staff
+    // Load agent to check if Chief of Staff + get household for custom-tool resolution
     const [agent] = await this.db
-      .select({ staffRole: staffAgents.staffRole, isHeadButler: staffAgents.isHeadButler })
+      .select({
+        staffRole: staffAgents.staffRole,
+        isHeadButler: staffAgents.isHeadButler,
+        householdId: staffAgents.householdId,
+      })
       .from(staffAgents)
       .where(eq(staffAgents.id, agentId))
       .limit(1);
 
     const isChief = agent?.isHeadButler || agent?.staffRole === "head_butler";
+    const householdId = agent?.householdId;
 
     // System tools — every agent gets these
     const systemTools = [...this.tools.values()]
@@ -538,9 +543,20 @@ export class ToolRegistry {
       grantedNames = [...new Set([...systemTools, ...(DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom)])];
     }
 
-    // Only return tools that are actually registered
+    // Resolve each granted name to a definition. Built-ins live in the Map
+    // under their bare name. Custom tools live under `custom:{householdId}:{name}`
+    // because the Map is process-global and has to prevent cross-household
+    // collisions. Try bare first, then the household-scoped key.
     return grantedNames
-      .map((name) => this.tools.get(name)?.definition)
+      .map((name) => {
+        const direct = this.tools.get(name);
+        if (direct) return direct.definition;
+        if (householdId) {
+          const scoped = this.tools.get(customKey(householdId, name));
+          if (scoped) return scoped.definition;
+        }
+        return undefined;
+      })
       .filter((d): d is ToolDefinition => d !== undefined);
   }
 
