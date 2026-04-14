@@ -6,11 +6,11 @@
  * values and boundaries, and generates a constitution document.
  */
 
-import { eq } from 'drizzle-orm';
-import type { Db } from '@carsonos/db';
-import { onboardingState, households, staffAgents } from '@carsonos/db';
-import type { OnboardingPhase, RichContent, InterviewPhase } from '@carsonos/shared';
-import type { Adapter } from './subprocess-adapter.js';
+import { eq } from "drizzle-orm";
+import type { Db } from "@carsonos/db";
+import { onboardingState, households, staffAgents } from "@carsonos/db";
+import type { OnboardingPhase, RichContent, InterviewPhase } from "@carsonos/shared";
+import type { Adapter } from "./subprocess-adapter.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -20,7 +20,7 @@ export interface InterviewEngineConfig {
 }
 
 export interface InterviewMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   richContent?: RichContent;
 }
@@ -37,7 +37,7 @@ interface InterviewState {
 export interface ExtractedMember {
   name: string;
   age: number;
-  role: 'parent' | 'kid';
+  role: "parent" | "kid";
 }
 
 export interface InterviewResult {
@@ -56,9 +56,9 @@ export interface InterviewResult {
 /** Strip all LLM markers ([PHASE:...], [CONSTITUTION_START/END], [MEMBERS_START/END]) */
 export function cleanResponse(raw: string): string {
   return raw
-    .replace(/\[PHASE:\s*\w+\]/g, '')
-    .replace(/\[CONSTITUTION_START\][\s\S]*?\[CONSTITUTION_END\]/g, '')
-    .replace(/\[MEMBERS_START\][\s\S]*?\[MEMBERS_END\]/g, '')
+    .replace(/\[PHASE:\s*\w+\]/g, "")
+    .replace(/\[CONSTITUTION_START\][\s\S]*?\[CONSTITUTION_END\]/g, "")
+    .replace(/\[MEMBERS_START\][\s\S]*?\[MEMBERS_END\]/g, "")
     .trim();
 }
 
@@ -76,7 +76,13 @@ const TOTAL_QUESTIONS = 7;
 
 // -- Phase definitions -----------------------------------------------
 
-const PHASE_ORDER: OnboardingPhase[] = ['interview', 'review', 'staff_setup', 'telegram_config', 'complete'];
+const PHASE_ORDER: OnboardingPhase[] = [
+  "interview",
+  "review",
+  "staff_setup",
+  "telegram_config",
+  "complete",
+];
 
 const CONSTITUTION_TEMPLATE = `# [Family Name] Household Constitution
 ### Governing Principles for AI Agents in the [Family Name] Home
@@ -242,7 +248,11 @@ export class InterviewEngine {
 
   async getOrCreateState(householdId: string): Promise<InterviewState> {
     // Check for existing state
-    const [existing] = await this.db.select().from(onboardingState).where(eq(onboardingState.householdId, householdId)).limit(1);
+    const [existing] = await this.db
+      .select()
+      .from(onboardingState)
+      .where(eq(onboardingState.householdId, householdId))
+      .limit(1);
 
     if (existing) {
       return {
@@ -256,10 +266,14 @@ export class InterviewEngine {
     }
 
     // Ensure household exists
-    const [household] = await this.db.select().from(households).where(eq(households.id, householdId)).limit(1);
+    const [household] = await this.db
+      .select()
+      .from(households)
+      .where(eq(households.id, householdId))
+      .limit(1);
 
     if (!household) {
-      throw new Error('Household not found');
+      throw new Error("Household not found");
     }
 
     // Create new state
@@ -267,7 +281,7 @@ export class InterviewEngine {
       .insert(onboardingState)
       .values({
         householdId,
-        phase: 'interview',
+        phase: "interview",
         interviewMessages: [],
         extractedClauses: [],
         selectedStaff: [],
@@ -284,7 +298,10 @@ export class InterviewEngine {
     };
   }
 
-  async processMessage(householdId: string, message: string): Promise<InterviewResult> {
+  async processMessage(
+    householdId: string,
+    message: string,
+  ): Promise<InterviewResult> {
     const state = await this.getOrCreateState(householdId);
 
     // Build conversation history
@@ -293,23 +310,26 @@ export class InterviewEngine {
     // If first message, inject the hardcoded greeting so the LLM has context
     if (interviewMessages.length === 0) {
       // Look up the head agent name (or fall back to "your Chief of Staff")
-      const headAgent = await this.db.select({ name: staffAgents.name }).from(staffAgents).where(eq(staffAgents.householdId, householdId)).limit(1).get();
-      const agentName = headAgent?.name ?? 'your Chief of Staff';
+      const headAgent = await this.db
+        .select({ name: staffAgents.name })
+        .from(staffAgents)
+        .where(eq(staffAgents.householdId, householdId))
+        .limit(1)
+        .get();
+      const agentName = headAgent?.name ?? "your Chief of Staff";
 
       interviewMessages.push({
-        role: 'assistant',
+        role: "assistant",
         content: InterviewEngine.greeting(agentName),
       });
     }
 
-    interviewMessages.push({ role: 'user', content: message });
+    interviewMessages.push({ role: "user", content: message });
 
     const messagesForLlm = interviewMessages.map((m) => ({
       role: m.role,
       content: m.content,
     }));
-
-    console.log('Interview conversation so far:', messagesForLlm);
 
     // Call the adapter
     const result = await this.adapter.execute({
@@ -317,40 +337,39 @@ export class InterviewEngine {
       messages: messagesForLlm,
     });
 
-    console.log('Raw LLM response:', result.content);
-
     const assistantResponse = result.content;
 
     // Clean the response before saving (remove all markers)
     const cleanedForStorage = cleanResponse(assistantResponse);
-    interviewMessages.push({ role: 'assistant', content: cleanedForStorage });
+    interviewMessages.push({ role: "assistant", content: cleanedForStorage });
 
     // Parse phase from response
     const phase = this.parsePhase(assistantResponse);
 
     // Check for constitution document
     let constitutionDocument: string | undefined;
-    const docMatch = assistantResponse.match(/\[CONSTITUTION_START\]([\s\S]*?)\[CONSTITUTION_END\]/);
+    const docMatch = assistantResponse.match(
+      /\[CONSTITUTION_START\]([\s\S]*?)\[CONSTITUTION_END\]/,
+    );
     if (docMatch) {
       constitutionDocument = docMatch[1].trim();
     }
 
     // Check for structured member list
     let members: ExtractedMember[] | undefined;
-    const membersMatch = assistantResponse.match(/\[MEMBERS_START\]([\s\S]*?)\[MEMBERS_END\]/);
+    const membersMatch = assistantResponse.match(
+      /\[MEMBERS_START\]([\s\S]*?)\[MEMBERS_END\]/,
+    );
     if (membersMatch) {
-      const lines = membersMatch[1]
-        .trim()
-        .split('\n')
-        .filter((l) => l.includes('|'));
+      const lines = membersMatch[1].trim().split("\n").filter((l) => l.includes("|"));
       // Skip header line if it looks like "name|age|role"
-      const dataLines = lines.filter((l) => !l.toLowerCase().startsWith('name|'));
+      const dataLines = lines.filter((l) => !l.toLowerCase().startsWith("name|"));
       members = dataLines
         .map((line) => {
-          const [name, ageStr, role] = line.split('|').map((s) => s.trim());
+          const [name, ageStr, role] = line.split("|").map((s) => s.trim());
           const age = parseInt(ageStr, 10);
           if (!name || isNaN(age) || !role) return null;
-          const validRole = (['parent', 'kid'] as const).find((r) => r === role);
+          const validRole = (["parent", "kid"] as const).find((r) => r === role);
           return validRole ? { name, age, role: validRole } : null;
         })
         .filter((m): m is ExtractedMember => m !== null);
@@ -380,16 +399,16 @@ export class InterviewEngine {
       questionNumber = stepNumber;
       totalQuestions = TOTAL_QUESTIONS;
       richContent = {
-        type: 'step_counter',
+        type: "step_counter",
         questionNumber: stepNumber,
         totalQuestions: TOTAL_QUESTIONS,
       };
     }
 
     // If we have extracted members at family_basics, attach member confirmation
-    if (members && members.length > 0 && phase === 'family_basics') {
+    if (members && members.length > 0 && phase === "family_basics") {
       richContent = {
-        type: 'member_confirmation',
+        type: "member_confirmation",
         members: members.map((m) => ({ name: m.name, age: m.age, role: m.role })),
         confirmed: false,
       };
@@ -398,7 +417,7 @@ export class InterviewEngine {
     // Store richContent on the last assistant message for resume support
     if (richContent) {
       const lastMsg = interviewMessages[interviewMessages.length - 1];
-      if (lastMsg && lastMsg.role === 'assistant') {
+      if (lastMsg && lastMsg.role === "assistant") {
         lastMsg.richContent = richContent;
       }
       // Re-save with richContent
@@ -427,7 +446,7 @@ export class InterviewEngine {
     const state = await this.getOrCreateState(householdId);
 
     if (state.interviewMessages.length === 0) {
-      throw new Error('No interview data available to generate a constitution');
+      throw new Error("No interview data available to generate a constitution");
     }
 
     // Build a summary prompt
@@ -442,13 +461,18 @@ export class InterviewEngine {
 
 Format it as a clear, readable document that a family would be proud to have govern their AI interactions.`;
 
-    const interviewTranscript = state.interviewMessages.map((m) => `${m.role === 'user' ? 'Parent' : 'Carson'}: ${m.content}`).join('\n\n');
+    const interviewTranscript = state.interviewMessages
+      .map(
+        (m) =>
+          `${m.role === "user" ? "Parent" : "Carson"}: ${m.content}`,
+      )
+      .join("\n\n");
 
     const result = await this.adapter.execute({
       systemPrompt: summaryPrompt,
       messages: [
         {
-          role: 'user',
+          role: "user",
           content: `Here is the interview transcript:\n\n${interviewTranscript}`,
         },
       ],
@@ -465,25 +489,25 @@ Format it as a clear, readable document that a family would be proud to have gov
 
   private parsePhase(response: string): string {
     const match = response.match(/\[PHASE:\s*(\w+)\]/);
-    return match ? match[1] : 'interview';
+    return match ? match[1] : "interview";
   }
 
   private mapToOnboardingPhase(interviewPhase: string): OnboardingPhase {
     switch (interviewPhase) {
-      case 'family_basics':
-      case 'values':
-      case 'education':
-      case 'boundaries':
-      case 'interaction_style':
-      case 'privacy':
-      case 'schedule':
-      case 'escalation':
-      case 'mission':
-        return 'interview';
-      case 'review_complete':
-        return 'review';
+      case "family_basics":
+      case "values":
+      case "education":
+      case "boundaries":
+      case "interaction_style":
+      case "privacy":
+      case "schedule":
+      case "escalation":
+      case "mission":
+        return "interview";
+      case "review_complete":
+        return "review";
       default:
-        return 'interview';
+        return "interview";
     }
   }
 }
