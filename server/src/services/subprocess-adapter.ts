@@ -265,9 +265,18 @@ class ClaudeAgentSdkAdapter implements Adapter {
     const allowedTools: string[] = [];
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
 
-    if (tools && tools.length > 0 && toolExecutor) {
-      const mcpTools = tools.map((t) => {
-        // Build a Zod schema from the JSON schema input_schema
+    const MCP_SERVER_NAME = "carsonos-memory";
+
+    /**
+     * Build an MCP server config from a tool list + executor. Extracted so
+     * we can rebuild it mid-session when custom tools are created/updated
+     * via setMcpServers (see refreshTools handling below).
+     */
+    const buildMcpServer = (
+      toolDefs: import("@carsonos/shared").ToolDefinition[],
+      executor: import("@carsonos/shared").ToolExecutor,
+    ) => {
+      const mcpTools = toolDefs.map((t) => {
         const properties = (t.input_schema.properties ?? {}) as Record<string, { type: string; description?: string; enum?: string[] }>;
         const required = (t.input_schema.required ?? []) as string[];
         const shape: Record<string, z.ZodTypeAny> = {};
@@ -281,22 +290,17 @@ class ClaudeAgentSdkAdapter implements Adapter {
           } else {
             fieldSchema = z.string();
           }
-          if (prop.description) {
-            fieldSchema = fieldSchema.describe(prop.description);
-          }
-          if (!required.includes(key)) {
-            fieldSchema = fieldSchema.optional();
-          }
+          if (prop.description) fieldSchema = fieldSchema.describe(prop.description);
+          if (!required.includes(key)) fieldSchema = fieldSchema.optional();
           shape[key] = fieldSchema;
         }
 
-        // Create an Agent SDK tool that delegates to our toolExecutor
         return tool(
           t.name,
           t.description,
           shape,
           async (input: Record<string, unknown>) => {
-            const result = await toolExecutor(t.name, input);
+            const result = await executor(t.name, input);
             allToolCalls.push({ name: t.name, input, result });
             return {
               content: [{ type: "text" as const, text: result.content }],
@@ -306,19 +310,36 @@ class ClaudeAgentSdkAdapter implements Adapter {
         );
       });
 
-      const mcpServer = createSdkMcpServer({
-        name: "carsonos-memory",
+      return createSdkMcpServer({
+        name: MCP_SERVER_NAME,
         version: "1.0.0",
         tools: mcpTools,
       });
+    };
 
-      mcpConfig = { "carsonos-memory": mcpServer };
-
-      // Allow all our MCP tools
+    if (tools && tools.length > 0 && toolExecutor) {
+      const mcpServer = buildMcpServer(tools, toolExecutor);
+      mcpConfig = { [MCP_SERVER_NAME]: mcpServer };
       for (const t of tools) {
-        allowedTools.push(`mcp__carsonos-memory__${t.name}`);
+        allowedTools.push(`mcp__${MCP_SERVER_NAME}__${t.name}`);
       }
     }
+
+    // Track the current tool set for change detection during for-await
+    let currentToolNames = new Set((tools ?? []).map((t) => t.name));
+
+    /**
+     * Tool names whose successful execution should trigger a mid-session MCP
+     * server refresh so newly-created/updated tools become immediately usable.
+     */
+    const TOOL_LIST_MODIFYING = new Set([
+      "create_http_tool",
+      "create_prompt_tool",
+      "create_script_tool",
+      "update_custom_tool",
+      "disable_custom_tool",
+      "install_skill",
+    ]);
 
     // Resolve model name to SDK shorthand
     const sdkModel = model === "claude-sonnet-4-6" ? "sonnet"
@@ -408,11 +429,61 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let hitTurnLimit = false;
     let sdkErrorMessage: string | null = null;
 
+    /**
+     * Mid-session tool list refresh. Called after create_custom_tool (etc.)
+     * successfully completes. Pulls the updated tool list from the engine
+     * via the refreshTools callback, rebuilds the MCP server, and calls
+     * setMcpServers — the new tools become visible to the model on its
+     * next turn in THIS conversation.
+     */
+    const maybeRefreshTools = async (lastToolName: string | null) => {
+      if (!lastToolName || !TOOL_LIST_MODIFYING.has(lastToolName)) return;
+      if (!params.refreshTools) return;
+      try {
+        const fresh = await params.refreshTools();
+        const newNames = new Set<string>(fresh.tools.map((t: { name: string }) => t.name));
+        // Skip if nothing actually changed (e.g. update without new name)
+        if (
+          newNames.size === currentToolNames.size &&
+          [...newNames].every((n: string) => currentToolNames.has(n))
+        ) {
+          return;
+        }
+        const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
+        await conversation.setMcpServers({ [MCP_SERVER_NAME]: newServer });
+        currentToolNames = newNames;
+        console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools)`);
+      } catch (err) {
+        console.warn(`[adapter] Failed to refresh MCP tools after ${lastToolName}:`, err);
+      }
+    };
+
     try {
       for await (const message of conversation) {
         // Capture session_id from any message that carries it
         if ("session_id" in message && typeof message.session_id === "string") {
           capturedSessionId = message.session_id;
+        }
+
+        // Detect successful tool calls that modify the tool list and refresh
+        // the MCP server mid-session so newly created tools are immediately
+        // usable on the model's next turn.
+        if (message.type === "user" && "message" in message) {
+          const userMsg = message.message as { content?: unknown[] } | undefined;
+          if (userMsg?.content && Array.isArray(userMsg.content)) {
+            for (const block of userMsg.content) {
+              if (
+                block && typeof block === "object" &&
+                (block as { type: unknown }).type === "tool_result"
+              ) {
+                const tr = block as { tool_use_id?: string; is_error?: boolean };
+                if (tr.is_error) continue;
+                // Find the corresponding tool_use from recent history to learn the name
+                const recent = allToolCalls[allToolCalls.length - 1];
+                if (recent) await maybeRefreshTools(recent.name);
+              }
+            }
+          }
         }
 
         // Stream text deltas to the caller as they arrive

@@ -29,6 +29,7 @@ import {
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
 import { AGENT_GUIDE_TOOLS, handleAgentGuideTool } from "./agent-guides.js";
+import { REDACTION_TOOLS, REDACTION_TOOL_NAMES, handleRedactionTool } from "./redaction-tools.js";
 import {
   CUSTOM_TOOL_SYSTEM_TOOLS,
   CUSTOM_TOOL_NAMES,
@@ -106,18 +107,29 @@ export const TRUST_LEVEL_BUILTINS: Record<TrustLevel, string[]> = {
 
 // ── Default tool grants per role ────────────────────────────────────
 
+// Custom tool management capabilities — granted by default to head_butler and
+// full-trust personal agents. Toggleable per-agent via the admin UI.
+const CUSTOM_TOOL_MGMT_GRANTS = [
+  "create_http_tool", "create_prompt_tool", "create_script_tool",
+  "list_custom_tools", "update_custom_tool", "disable_custom_tool",
+  "store_secret", "install_skill",
+  "redact_recent_user_message",
+];
+
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
+    ...CUSTOM_TOOL_MGMT_GRANTS,
   ],
   personal: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
+    ...CUSTOM_TOOL_MGMT_GRANTS,
   ],
   tutor: [
     "search_memory", "save_memory", "update_instructions",
@@ -215,6 +227,16 @@ export class ToolRegistry {
         definition: def,
         category: "agent-guides",
         tier: "system",
+      });
+    }
+
+    // Redaction tools — builtin tier, default-granted to roles that also have
+    // custom tool creation (so agents can scrub secrets after store_secret).
+    for (const def of REDACTION_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "redaction",
+        tier: "builtin",
       });
     }
   }
@@ -605,6 +627,17 @@ export class ToolRegistry {
       // Agent guide loader
       if (name === "get_agent_guide") {
         const result = await handleAgentGuideTool(name, input);
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Redaction tools (scrub sensitive content from the DB post-processing)
+      if (REDACTION_TOOL_NAMES.has(name)) {
+        const result = await handleRedactionTool(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
+          name,
+          input,
+        );
         calls.push({ name, input, result });
         return result;
       }

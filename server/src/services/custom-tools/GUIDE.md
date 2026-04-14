@@ -105,8 +105,23 @@ Check the API's docs for which it uses. YNAB uses `bearer`. OpenWeather uses
 - **DON'T write installer scripts.** `create_http_tool` IS the installer. You don't need `server/src/scripts/install-*.ts`. You don't need the user to run `npx tsx` anything.
 - **DON'T explore carson-os source.** You don't need to read `tool-registry.ts`, `custom-tools/handlers.ts`, or the schema. The `create_*_tool` MCP tools handle everything.
 - **DON'T use Bash, Write, or Edit.** These won't be granted for tool creation. If the SDK denies a tool call, DO NOT try a different built-in. Use the MCP tools.
+- **DON'T use WebFetch as a shortcut for custom tools.** Once you've created an HTTP tool for an API, ALWAYS use that tool, not WebFetch. Directly fetching with WebFetch bypasses auth-secret injection, domain allowlisting, and activity logging — the whole security layer. If a user asks a question right after you built a tool and the tool hasn't appeared in your tool list yet, the system will refresh your tools automatically before your next turn. Wait for the refresh. Don't shortcut.
 - **DON'T batch questions.** Ask for the API token in one turn. Then store + create in the next turn. Don't ask "what endpoints do you want, what should the tool be named, what's your token, should it be read-only" all at once.
 - **DON'T preface with "let me check the codebase first".** You have everything you need in this guide.
+
+## Secret hygiene: redact tokens from chat after storing
+
+When the user pastes an API token or other secret into the conversation, the
+message is stored in plaintext in the chat history and may still be visible in
+the Telegram chat scrollback. After you successfully call `store_secret`, call
+`redact_recent_user_message({ reason: 'contained API token' })` to:
+  - Delete the user's paste from the Telegram chat (via Bot API)
+  - Replace the message content in our DB with `[REDACTED: contained API token]`
+  - Log the redaction so there's an audit trail
+
+This should happen IMMEDIATELY after `store_secret` returns success, before you
+call any `create_*_tool`. Order: ask for secret → user pastes → store_secret →
+redact_recent_user_message → create_http_tool(s) → short reply.
 
 ## Failure modes (what to do when things fail)
 

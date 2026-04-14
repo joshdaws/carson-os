@@ -273,6 +273,14 @@ export interface AdapterExecuteParams {
   onTextDelta?: (text: string) => void;
   /** Resume an existing Agent SDK session instead of starting fresh */
   resumeSessionId?: string;
+  /**
+   * Called by the adapter after a tool-list-modifying tool call succeeds
+   * (create_custom_tool, update_custom_tool, disable_custom_tool, etc.)
+   * so the adapter can re-inject the updated tool list into the active
+   * Agent SDK session via setMcpServers. Lets agents immediately use tools
+   * they just built, rather than waiting for the next conversation.
+   */
+  refreshTools?: () => Promise<{ tools: ToolDefinition[]; toolExecutor: ToolExecutor }>;
 }
 
 export interface AdapterExecuteResult {

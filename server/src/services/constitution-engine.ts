@@ -376,6 +376,7 @@ export class ConstitutionEngine {
     let tools = undefined;
     let toolExecutor = undefined;
     let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
+    let refreshToolsForAdapter: (() => Promise<{ tools: import("@carsonos/shared").ToolDefinition[]; toolExecutor: import("@carsonos/shared").ToolExecutor }>) | undefined;
 
     if (this.toolRegistry) {
       const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -426,7 +427,7 @@ export class ConstitutionEngine {
         allowedCollections = [memberSlug, "household"];
       }
 
-      const built = await this.toolRegistry.buildExecutor({
+      const executorCtx = {
         db: this.db,
         memoryProvider: this.memoryProvider,
         agentId,
@@ -439,13 +440,23 @@ export class ConstitutionEngine {
         allMemberCollections,
         allowedCollections,
         multiRelay: this.multiRelay ?? undefined,
-      });
+      };
+
+      const built = await this.toolRegistry.buildExecutor(executorCtx);
 
       if (built) {
         tools = built.tools;
         toolExecutor = built.executor;
         toolCallLog = built.calls;
       }
+
+      // Expose a refresh callback to the adapter so mid-session custom tool
+      // registrations get re-pushed into the model's tool list via setMcpServers.
+      refreshToolsForAdapter = async () => {
+        const rebuilt = await this.toolRegistry!.buildExecutor(executorCtx);
+        if (!rebuilt) return { tools: [], toolExecutor: async () => ({ content: "no tools", is_error: true }) };
+        return { tools: rebuilt.tools, toolExecutor: rebuilt.executor };
+      };
     }
 
     // Add the current user message to history for the LLM call
@@ -467,6 +478,10 @@ export class ConstitutionEngine {
         enabledSkills,
         onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
+        // Mid-session tool refresh: re-run buildExecutor after a custom tool
+        // is created/updated/disabled. The adapter uses this to call
+        // setMcpServers so the new tool is immediately usable in this conv.
+        refreshTools: refreshToolsForAdapter,
       });
       llmResponse = result.content;
 
