@@ -76,6 +76,66 @@ function computeToolSignature(toolDefs: import("@carsonos/shared").ToolDefinitio
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
+/**
+ * Process-global cache of `tool()` return values keyed by tool name.
+ *
+ * The Claude Agent SDK's tool()/createSdkMcpServer pair retains global state
+ * about registered tool names and throws "Tool X is already registered" when
+ * you call tool() twice with the same name — which happens in our flow
+ * whenever we rebuild the MCP server (either for a mid-session refresh or on
+ * a subsequent execute() call).
+ *
+ * By caching the SdkMcpToolDefinition objects by name, we avoid the SDK's
+ * global-state tripwire entirely. Each cached entry carries a mutable
+ * `handlerRef` so the actual executor invoked at tool-call time always
+ * resolves to the current request's engine-provided executor, not a stale
+ * closure from when the tool was first registered.
+ *
+ * Tradeoff: the SdkMcpToolDefinition's cached `description` and Zod `shape`
+ * are sticky for the process lifetime. If a tool's name is reused with a
+ * different input_schema in a later call, the old shape wins until restart.
+ * For M1 this is acceptable — update_custom_tool changes rarely and a
+ * server restart picks them up. Revisit if/when that becomes painful.
+ */
+type HandlerRef = { current: import("@carsonos/shared").ToolExecutor };
+type CachedTool = { def: ReturnType<typeof tool>; handlerRef: HandlerRef };
+const mcpToolCache = new Map<string, CachedTool>();
+
+function getOrCreateCachedTool(
+  def: import("@carsonos/shared").ToolDefinition,
+  executor: import("@carsonos/shared").ToolExecutor,
+  onCall: (name: string, input: Record<string, unknown>, result: import("@carsonos/shared").ToolResult) => void,
+): ReturnType<typeof tool> {
+  const cached = mcpToolCache.get(def.name);
+  if (cached) {
+    cached.handlerRef.current = executor;
+    return cached.def;
+  }
+
+  const handlerRef: HandlerRef = { current: executor };
+  const properties = (def.input_schema.properties ?? {}) as Record<string, JsonSchemaProperty>;
+  const required = (def.input_schema.required ?? []) as string[];
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, prop] of Object.entries(properties)) {
+    let fieldSchema = jsonSchemaPropToZod(prop);
+    if (prop.description) fieldSchema = fieldSchema.describe(prop.description);
+    if (!required.includes(key)) fieldSchema = fieldSchema.optional();
+    shape[key] = fieldSchema;
+  }
+
+  const newDef = tool(def.name, def.description, shape, async (input: Record<string, unknown>) => {
+    const result = await handlerRef.current(def.name, input);
+    onCall(def.name, input, result);
+    return {
+      content: [{ type: "text" as const, text: result.content }],
+      isError: result.is_error,
+    };
+  });
+
+  mcpToolCache.set(def.name, { def: newDef, handlerRef });
+  return newDef;
+}
+
 // -- Claude Code adapter (text only, no tools) -----------------------
 
 class ClaudeCodeAdapter implements Adapter {
@@ -322,49 +382,27 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let triggerRefresh: (toolName: string) => Promise<void> = async () => {};
 
     /**
-     * Build an MCP server config from a tool list + executor. Extracted so
-     * we can rebuild it mid-session when custom tools are created/updated
-     * via setMcpServers (see triggerRefresh handling below).
+     * Build an MCP server config from a tool list + executor. Reuses cached
+     * SdkMcpToolDefinitions keyed by name to avoid the SDK's "Tool X is
+     * already registered" error on rebuilds.
      */
     const buildMcpServer = (
       toolDefs: import("@carsonos/shared").ToolDefinition[],
       executor: import("@carsonos/shared").ToolExecutor,
     ) => {
-      const mcpTools = toolDefs.map((t) => {
-        const properties = (t.input_schema.properties ?? {}) as Record<string, JsonSchemaProperty>;
-        const required = (t.input_schema.required ?? []) as string[];
-        const shape: Record<string, z.ZodTypeAny> = {};
-
-        for (const [key, prop] of Object.entries(properties)) {
-          let fieldSchema = jsonSchemaPropToZod(prop);
-          if (prop.description) fieldSchema = fieldSchema.describe(prop.description);
-          if (!required.includes(key)) fieldSchema = fieldSchema.optional();
-          shape[key] = fieldSchema;
+      const onCall = (
+        name: string,
+        input: Record<string, unknown>,
+        result: import("@carsonos/shared").ToolResult,
+      ) => {
+        allToolCalls.push({ name, input, result });
+        if (!result.is_error && TOOL_LIST_MODIFYING.has(name)) {
+          // Fire and forget — the MCP swap runs async so we don't block
+          // returning this tool's result to the SDK.
+          void triggerRefresh(name);
         }
-
-        return tool(
-          t.name,
-          t.description,
-          shape,
-          async (input: Record<string, unknown>) => {
-            const result = await executor(t.name, input);
-            allToolCalls.push({ name: t.name, input, result });
-            // Fire mid-session MCP refresh if this was a tool-list-modifying
-            // success. Swap happens after we return this result to the SDK
-            // so there's no race with the current call.
-            if (!result.is_error && TOOL_LIST_MODIFYING.has(t.name)) {
-              // Fire and forget — the MCP swap runs async so we don't block
-              // returning this tool's result to the SDK.
-              void triggerRefresh(t.name);
-            }
-            return {
-              content: [{ type: "text" as const, text: result.content }],
-              isError: result.is_error,
-            };
-          },
-        );
-      });
-
+      };
+      const mcpTools = toolDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
       return createSdkMcpServer({
         name: currentMcpServerName,
         version: "1.0.0",
