@@ -19,6 +19,7 @@ import {
   bundleFromPath,
   ensureToolsDir,
   hashToolDir,
+  removeToolDir,
   toolDirPath,
   toolRelPath,
   validateToolName,
@@ -219,10 +220,15 @@ async function writeAndRegisterTool(
   }
 
   // Reserved-name check is purely in-memory, safe to run outside the lock.
-  if (CUSTOM_TOOL_NAMES.has(name)) {
+  // Also check the normalized form: now that validateToolName accepts hyphens
+  // (for skills-ecosystem compatibility), a name like `create-http-tool` would
+  // pass the regex but collide semantically with the reserved `create_http_tool`.
+  // Normalize hyphens to underscores and re-check so the agent can't shadow a
+  // system tool by alias.
+  if (CUSTOM_TOOL_NAMES.has(name) || CUSTOM_TOOL_NAMES.has(name.replace(/-/g, "_"))) {
     return errResult(
       "validation_error",
-      `'${name}' is a reserved system tool name. Choose a different name (e.g., 'my_${name}').`,
+      `'${name}' collides with a reserved system tool name (either exactly or after hyphen→underscore normalization). Pick a different name.`,
     );
   }
 
@@ -440,11 +446,17 @@ async function handleUpdateCustomTool(
 
     // All validation passed. Writes are atomic (temp + rename) so a crash
     // between them leaves either old or new content but never a partial file.
+    // Write SKILL.md FIRST, then handler.ts. If we crash between the two for
+    // a script tool, boot-reconciliation's content-hash check will detect
+    // the mismatch and push the tool to pending_approval — safe degradation.
+    // Reversing the order would make the handler.ts change live before the
+    // frontmatter (input_schema, description) updated, which is a worse
+    // mid-crash state.
+    atomicWriteFile(skillPath, writeSkillMd(doc));
     if (stagedHandlerCode !== null) {
       atomicWriteFile(join(dir, "handler.ts"), stagedHandlerCode);
       affectsScript = true;
     }
-    atomicWriteFile(skillPath, writeSkillMd(doc));
 
     // Compute new hash
     const newHash = hashToolDir(dir);
@@ -632,14 +644,45 @@ async function handleInstallSkill(
     );
   }
 
-  // Promote each tool. If any fails, roll back everything installed so far.
-  const installedRows: Array<{ id: string; name: string }> = [];
+  // Also reject names that would shadow system tools. Without this check, a
+  // third-party skill could ship a SKILL.md whose frontmatter.name is
+  // `store_secret` or `install_skill` and hijack the reserved routing.
+  for (const entry of result.entries) {
+    const candidateName = rename && result.entries.length === 1 ? rename : entry.toolName;
+    if (CUSTOM_TOOL_NAMES.has(candidateName)) {
+      cleanupStaging(result.stagingRoot);
+      return errResult(
+        "validation_error",
+        `Skill declares reserved tool name '${candidateName}'. Use 'rename' (single-tool archive) or pick a different skill.`,
+      );
+    }
+    // The hyphen-variant of a reserved snake_case name would bypass the check
+    // above. Normalize and re-check.
+    if (CUSTOM_TOOL_NAMES.has(candidateName.replace(/-/g, "_"))) {
+      cleanupStaging(result.stagingRoot);
+      return errResult(
+        "validation_error",
+        `Skill name '${candidateName}' collides with a reserved system tool after normalization.`,
+      );
+    }
+  }
+
+  // Promote each tool. Track every side effect (filesystem dir, DB row,
+  // registry registration, grant) so we can compensate if any step fails.
+  // The previous implementation only rolled back DB rows — files promoted
+  // into the live tools dir were left behind as orphans, and already-
+  // registered tools stayed callable until the next server restart.
+  const promoted: Array<{ destDir: string; name: string; rowId?: string; registered?: boolean; granted?: boolean }> = [];
   try {
     for (const entry of result.entries) {
       const finalName = rename && result.entries.length === 1 ? rename : entry.toolName;
       const relPath = toolRelPath(entry.bundle, finalName);
       const destDir = toolDirPath(ctx.householdId, entry.bundle, finalName);
       ensureToolsDir(ctx.householdId);
+
+      const tracker: typeof promoted[number] = { destDir, name: finalName };
+      promoted.push(tracker);
+
       promoteTool(entry, destDir);
 
       const [row] = await ctx.db
@@ -657,19 +700,31 @@ async function handleInstallSkill(
           generation: 1,
         })
         .returning({ id: customTools.id, name: customTools.name });
-      installedRows.push(row);
+      tracker.rowId = row.id;
 
       await ctx.onToolChanged({ type: "created", toolId: row.id });
+      tracker.registered = true;
+
       await ctx.toolRegistry.grant(ctx.agentId, finalName, ctx.agentId);
+      tracker.granted = true;
     }
   } catch (err) {
-    // Roll back DB rows + installed files
-    for (const row of installedRows) {
-      try {
-        await ctx.db.delete(customTools).where(eq(customTools.id, row.id));
-      } catch {
-        /* best effort */
+    // Compensate in reverse order — for each partially-succeeded tool, undo
+    // whatever side effects reached disk or state.
+    for (const t of promoted.reverse()) {
+      if (t.granted) {
+        try { await ctx.toolRegistry.revoke(ctx.agentId, t.name); } catch { /* best effort */ }
       }
+      if (t.registered) {
+        try { ctx.toolRegistry.unregisterCustom(ctx.householdId, t.name); } catch { /* best effort */ }
+      }
+      if (t.rowId) {
+        try { await ctx.db.delete(customTools).where(eq(customTools.id, t.rowId)); } catch { /* best effort */ }
+      }
+      // Always try to remove the promoted directory, even if DB/registry
+      // work never happened — the file move is the first side effect in
+      // the loop, so it's the one most likely to exist on a partial install.
+      try { removeToolDir(t.destDir); } catch { /* best effort */ }
     }
     cleanupStaging(result.stagingRoot);
     return errResult(
@@ -678,6 +733,7 @@ async function handleInstallSkill(
     );
   }
 
+  const installedRows = promoted.filter((t) => t.rowId).map((t) => ({ id: t.rowId!, name: t.name }));
   cleanupStaging(result.stagingRoot);
 
   return {

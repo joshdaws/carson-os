@@ -121,12 +121,16 @@ export async function executeHttpTool(
 
     // Handle redirects with per-hop allowlist re-check
     let finalRes = res;
-    let currentHost = parsedUrl.hostname;
+    // Track the full authority (host:port) so a redirect from
+    // `api.example.com` to `api.example.com:8443` is treated as cross-origin
+    // — different port usually means a different service, and we shouldn't
+    // hand its auth header over just because the hostname matches.
+    let currentAuthority = parsedUrl.host;
     let hops = 0;
     while (finalRes.status >= 300 && finalRes.status < 400 && hops < 5) {
       const loc = finalRes.headers.get("location");
       if (!loc) break;
-      const nextUrl = new URL(loc, `https://${currentHost}`);
+      const nextUrl = new URL(loc, `https://${currentAuthority}`);
       if (nextUrl.protocol !== "https:") {
         return toolError("domain_blocked", `Redirect to non-HTTPS '${loc}' blocked.`);
       }
@@ -136,10 +140,10 @@ export async function executeHttpTool(
           `Redirect to '${nextUrl.hostname}' blocked (not in allowlist).`,
         );
       }
-      // Cross-host redirect: strip auth headers before re-issuing so a
-      // domainAllowlist with more than one host can't leak a bearer token
-      // from the intended API to another allowlisted domain.
-      const nextHeaders = nextUrl.hostname !== currentHost
+      // Cross-origin redirect (different host OR different port): strip auth
+      // headers before re-issuing. Same-port hostname-only match is the only
+      // case where we carry auth across.
+      const nextHeaders = nextUrl.host !== currentAuthority
         ? stripAuthHeaders(headers, config.auth)
         : headers;
       finalRes = await fetch(nextUrl.toString(), {
@@ -149,7 +153,7 @@ export async function executeHttpTool(
         redirect: "manual",
         signal: controller.signal,
       });
-      currentHost = nextUrl.hostname;
+      currentAuthority = nextUrl.host;
       hops++;
     }
 

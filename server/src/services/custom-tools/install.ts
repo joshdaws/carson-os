@@ -18,7 +18,7 @@
  *   • Falls back from `main` to `master` if the first download 404s.
  *
  * Safety posture (single-family trusted deployment):
- *   • HTTPS only, 10 MB archive cap, 50 MB extracted cap, 200-entry cap.
+ *   • HTTPS only, 10 MB archive cap, 50 MB extracted cap, 1000-entry cap.
  *   • Reject symlinks, hardlinks, devices, FIFOs, and GNU tar extensions.
  *   • Reject any entry with `..` or empty path segments (traversal).
  *   • Post-extract lstat sweep as a belt-and-suspenders check.
@@ -39,6 +39,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import {
+  cpSync,
   createWriteStream,
   mkdirSync,
   readFileSync,
@@ -58,7 +59,9 @@ import { validateToolName, validateBundleName, hashToolDir } from "./fs-helpers.
 
 const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES = 50 * 1024 * 1024;
-const MAX_FILE_COUNT = 1000; // skills repos can be wide; 1000 is still safe
+// Skills repos can be wide (vercel-labs/skills has ~50 entries for example).
+// 1000 gives comfortable headroom while still catching archive-bomb attempts.
+const MAX_FILE_COUNT = 1000;
 const FETCH_TIMEOUT_MS = 30_000;
 const FALLBACK_REFS = ["main", "master"];
 
@@ -367,6 +370,18 @@ async function extractSafely(archivePath: string, stagingRoot: string): Promise<
 
         const type = entry.type;
 
+        // Count EVERY entry toward the cap, even skipped ones. Without this,
+        // an archive stuffed with a million symlink headers would bypass the
+        // limit (File/Directory never increments) while still forcing tar to
+        // parse every header — CPU denial vector.
+        entryCount++;
+        if (entryCount > MAX_FILE_COUNT) {
+          return fail(
+            "validation_error",
+            `Archive contains more than ${MAX_FILE_COUNT} entries; rejected`,
+          );
+        }
+
         // Silently skip entry types we don't extract. Symlinks and hardlinks
         // are the common "decorative" cases in real repos. Devices, FIFOs,
         // and GNU extensions can also be skipped — if the archive relies on
@@ -376,13 +391,6 @@ async function extractSafely(archivePath: string, stagingRoot: string): Promise<
           return false;
         }
 
-        entryCount++;
-        if (entryCount > MAX_FILE_COUNT) {
-          return fail(
-            "validation_error",
-            `Archive contains more than ${MAX_FILE_COUNT} entries; rejected`,
-          );
-        }
         if (type === "File") {
           totalBytes += entry.size ?? 0;
           if (totalBytes > MAX_EXTRACTED_BYTES) {
@@ -688,7 +696,21 @@ export function sha256Hex(s: string): string {
 
 export function promoteTool(entry: ResolvedSkillEntry, destDir: string): void {
   mkdirSync(join(destDir, ".."), { recursive: true, mode: 0o700 });
-  renameSync(entry.stagingDir, destDir);
+  try {
+    renameSync(entry.stagingDir, destDir);
+  } catch (err) {
+    // renameSync throws EXDEV when staging and destination are on different
+    // filesystems — common on Linux where /tmp is tmpfs and $HOME is a
+    // separate mount (Docker containers, many desktop distros). Fall back to
+    // recursive copy + remove. Same security guarantees since we already
+    // verified no symlinks escaped (assertNoSymlinks) before promotion.
+    if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+      cpSync(entry.stagingDir, destDir, { recursive: true });
+      rmSync(entry.stagingDir, { recursive: true, force: true });
+    } else {
+      throw err;
+    }
+  }
 }
 
 export function cleanupStaging(stagingRoot: string): void {

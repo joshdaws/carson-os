@@ -157,23 +157,40 @@ export async function loadCustomTools(db: Db, registry: ToolRegistry): Promise<L
 }
 
 /**
- * Attempt to decrypt one stored secret. If it fails, log a loud warning.
- * This catches the "CARSONOS_SECRET changed" / "lost .secret keyfile" case
- * at boot instead of mid-conversation when an HTTP tool tries to inject auth.
+ * Attempt to decrypt every stored secret. Log a warning if any fail.
+ *
+ * Iterating all rows (instead of sampling one) catches a subtle case: if
+ * CARSONOS_SECRET changed AND some rows were re-encrypted under the new key
+ * while others were not, a random sample might hit a "good" row and falsely
+ * green-light the boot. Walking the full set gives us a clear signal:
+ *   • all decrypt → key is current, nothing broken
+ *   • all fail    → key was rotated, everything is stale
+ *   • partial     → migration half-ran, needs operator attention
  */
 function checkSecretHealth(db: Db): void {
-  try {
-    const sample = db.select().from(toolSecrets).limit(1).all();
-    if (sample.length === 0) return; // no secrets stored yet, nothing to check
+  const rows = db.select().from(toolSecrets).all();
+  if (rows.length === 0) return;
 
-    decryptSecret(sample[0].encryptedValue);
-    // success — key material is valid
-  } catch (err) {
-    console.warn(
-      `[tool-secrets] HEALTH CHECK FAILED: cannot decrypt stored secret (${(err as Error).message}). ` +
-        `The encryption key (CARSONOS_SECRET env var or ~/.carsonos/.secret keyfile) likely changed or was lost. ` +
-        `Restore the original key from backup, or delete affected tool_secrets rows and re-enter them via store_secret. ` +
-        `Custom HTTP tools requiring auth will fail until this is resolved.`,
-    );
+  let failed = 0;
+  let lastError: string | undefined;
+  for (const row of rows) {
+    try {
+      decryptSecret(row.encryptedValue);
+    } catch (err) {
+      failed++;
+      lastError = (err as Error).message;
+    }
   }
+  if (failed === 0) return;
+
+  const severity = failed === rows.length ? "ALL" : "PARTIAL";
+  console.warn(
+    `[tool-secrets] HEALTH CHECK ${severity} FAIL: ${failed}/${rows.length} stored secret(s) failed to decrypt ` +
+      `(last error: ${lastError}). ` +
+      `The encryption key (CARSONOS_SECRET env var or ~/.carsonos/.secret keyfile) likely changed or was lost. ` +
+      (severity === "PARTIAL"
+        ? `Partial failure suggests an incomplete re-encryption migration. Review tool_secrets rows and re-run store_secret for affected keys.`
+        : `Restore the original key from backup, or delete tool_secrets rows and re-enter via store_secret.`) +
+      ` Custom HTTP tools requiring affected secrets will fail until resolved.`,
+  );
 }

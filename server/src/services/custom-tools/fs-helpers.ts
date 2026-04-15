@@ -33,7 +33,11 @@ export const TOOLS_ROOT = process.env.CARSONOS_TOOLS_DIR ?? join(homedir(), ".ca
 // hyphenated names like 'find-skills' or 'youtube-transcript'. MCP tool
 // calls, file paths, and DB columns all handle hyphens fine.
 const TOOL_NAME_RE = /^[a-z][a-z0-9_-]*$/;
-const BUNDLE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+// Bundle name regex mirrors tool name rules — lowercase-only to avoid silent
+// directory collisions on case-insensitive filesystems (HFS+/APFS default,
+// Windows). A repo containing both `Foo/bar` and `foo/bar` would otherwise
+// race for the same on-disk path.
+const BUNDLE_NAME_RE = /^[a-z0-9_-]+$/;
 const MAX_NAME_LEN = 64;
 
 export function validateToolName(name: string): void {

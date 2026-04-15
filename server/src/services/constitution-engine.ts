@@ -137,22 +137,42 @@ function redactToolLogInput(name: string, input: Record<string, unknown>): Recor
  * Prevents HTTP tool responses that reflect auth headers, script tool results
  * that include ctx.getSecret() values, and error messages with embedded tokens
  * from landing in activity_log in plaintext.
+ *
+ * Walks the structured object and redacts raw string leaves before
+ * serialization. Earlier implementation stringified first and ran
+ * raw-substring redaction against the JSON output — that misses any secret
+ * containing characters JSON has to escape (`"`, `\`, newlines, control
+ * chars), because the literal bytes in the JSON differ from the raw secret.
  */
 function redactToolCallAgainstSecrets(
   record: { input: unknown; result: unknown },
   secrets: Array<{ keyName: string; value: string }>,
 ): { input: unknown; result: unknown } {
   if (secrets.length === 0) return record;
-  const json = JSON.stringify(record);
-  const scrubbed = redactSecrets(json, secrets);
-  if (scrubbed === json) return record;
-  try {
-    return JSON.parse(scrubbed) as { input: unknown; result: unknown };
-  } catch {
-    // Parse failure = our split/join produced invalid JSON (e.g. escaped quote
-    // inside a secret). Fall back to the stringified form so nothing leaks.
-    return { input: "[REDACTED:serialize-failed]", result: "[REDACTED:serialize-failed]" };
+  return {
+    input: redactValue(record.input, secrets),
+    result: redactValue(record.result, secrets),
+  };
+}
+
+function redactValue(
+  value: unknown,
+  secrets: Array<{ keyName: string; value: string }>,
+): unknown {
+  if (typeof value === "string") {
+    return redactSecrets(value, secrets);
   }
+  if (Array.isArray(value)) {
+    return value.map((v) => redactValue(v, secrets));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactValue(v, secrets);
+    }
+    return out;
+  }
+  return value;
 }
 
 /**
