@@ -42,7 +42,8 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
-import { activityLog } from "@carsonos/db";
+import { activityLog, toolSecrets } from "@carsonos/db";
+import { decryptSecret, redactSecrets } from "./custom-tools/secrets.js";
 import {
   buildMemorySchemaInstructions,
   DEFAULT_MEMORY_SCHEMA,
@@ -122,6 +123,81 @@ const FRIENDLY_ERROR_MESSAGE =
 
 const FRIENDLY_SCAN_REPLACEMENT =
   "I generated a response that didn't meet the family's content rules, so I've held it back. Try rephrasing your question.";
+
+function redactToolLogInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (name !== "store_secret") return input;
+  return {
+    ...input,
+    ...(Object.prototype.hasOwnProperty.call(input, "value") ? { value: "[REDACTED]" } : {}),
+  };
+}
+
+/**
+ * Scrub a logged tool-call record against every known household secret.
+ * Prevents HTTP tool responses that reflect auth headers, script tool results
+ * that include ctx.getSecret() values, and error messages with embedded tokens
+ * from landing in activity_log in plaintext.
+ *
+ * Walks the structured object and redacts raw string leaves before
+ * serialization. Earlier implementation stringified first and ran
+ * raw-substring redaction against the JSON output — that misses any secret
+ * containing characters JSON has to escape (`"`, `\`, newlines, control
+ * chars), because the literal bytes in the JSON differ from the raw secret.
+ */
+function redactToolCallAgainstSecrets(
+  record: { input: unknown; result: unknown },
+  secrets: Array<{ keyName: string; value: string }>,
+): { input: unknown; result: unknown } {
+  if (secrets.length === 0) return record;
+  return {
+    input: redactValue(record.input, secrets),
+    result: redactValue(record.result, secrets),
+  };
+}
+
+function redactValue(
+  value: unknown,
+  secrets: Array<{ keyName: string; value: string }>,
+): unknown {
+  if (typeof value === "string") {
+    return redactSecrets(value, secrets);
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => redactValue(v, secrets));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactValue(v, secrets);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Load and decrypt all tool_secrets for a household. Runs at most once per
+ * message, only if a custom tool was actually invoked. Return value is kept
+ * in memory for the log-scrub pass then discarded.
+ */
+async function loadHouseholdSecrets(
+  db: Db,
+  householdId: string,
+): Promise<Array<{ keyName: string; value: string }>> {
+  const rows = await db
+    .select()
+    .from(toolSecrets)
+    .where(eq(toolSecrets.householdId, householdId));
+  const decoded: Array<{ keyName: string; value: string }> = [];
+  for (const row of rows) {
+    try {
+      decoded.push({ keyName: row.keyName, value: decryptSecret(row.encryptedValue) });
+    } catch {
+      // Single corrupted row shouldn't stop redaction for other keys
+    }
+  }
+  return decoded;
+}
 
 // -- Engine ----------------------------------------------------------
 
@@ -327,6 +403,22 @@ export class ConstitutionEngine {
       resumeSessionId = await this.loadSessionFromDb(conversationId);
     }
 
+    // Persist the user message BEFORE loading history so:
+    //   (a) tools invoked during this turn (e.g. redact_recent_user_message)
+    //       can find it in the DB
+    //   (b) `history` includes the current message exactly once, so
+    //       `messagesForLlm = history` doesn't double-append it
+    await this.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "user",
+      content: message,
+    });
+    await this.db
+      .update(conversations)
+      .set({ lastMessageAt: new Date().toISOString() })
+      .where(eq(conversations.id, conversationId));
+
     const history = await this.getConversationHistory(conversationId);
 
     // Detect first-contact onboarding: no profile + member is not a parent
@@ -376,6 +468,7 @@ export class ConstitutionEngine {
     let tools = undefined;
     let toolExecutor = undefined;
     let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
+    let refreshToolsForAdapter: (() => Promise<{ tools: import("@carsonos/shared").ToolDefinition[]; toolExecutor: import("@carsonos/shared").ToolExecutor }>) | undefined;
 
     if (this.toolRegistry) {
       const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -426,7 +519,7 @@ export class ConstitutionEngine {
         allowedCollections = [memberSlug, "household"];
       }
 
-      const built = await this.toolRegistry.buildExecutor({
+      const executorCtx = {
         db: this.db,
         memoryProvider: this.memoryProvider,
         agentId,
@@ -439,20 +532,27 @@ export class ConstitutionEngine {
         allMemberCollections,
         allowedCollections,
         multiRelay: this.multiRelay ?? undefined,
-      });
+      };
+
+      const built = await this.toolRegistry.buildExecutor(executorCtx);
 
       if (built) {
         tools = built.tools;
         toolExecutor = built.executor;
         toolCallLog = built.calls;
       }
+
+      // Expose a refresh callback to the adapter so mid-session custom tool
+      // registrations get re-pushed into the model's tool list via setMcpServers.
+      refreshToolsForAdapter = async () => {
+        const rebuilt = await this.toolRegistry!.buildExecutor(executorCtx);
+        if (!rebuilt) return { tools: [], toolExecutor: async () => ({ content: "no tools", is_error: true }) };
+        return { tools: rebuilt.tools, toolExecutor: rebuilt.executor };
+      };
     }
 
     // Add the current user message to history for the LLM call
-    const messagesForLlm = [
-      ...history,
-      { role: "user", content: message },
-    ];
+    const messagesForLlm = history;
 
     let llmResponse: string;
 
@@ -467,6 +567,10 @@ export class ConstitutionEngine {
         enabledSkills,
         onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
+        // Mid-session tool refresh: re-run buildExecutor after a custom tool
+        // is created/updated/disabled. The adapter uses this to call
+        // setMcpServers so the new tool is immediately usable in this conv.
+        refreshTools: refreshToolsForAdapter,
       });
       llmResponse = result.content;
 
@@ -478,14 +582,23 @@ export class ConstitutionEngine {
 
       // Log tool calls to activity log
       if (toolCallLog && toolCallLog.length > 0) {
+        // Load household secrets once per message so we can scrub any leaked
+        // value from tool inputs or results. A custom HTTP tool pointing at a
+        // reflector endpoint would otherwise persist its Bearer token into
+        // activity_log verbatim.
+        const secrets = await loadHouseholdSecrets(this.db, householdId);
         for (const call of toolCallLog) {
           try {
+            const scrubbed = redactToolCallAgainstSecrets(
+              { input: redactToolLogInput(call.name, call.input), result: call.result },
+              secrets,
+            );
             await this.db.insert(activityLog).values({
               id: crypto.randomUUID(),
               householdId,
               agentId,
               action: `tool:${call.name}`,
-              details: { input: call.input, result: call.result },
+              details: scrubbed,
             });
           } catch {
             // Don't let logging failures break the pipeline
@@ -767,25 +880,20 @@ export class ConstitutionEngine {
 
   private async recordMessages(
     conversationId: string,
-    userMessage: string,
+    _userMessage: string,
     assistantMessage: string,
   ): Promise<void> {
     const now = new Date().toISOString();
 
-    await this.db.insert(messages).values([
-      {
-        id: crypto.randomUUID(),
-        conversationId,
-        role: "user",
-        content: userMessage,
-      },
-      {
-        id: crypto.randomUUID(),
-        conversationId,
-        role: "assistant",
-        content: assistantMessage,
-      },
-    ]);
+    // User message is persisted earlier in processMessage so MCP tools called
+    // during the agent run can reference it (e.g. redact_recent_user_message).
+    // Here we only write the assistant response.
+    await this.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "assistant",
+      content: assistantMessage,
+    });
 
     // Update lastMessageAt on the conversation
     await this.db

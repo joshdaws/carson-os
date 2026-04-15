@@ -424,3 +424,77 @@ export const instanceSettings = sqliteTable("instance_settings", {
   key: text("key").notNull().unique(),
   value: text("value", { mode: "json" }),
 });
+
+// ── 17. customTools ─────────────────────────────────────────────────
+
+/**
+ * Custom tools created by agents or installed from skills.sh.
+ *
+ * The SKILL.md file on disk is the source of truth for what the tool is
+ * (name, description, input_schema, config). This table stores operational
+ * state only: status, usage stats, authorship, content hash for tamper
+ * detection. See ~/.carsonos/tools/{household_id}/{path}/SKILL.md.
+ */
+export const customTools = sqliteTable(
+  "custom_tools",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    name: text("name").notNull(), // matches SKILL.md frontmatter.name
+    kind: text("kind").notNull(), // 'http' | 'prompt' | 'script'
+    path: text("path").notNull(), // relative path under ~/.carsonos/tools/{hh}/
+    createdByAgentId: text("created_by_agent_id")
+      .notNull()
+      .references(() => staffAgents.id),
+    source: text("source").notNull().default("agent"), // 'agent' | 'installed-skill' | 'imported'
+    sourceUrl: text("source_url"), // for installed skills
+    status: text("status").notNull().default("active"), // 'active' | 'disabled' | 'pending_approval' | 'promoted' | 'broken'
+    approvedContentHash: text("approved_content_hash"), // SHA-256 of files at last approval
+    schemaVersion: integer("schema_version").notNull().default(1), // bumped on update; used for session invalidation
+    generation: integer("generation").notNull().default(1), // bumped on update; used for script module cache-busting
+    usageCount: integer("usage_count").notNull().default(0),
+    lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+    lastError: text("last_error"), // populated for 'broken' status
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("custom_tools_household_idx").on(t.householdId),
+    index("custom_tools_status_idx").on(t.status),
+    uniqueIndex("custom_tools_household_name_unique").on(t.householdId, t.name),
+  ]
+);
+
+// ── 18. toolSecrets ─────────────────────────────────────────────────
+
+/**
+ * Encrypted secrets referenced by custom tools. Values are encrypted at rest
+ * with AES-256-GCM. Key derived from CARSONOS_SECRET env var (preferred) or
+ * a generated keyfile at ~/.carsonos/.secret.
+ *
+ * Referenced by HTTP tools via auth.secretKey and by script tools via
+ * ctx.getSecret(key_name). Never returned from list APIs. Never logged.
+ */
+export const toolSecrets = sqliteTable(
+  "tool_secrets",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    keyName: text("key_name").notNull(), // e.g., 'ynab_api_token'
+    encryptedValue: text("encrypted_value").notNull(), // base64(iv + authtag + ciphertext)
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("tool_secrets_household_idx").on(t.householdId),
+    uniqueIndex("tool_secrets_household_key_unique").on(t.householdId, t.keyName),
+  ]
+);

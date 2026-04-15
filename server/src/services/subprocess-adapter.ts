@@ -11,6 +11,7 @@
  * This is the same pattern mr-carson uses.
  */
 
+import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -51,6 +52,106 @@ function quoteWinArg(arg: string): string {
 
 function spawnArgs(args: string[]): string[] {
   return IS_WIN ? args.map(quoteWinArg) : args;
+}
+
+type JsonSchemaProperty = {
+  type?: string;
+  description?: string;
+  enum?: string[];
+  items?: JsonSchemaProperty;
+};
+
+function jsonSchemaPropToZod(prop: JsonSchemaProperty): z.ZodTypeAny {
+  if (prop.enum && prop.enum.length > 0) {
+    return z.enum(prop.enum as [string, ...string[]]);
+  }
+
+  switch (prop.type) {
+    case "object":
+      return z.record(z.string(), z.unknown());
+    case "array":
+      return z.array(prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown());
+    case "number":
+    case "integer":
+      return z.number();
+    case "boolean":
+      return z.boolean();
+    case "string":
+    default:
+      return z.string();
+  }
+}
+
+function computeToolSignature(toolDefs: import("@carsonos/shared").ToolDefinition[]): string {
+  const payload = toolDefs
+    .map((toolDef) => ({
+      name: toolDef.name,
+      description: toolDef.description,
+      input_schema: toolDef.input_schema,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+/**
+ * Process-global cache of `tool()` return values keyed by tool name.
+ *
+ * The Claude Agent SDK's tool()/createSdkMcpServer pair retains global state
+ * about registered tool names and throws "Tool X is already registered" when
+ * you call tool() twice with the same name — which happens in our flow
+ * whenever we rebuild the MCP server (either for a mid-session refresh or on
+ * a subsequent execute() call).
+ *
+ * By caching the SdkMcpToolDefinition objects by name, we avoid the SDK's
+ * global-state tripwire entirely. Each cached entry carries a mutable
+ * `handlerRef` so the actual executor invoked at tool-call time always
+ * resolves to the current request's engine-provided executor, not a stale
+ * closure from when the tool was first registered.
+ *
+ * Tradeoff: the SdkMcpToolDefinition's cached `description` and Zod `shape`
+ * are sticky for the process lifetime. If a tool's name is reused with a
+ * different input_schema in a later call, the old shape wins until restart.
+ * For M1 this is acceptable — update_custom_tool changes rarely and a
+ * server restart picks them up. Revisit if/when that becomes painful.
+ */
+type HandlerRef = { current: import("@carsonos/shared").ToolExecutor };
+type CachedTool = { def: ReturnType<typeof tool>; handlerRef: HandlerRef };
+const mcpToolCache = new Map<string, CachedTool>();
+
+function getOrCreateCachedTool(
+  def: import("@carsonos/shared").ToolDefinition,
+  executor: import("@carsonos/shared").ToolExecutor,
+  onCall: (name: string, input: Record<string, unknown>, result: import("@carsonos/shared").ToolResult) => void,
+): ReturnType<typeof tool> {
+  const cached = mcpToolCache.get(def.name);
+  if (cached) {
+    cached.handlerRef.current = executor;
+    return cached.def;
+  }
+
+  const handlerRef: HandlerRef = { current: executor };
+  const properties = (def.input_schema.properties ?? {}) as Record<string, JsonSchemaProperty>;
+  const required = (def.input_schema.required ?? []) as string[];
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, prop] of Object.entries(properties)) {
+    let fieldSchema = jsonSchemaPropToZod(prop);
+    if (prop.description) fieldSchema = fieldSchema.describe(prop.description);
+    if (!required.includes(key)) fieldSchema = fieldSchema.optional();
+    shape[key] = fieldSchema;
+  }
+
+  const newDef = tool(def.name, def.description, shape, async (input: Record<string, unknown>) => {
+    const result = await handlerRef.current(def.name, input);
+    onCall(def.name, input, result);
+    return {
+      content: [{ type: "text" as const, text: result.content }],
+      isError: result.is_error,
+    };
+  });
+
+  mcpToolCache.set(def.name, { def: newDef, handlerRef });
+  return newDef;
 }
 
 // -- Claude Code adapter (text only, no tools) -----------------------
@@ -250,7 +351,37 @@ class CodexAdapter implements Adapter {
 // -- Claude Agent SDK adapter (with MCP tools) -----------------------
 
 const DEFAULT_MODEL = "sonnet";
-const MAX_TURNS = 15;
+
+/**
+ * Per-session turn limit for the Claude Agent SDK.
+ *
+ * The SDK's circuit breaker against runaway tool-call loops (search → think
+ * → search → ... burning tokens without progress). Configurable because
+ * different use cases want different ceilings:
+ *   - simple Q&A: 10–20 is fine
+ *   - tool creation / multi-step work: 50–80
+ *   - one-shot scripted tasks: can be lower
+ *
+ * Clamped to [1, 200]. Override via CARSONOS_MAX_TURNS env var.
+ *
+ * Hitting the limit is NOT a silent failure — we catch the SDK error and
+ * surface a user-visible "I got stuck" message so the human knows to retry
+ * with tighter scope. See the try/catch around the for-await loop below.
+ */
+function parseMaxTurns(): number {
+  const raw = process.env.CARSONOS_MAX_TURNS;
+  if (!raw) return 50;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return 50;
+  return Math.min(200, Math.floor(n));
+}
+const MAX_TURNS = parseMaxTurns();
+
+/** Matches the SDK's "Reached maximum number of turns (N)" error. */
+function isTurnLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /Reached maximum number of turns/i.test(msg);
+}
 
 class ClaudeAgentSdkAdapter implements Adapter {
   name = "claude-agent-sdk";
@@ -268,60 +399,89 @@ class ClaudeAgentSdkAdapter implements Adapter {
     const allowedTools: string[] = [];
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
 
-    if (tools && tools.length > 0 && toolExecutor) {
-      const mcpTools = tools.map((t) => {
-        // Build a Zod schema from the JSON schema input_schema
-        const properties = (t.input_schema.properties ?? {}) as Record<string, { type: string; description?: string; enum?: string[] }>;
-        const required = (t.input_schema.required ?? []) as string[];
-        const shape: Record<string, z.ZodTypeAny> = {};
+    // Each execute() invocation + each mid-session refresh gets a unique MCP
+    // server name. createSdkMcpServer / tool() retain process-global state
+    // about registered tool names, so re-creating a server with the same name
+    // and overlapping tools throws "Tool X is already registered". Unique
+    // names force the SDK to cleanly disconnect the prior server via
+    // setMcpServers (or avoid the collision on initial init across calls).
+    const MCP_SERVER_BASE = "carsonos-memory";
+    let mcpServerCounter = 0;
+    const nextMcpServerName = () => `${MCP_SERVER_BASE}-${Date.now()}-${++mcpServerCounter}`;
+    let currentMcpServerName = nextMcpServerName();
 
-        for (const [key, prop] of Object.entries(properties)) {
-          let fieldSchema: z.ZodTypeAny;
-          if (prop.enum) {
-            fieldSchema = z.enum(prop.enum as [string, ...string[]]);
-          } else if (prop.type === "object") {
-            fieldSchema = z.record(z.string(), z.unknown());
-          } else {
-            fieldSchema = z.string();
-          }
-          if (prop.description) {
-            fieldSchema = fieldSchema.describe(prop.description);
-          }
-          if (!required.includes(key)) {
-            fieldSchema = fieldSchema.optional();
-          }
-          shape[key] = fieldSchema;
+    // Forward-declared so the tool() callback can call it after a successful
+    // tool-list-modifying tool returns. Assigned below once conversation exists.
+    let triggerRefresh: (toolName: string) => Promise<void> = async () => {};
+
+    /**
+     * Build an MCP server config from a tool list + executor. Reuses cached
+     * SdkMcpToolDefinitions keyed by name to avoid the SDK's "Tool X is
+     * already registered" error on rebuilds.
+     */
+    const buildMcpServer = (
+      toolDefs: import("@carsonos/shared").ToolDefinition[],
+      executor: import("@carsonos/shared").ToolExecutor,
+    ) => {
+      const onCall = (
+        name: string,
+        input: Record<string, unknown>,
+        result: import("@carsonos/shared").ToolResult,
+      ) => {
+        allToolCalls.push({ name, input, result });
+        if (!result.is_error && TOOL_LIST_MODIFYING.has(name)) {
+          // Fire and forget — the MCP swap runs async so we don't block
+          // returning this tool's result to the SDK.
+          void triggerRefresh(name);
         }
-
-        // Create an Agent SDK tool that delegates to our toolExecutor
-        return tool(
-          t.name,
-          t.description,
-          shape,
-          async (input: Record<string, unknown>) => {
-            const result = await toolExecutor(t.name, input);
-            allToolCalls.push({ name: t.name, input, result });
-            return {
-              content: [{ type: "text" as const, text: result.content }],
-              isError: result.is_error,
-            };
-          },
-        );
-      });
-
-      const mcpServer = createSdkMcpServer({
-        name: "carsonos-memory",
+      };
+      // Defensive dedup by tool name. If upstream hands us duplicates (e.g.
+      // a tool resolving via both the bare-name path and the scoped-name
+      // path in getAgentTools), createSdkMcpServer throws "already
+      // registered". Pick the first occurrence.
+      const seenNames = new Set<string>();
+      const uniqueDefs: typeof toolDefs = [];
+      for (const t of toolDefs) {
+        if (seenNames.has(t.name)) {
+          console.warn(`[adapter] buildMcpServer dropping duplicate tool: ${t.name}`);
+          continue;
+        }
+        seenNames.add(t.name);
+        uniqueDefs.push(t);
+      }
+      const mcpTools = uniqueDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
+      console.log(`[adapter] buildMcpServer server=${currentMcpServerName} tools=${uniqueDefs.length}${toolDefs.length !== uniqueDefs.length ? ` (deduped from ${toolDefs.length})` : ""}`);
+      return createSdkMcpServer({
+        name: currentMcpServerName,
         version: "1.0.0",
         tools: mcpTools,
       });
+    };
 
-      mcpConfig = { "carsonos-memory": mcpServer };
-
-      // Allow all our MCP tools
+    if (tools && tools.length > 0 && toolExecutor) {
+      const mcpServer = buildMcpServer(tools, toolExecutor);
+      mcpConfig = { [currentMcpServerName]: mcpServer };
       for (const t of tools) {
-        allowedTools.push(`mcp__carsonos-memory__${t.name}`);
+        allowedTools.push(`mcp__${currentMcpServerName}__${t.name}`);
       }
     }
+
+    // Track the current tool set for change detection during for-await
+    let currentMcpToolNames = new Set((tools ?? []).map((t) => t.name));
+    let currentToolSignature = computeToolSignature(tools ?? []);
+
+    /**
+     * Tool names whose successful execution should trigger a mid-session MCP
+     * server refresh so newly-created/updated tools become immediately usable.
+     */
+    const TOOL_LIST_MODIFYING = new Set([
+      "create_http_tool",
+      "create_prompt_tool",
+      "create_script_tool",
+      "update_custom_tool",
+      "disable_custom_tool",
+      "install_skill",
+    ]);
 
     // Resolve model name to SDK shorthand
     const sdkModel = model === "claude-sonnet-4-6" ? "sonnet"
@@ -354,6 +514,46 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
     const isResume = !!params.resumeSessionId;
 
+    // Trust-level enforcement via canUseTool callback.
+    //
+    // `bypassPermissions` skips the interactive "Allow this tool?" prompt (we
+    // have no human operator to prompt), but empirically the declarative
+    // `tools`/`disallowedTools` lists do NOT reliably block tool calls when
+    // bypassPermissions is set. The SDK's `canUseTool` hook is the real
+    // enforcement point: it's invoked on EVERY tool call and its decision is
+    // authoritative.
+    //
+    // Rules:
+    //   - Built-in tools (Bash/Read/Write/etc) must be in params.builtinTools
+    //   - MCP tools (prefix `mcp__`) always allowed (they're our own)
+    //   - Anything else: deny with a retry hint the model can act on
+    const grantedBuiltins = new Set(params.builtinTools ?? []);
+    const canUseToolCallback = async (
+      toolName: string,
+      input: Record<string, unknown>,
+    ): Promise<
+      | { behavior: "allow"; updatedInput: Record<string, unknown> }
+      | { behavior: "deny"; message: string }
+    > => {
+      // MCP tool prefix starts with mcp__{currentMcpServerName}__, but since
+      // the server name is versioned and may change via setMcpServers, accept
+      // any mcp__{base}-*__ prefix for the duration of this execute() call.
+      if (toolName.startsWith(`mcp__${MCP_SERVER_BASE}`)) {
+        const match = toolName.match(/^mcp__[^_]+(?:-[^_]+)*__(.+)$/);
+        const bareName = match ? match[1] : toolName.split("__").slice(-1)[0];
+        if (currentMcpToolNames.has(bareName)) {
+          return { behavior: "allow", updatedInput: input };
+        }
+      }
+      // Claude Code built-ins: only allow if granted by trust level
+      if (grantedBuiltins.has(toolName)) return { behavior: "allow", updatedInput: input };
+      // Anything else: deny with a pointer to the right approach
+      return {
+        behavior: "deny",
+        message: `'${toolName}' is not available at this agent's trust level. To build a tool, call one of: create_http_tool, create_prompt_tool, create_script_tool, store_secret, list_custom_tools. Do not write installer scripts.`,
+      };
+    };
+
     const conversation = query({
       prompt: userPrompt,
       options: {
@@ -363,7 +563,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
         allowDangerouslySkipPermissions: true,
         settingSources: ["user"],
         maxTurns: MAX_TURNS,
-        // Built-in tools controlled by trust level (includes "Skill" for full trust)
+        canUseTool: canUseToolCallback,
         tools: params.builtinTools ?? [],
         allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
         ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
@@ -376,75 +576,128 @@ class ClaudeAgentSdkAdapter implements Adapter {
     });
 
     let hasStreamedText = false;
+    let hitTurnLimit = false;
+    let sdkErrorMessage: string | null = null;
 
-    for await (const message of conversation) {
-      // Capture session_id from any message that carries it
-      if ("session_id" in message && typeof message.session_id === "string") {
-        capturedSessionId = message.session_id;
-      }
-
-      // Stream text deltas to the caller as they arrive
-      if (onTextDelta && message.type === "stream_event") {
-        const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
-        if (
-          event?.type === "content_block_delta" &&
-          (event?.delta as Record<string, unknown>)?.type === "text_delta"
-        ) {
-          onTextDelta((event.delta as { text: string }).text);
-          hasStreamedText = true;
+    // Assign the refresh function now that `conversation` exists in scope.
+    triggerRefresh = async (lastToolName: string) => {
+      if (!params.refreshTools) return;
+      try {
+        const fresh = await params.refreshTools();
+        const newSignature = computeToolSignature(fresh.tools);
+        if (newSignature === currentToolSignature) {
+          return;
         }
+        // Rotate server name so the SDK disconnects the previous server cleanly
+        // (avoids "Tool X is already registered" from overlapping tool names).
+        currentMcpServerName = nextMcpServerName();
+        const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
+        await conversation.setMcpServers({ [currentMcpServerName]: newServer });
+        currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
+        currentToolSignature = newSignature;
+        console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
+      } catch (err) {
+        console.warn(`[adapter] Failed to refresh MCP tools after ${lastToolName}:`, err);
       }
+    };
 
-      // Inject paragraph break when a new assistant turn starts after a tool call
-      // (prevents "Let me check.Here's what I found" with no space)
-      if (message.type === "assistant" && hasStreamedText && onTextDelta) {
-        onTextDelta("\n\n");
-      }
+    try {
+      for await (const message of conversation) {
+        // Capture session_id from any message that carries it
+        if ("session_id" in message && typeof message.session_id === "string") {
+          capturedSessionId = message.session_id;
+        }
 
-      // Collect text content blocks from each assistant turn
-      if (message.type === "assistant" && "message" in message) {
-        const msgObj = message.message as { content?: unknown[] } | undefined;
-        if (msgObj?.content && Array.isArray(msgObj.content)) {
-          for (const block of msgObj.content) {
-            if (
-              block &&
-              typeof block === "object" &&
-              "type" in block &&
-              (block as { type: unknown }).type === "text" &&
-              "text" in block &&
-              typeof (block as { text: unknown }).text === "string"
-            ) {
-              const txt = ((block as { text: string }).text).trim();
-              if (txt) assistantTextBlocks.push(txt);
+        // Stream text deltas to the caller as they arrive
+        if (onTextDelta && message.type === "stream_event") {
+          const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
+          if (
+            event?.type === "content_block_delta" &&
+            (event?.delta as Record<string, unknown>)?.type === "text_delta"
+          ) {
+            onTextDelta((event.delta as { text: string }).text);
+            hasStreamedText = true;
+          }
+        }
+
+        // Inject paragraph break when a new assistant turn starts after a tool call
+        // (prevents "Let me check.Here's what I found" with no space)
+        if (message.type === "assistant" && hasStreamedText && onTextDelta) {
+          onTextDelta("\n\n");
+        }
+
+        // Collect text content blocks from each assistant turn
+        if (message.type === "assistant" && "message" in message) {
+          const msgObj = message.message as { content?: unknown[] } | undefined;
+          if (msgObj?.content && Array.isArray(msgObj.content)) {
+            for (const block of msgObj.content) {
+              if (
+                block &&
+                typeof block === "object" &&
+                "type" in block &&
+                (block as { type: unknown }).type === "text" &&
+                "text" in block &&
+                typeof (block as { text: unknown }).text === "string"
+              ) {
+                const txt = ((block as { text: string }).text).trim();
+                if (txt) assistantTextBlocks.push(txt);
+              }
+            }
+          }
+        }
+
+        if (message.type === "result") {
+          if ("total_cost_usd" in message && typeof message.total_cost_usd === "number") {
+            totalCost = message.total_cost_usd;
+          }
+          if ("num_turns" in message && typeof message.num_turns === "number") {
+            numTurns = message.num_turns;
+          }
+
+          if (message.subtype === "success") {
+            const sdkResult = ("result" in message && typeof message.result === "string")
+              ? message.result
+              : "";
+            resultText = assistantTextBlocks.length > 0
+              ? assistantTextBlocks.join("\n\n")
+              : sdkResult;
+          } else {
+            // SDK returned a final result with an error subtype (e.g., error_max_turns).
+            const errors: string[] =
+              "errors" in message && Array.isArray(message.errors)
+                ? message.errors
+                : [];
+            const errorJoined = errors.join("; ");
+            if (isTurnLimitError(errorJoined) || message.subtype === "error_max_turns") {
+              hitTurnLimit = true;
+            } else {
+              sdkErrorMessage = errors.length > 0 ? errorJoined : "Something went wrong.";
             }
           }
         }
       }
+    } catch (err) {
+      // The SDK throws mid-iteration on some failures (including the turn limit
+      // when no final result message is produced). Classify and convert to a
+      // user-facing message instead of bubbling a raw stack trace.
+      if (isTurnLimitError(err)) {
+        hitTurnLimit = true;
+      } else {
+        sdkErrorMessage = err instanceof Error ? err.message : String(err);
+        console.error("[adapter] SDK error:", err);
+      }
+    }
 
-      if (message.type === "result") {
-        if ("total_cost_usd" in message && typeof message.total_cost_usd === "number") {
-          totalCost = message.total_cost_usd;
-        }
-        if ("num_turns" in message && typeof message.num_turns === "number") {
-          numTurns = message.num_turns;
-        }
-
-        if (message.subtype === "success") {
-          const sdkResult = ("result" in message && typeof message.result === "string")
-            ? message.result
-            : "";
-          resultText = assistantTextBlocks.length > 0
-            ? assistantTextBlocks.join("\n\n")
-            : sdkResult;
-        } else {
-          const errors: string[] =
-            "errors" in message && Array.isArray(message.errors)
-              ? message.errors
-              : [];
-          resultText = errors.length > 0
-            ? `Error: ${errors.join("; ")}`
-            : "Something went wrong. Please try again.";
-        }
+    // If we never set resultText from a success path, synthesize one the user
+    // can actually read. Prefer partial assistant text if we captured any
+    // (better than a bare error — user sees what the agent was trying to say).
+    if (!resultText) {
+      if (hitTurnLimit) {
+        const partial = assistantTextBlocks.join("\n\n").trim();
+        const header = `(I got stuck after ${MAX_TURNS} turns. Try breaking the request into smaller steps, or tell me what to focus on first.)`;
+        resultText = partial ? `${partial}\n\n${header}` : header;
+      } else if (sdkErrorMessage) {
+        resultText = `Error: ${sdkErrorMessage}`;
       }
     }
 

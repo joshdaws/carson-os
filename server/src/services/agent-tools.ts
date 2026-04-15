@@ -15,6 +15,7 @@ import type { ToolDefinition, ToolResult } from "@carsonos/shared";
 import type { Db } from "@carsonos/db";
 import { staffAgents, staffAssignments, familyMembers, scheduledTasks } from "@carsonos/db";
 import type { MultiRelayManager } from "./multi-relay-manager.js";
+import type { ToolRegistry } from "./tool-registry.js";
 
 const OPERATING_INSTRUCTIONS_CAP = 2000;
 
@@ -26,6 +27,9 @@ export interface AgentToolContext {
   householdId: string;
   isChiefOfStaff?: boolean;
   multiRelay?: MultiRelayManager;
+  /** Required for grant/revoke tools. Optional because the type is shared with
+   *  a few other call paths that don't need it. */
+  toolRegistry?: ToolRegistry;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────
@@ -147,6 +151,47 @@ export const STAFF_TOOLS: ToolDefinition[] = [
       required: ["agent_name", "action", "member_name"],
     },
   },
+  {
+    name: "list_agent_tools",
+    description:
+      "List the tools another agent currently has access to. Use before granting/revoking to see what's already there. Example: list_agent_tools({ agent_name: 'Django' }).",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent_name: { type: "string", description: "Name of the agent whose tools to list." },
+      },
+      required: ["agent_name"],
+    },
+  },
+  {
+    name: "grant_tool_to_agent",
+    description:
+      "Give another agent access to a tool. The tool can be a custom tool this household has created (e.g., 'ynab_list_budgets'), a built-in toggleable tool (e.g., 'list_calendar_events', 'gmail_triage'), or any tool name from list_custom_tools. Always tell the user which tool was granted and why. Example: grant_tool_to_agent({ agent_name: 'Django', tool_name: 'ynab_list_budgets', reason: 'Grant requested read-only budget access for his agent.' }). " +
+      "IMPORTANT: Respect trust levels. Don't grant full-privilege tools (Bash, Write, Edit) to restricted agents (kids). If the target agent's trust level is 'restricted', pause and ask the user to confirm before granting write/execute tools.",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent_name: { type: "string", description: "Name of the agent to grant the tool to." },
+        tool_name: { type: "string", description: "Tool name exactly as it appears in list_custom_tools or the built-in tool set." },
+        reason: { type: "string", description: "Short note explaining why this grant makes sense. Stored for audit." },
+      },
+      required: ["agent_name", "tool_name"],
+    },
+  },
+  {
+    name: "revoke_tool_from_agent",
+    description:
+      "Remove a tool from another agent's access. Example: revoke_tool_from_agent({ agent_name: 'Django', tool_name: 'ynab_update_category_budget', reason: 'Kid access should be read-only for now.' }).",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent_name: { type: "string", description: "Name of the agent to revoke the tool from." },
+        tool_name: { type: "string", description: "Tool name exactly as it's currently granted." },
+        reason: { type: "string", description: "Short note explaining why revoked. Stored for audit." },
+      },
+      required: ["agent_name", "tool_name"],
+    },
+  },
 ];
 
 export const AGENT_TOOLS: ToolDefinition[] = [...SELF_TOOLS, ...STAFF_TOOLS];
@@ -174,6 +219,9 @@ export async function handleAgentTool(
     case "pause_agent": return handlePauseResume(ctx, input, "paused");
     case "resume_agent": return handlePauseResume(ctx, input, "active");
     case "update_agent_assignment": return handleUpdateAssignment(ctx, input);
+    case "list_agent_tools": return handleListAgentTools(ctx, input);
+    case "grant_tool_to_agent": return handleGrantToolToAgent(ctx, input);
+    case "revoke_tool_from_agent": return handleRevokeToolFromAgent(ctx, input);
     default: return { content: `Unknown agent tool: ${name}`, is_error: true };
   }
 }
@@ -403,4 +451,96 @@ async function handleUpdateAssignment(ctx: AgentToolContext, input: Record<strin
 
     return { content: `${agentName} no longer serves ${memberName}.` };
   }
+}
+
+// ── Tool grant handlers (Chief of Staff only) ─────────────────────
+
+async function handleListAgentTools(
+  ctx: AgentToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const agentName = String(input.agent_name ?? "");
+  const agent = findAgent(ctx, agentName);
+  if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
+  if (!ctx.toolRegistry) {
+    return { content: "Tool registry not available in this context.", is_error: true };
+  }
+
+  // ToolRegistry.getAgentTools resolves role defaults + explicit grants into
+  // the final set of ToolDefinitions the agent can actually call. That's the
+  // right view here — matches what the agent sees in its own system prompt.
+  const defs = await ctx.toolRegistry.getAgentTools(agent.id);
+  if (defs.length === 0) {
+    return { content: `${agent.name} has no granted tools. Trust level: ${agent.trustLevel}.` };
+  }
+  const lines = defs
+    .map((d) => `- ${d.name}`)
+    .sort()
+    .join("\n");
+  return {
+    content: `${agent.name} (${agent.trustLevel} trust) has ${defs.length} tools:\n${lines}`,
+  };
+}
+
+async function handleGrantToolToAgent(
+  ctx: AgentToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const agentName = String(input.agent_name ?? "");
+  const toolName = String(input.tool_name ?? "").trim();
+  const reason = input.reason ? String(input.reason) : "No reason provided";
+
+  if (!toolName) return { content: "tool_name is required.", is_error: true };
+  const agent = findAgent(ctx, agentName);
+  if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
+  if (!ctx.toolRegistry) {
+    return { content: "Tool registry not available in this context.", is_error: true };
+  }
+  if (agent.id === ctx.agentId) {
+    return { content: "You already have all your own tools — grant to a different agent.", is_error: true };
+  }
+
+  try {
+    await ctx.toolRegistry.grant(agent.id, toolName, ctx.agentId);
+  } catch (err) {
+    return {
+      content: `Grant failed: ${(err as Error).message}. Confirm the tool exists (use list_custom_tools) and the agent name is spelled correctly.`,
+      is_error: true,
+    };
+  }
+
+  console.log(`[staff-tools] Grant: ${toolName} → ${agent.name} (by ${ctx.agentId}). Reason: ${reason}`);
+  return {
+    content: `Granted '${toolName}' to ${agent.name}. Available on their next message.\nReason logged: ${reason}`,
+  };
+}
+
+async function handleRevokeToolFromAgent(
+  ctx: AgentToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const agentName = String(input.agent_name ?? "");
+  const toolName = String(input.tool_name ?? "").trim();
+  const reason = input.reason ? String(input.reason) : "No reason provided";
+
+  if (!toolName) return { content: "tool_name is required.", is_error: true };
+  const agent = findAgent(ctx, agentName);
+  if (!agent) return { content: `Agent "${agentName}" not found.`, is_error: true };
+  if (!ctx.toolRegistry) {
+    return { content: "Tool registry not available in this context.", is_error: true };
+  }
+
+  try {
+    await ctx.toolRegistry.revoke(agent.id, toolName);
+  } catch (err) {
+    return {
+      content: `Revoke failed: ${(err as Error).message}.`,
+      is_error: true,
+    };
+  }
+
+  console.log(`[staff-tools] Revoke: ${toolName} from ${agent.name} (by ${ctx.agentId}). Reason: ${reason}`);
+  return {
+    content: `Revoked '${toolName}' from ${agent.name}. Takes effect on their next message.\nReason logged: ${reason}`,
+  };
 }

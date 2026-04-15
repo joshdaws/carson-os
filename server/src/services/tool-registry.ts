@@ -28,6 +28,18 @@ import {
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
 import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
+import { AGENT_GUIDE_TOOLS, handleAgentGuideTool } from "./agent-guides.js";
+import { REDACTION_TOOLS, REDACTION_TOOL_NAMES, handleRedactionTool } from "./redaction-tools.js";
+import {
+  CUSTOM_TOOL_SYSTEM_TOOLS,
+  CUSTOM_TOOL_NAMES,
+  handleCustomToolSystemTool,
+  buildRegistrationFromRow,
+  executeHttpTool,
+  executePromptTool,
+  executeScriptTool,
+} from "./custom-tools/index.js";
+import type { CustomRegistration } from "./custom-tools/index.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -36,6 +48,11 @@ export type ToolHandler = (
   name: string,
   input: Record<string, unknown>,
 ) => Promise<ToolResult>;
+
+/** Registry key helper for custom tools — household-scoped to prevent collisions. */
+export function customKey(householdId: string, toolName: string): string {
+  return `custom:${householdId}:${toolName}`;
+}
 
 /**
  * Tool tiers:
@@ -91,12 +108,22 @@ export const TRUST_LEVEL_BUILTINS: Record<TrustLevel, string[]> = {
 
 // ── Default tool grants per role ────────────────────────────────────
 
+// Custom tool management capabilities — granted by default to head_butler.
+// Other agents can be granted them explicitly via the admin UI.
+const CUSTOM_TOOL_MGMT_GRANTS = [
+  "create_http_tool", "create_prompt_tool", "create_script_tool",
+  "list_custom_tools", "update_custom_tool", "disable_custom_tool",
+  "store_secret", "install_skill",
+  "redact_recent_user_message",
+];
+
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
+    ...CUSTOM_TOOL_MGMT_GRANTS,
   ],
   personal: [
     "search_memory", "save_memory", "delete_memory", "update_instructions",
@@ -130,9 +157,20 @@ export class ToolRegistry {
   handlers = new Map<string, ToolHandler>(); // toolName → handler (public for per-member binding)
   private db: Db;
 
+  /** Namespaced custom tool entries: key is `custom:{householdId}:{toolName}`. */
+  private customByKey = new Map<string, CustomRegistration>();
+  /** Per-household quick lookup: `householdId` → Set of tool names. */
+  private customByHousehold = new Map<string, Set<string>>();
+  /** Data dir for secret key lookups. Wired at boot. */
+  private dataDir: string | undefined;
+
   constructor(db: Db) {
     this.db = db;
     this.registerBuiltins();
+  }
+
+  setDataDir(dataDir: string): void {
+    this.dataDir = dataDir;
   }
 
   /** Register all built-in tools (memory, operating instructions). */
@@ -172,6 +210,128 @@ export class ToolRegistry {
         category: "scheduling",
         tier: "system",
       });
+    }
+
+    // Custom tool management tools — builtin tier, toggleable per agent
+    for (const def of CUSTOM_TOOL_SYSTEM_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "custom-tools",
+        tier: "builtin",
+      });
+    }
+
+    // Agent guides — system tier, always available. Cheap markdown loader.
+    for (const def of AGENT_GUIDE_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent-guides",
+        tier: "system",
+      });
+    }
+
+    // Redaction tools — builtin tier, default-granted to roles that also have
+    // custom tool creation (so agents can scrub secrets after store_secret).
+    for (const def of REDACTION_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "redaction",
+        tier: "builtin",
+      });
+    }
+  }
+
+  // ── Custom tool registry (namespaced per-household) ──────────────
+
+  /** Register a custom tool (from boot loader or runtime create). */
+  registerCustom(householdId: string, reg: CustomRegistration): void {
+    const key = customKey(householdId, reg.name);
+    this.customByKey.set(key, reg);
+    let set = this.customByHousehold.get(householdId);
+    if (!set) {
+      set = new Set();
+      this.customByHousehold.set(householdId, set);
+    }
+    set.add(reg.name);
+    // Also place a thin entry in the main registry so listAll/UI show it
+    this.tools.set(key, reg.registered);
+  }
+
+  /** Remove a custom tool from the in-memory registry (on disable). */
+  unregisterCustom(householdId: string, toolName: string): void {
+    const key = customKey(householdId, toolName);
+    this.customByKey.delete(key);
+    this.customByHousehold.get(householdId)?.delete(toolName);
+    this.tools.delete(key);
+  }
+
+  getCustom(householdId: string, toolName: string): CustomRegistration | undefined {
+    return this.customByKey.get(customKey(householdId, toolName));
+  }
+
+  listCustom(householdId: string): CustomRegistration[] {
+    const names = this.customByHousehold.get(householdId);
+    if (!names) return [];
+    const out: CustomRegistration[] = [];
+    for (const name of names) {
+      const reg = this.customByKey.get(customKey(householdId, name));
+      if (reg) out.push(reg);
+    }
+    return out;
+  }
+
+  /** Callback from handlers.ts when a tool's lifecycle event fires. */
+  private async handleToolChange(
+    householdId: string,
+    event: { type: string; toolId: string; affectsScript?: boolean },
+  ): Promise<void> {
+    const { customTools } = await import("@carsonos/db");
+    const row = await this.db
+      .select()
+      .from(customTools)
+      .where(eq(customTools.id, event.toolId))
+      .limit(1);
+    if (!row[0]) return;
+    const tool = row[0];
+
+    if (event.type === "disabled" || tool.status !== "active") {
+      this.unregisterCustom(householdId, tool.name);
+      return;
+    }
+
+    // For created/updated: re-read the SKILL.md and re-register
+    const { loadCustomTools } = await import("./custom-tools/index.js");
+    // Simple approach: re-run the loader for this household. Cheap enough.
+    // For M1 we can re-register the single tool by reading its file.
+    try {
+      const { parseSkillMd } = await import("./custom-tools/skill-md.js");
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { TOOLS_ROOT } = await import("./custom-tools/fs-helpers.js");
+      const dir = join(TOOLS_ROOT, householdId, tool.path);
+      const doc = parseSkillMd(readFileSync(join(dir, "SKILL.md"), "utf8"));
+      this.registerCustom(householdId, buildRegistrationFromRow(tool, doc.frontmatter, doc.body, dir));
+    } catch (err) {
+      console.error(`[tool-registry] Failed to reload custom tool ${tool.name}:`, err);
+      // Fall back to loading everything
+      void loadCustomTools(this.db, this).catch(() => {});
+    }
+  }
+
+  /** Increment usage_count + last_used_at for a custom tool. Fire-and-forget. */
+  private async bumpUsage(toolId: string): Promise<void> {
+    try {
+      const { customTools } = await import("@carsonos/db");
+      await this.db
+        .update(customTools)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(customTools.id, toolId));
+      // Raw SQL for atomic increment
+      (this.db as unknown as { $client: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).$client
+        .prepare("UPDATE custom_tools SET usage_count = usage_count + 1 WHERE id = ?")
+        .run(toolId);
+    } catch {
+      /* non-critical */
     }
   }
 
@@ -311,14 +471,19 @@ export class ToolRegistry {
    * if no explicit grants exist.
    */
   async getAgentTools(agentId: string): Promise<ToolDefinition[]> {
-    // Load agent to check if Chief of Staff
+    // Load agent to check if Chief of Staff + get household for custom-tool resolution
     const [agent] = await this.db
-      .select({ staffRole: staffAgents.staffRole, isHeadButler: staffAgents.isHeadButler })
+      .select({
+        staffRole: staffAgents.staffRole,
+        isHeadButler: staffAgents.isHeadButler,
+        householdId: staffAgents.householdId,
+      })
       .from(staffAgents)
       .where(eq(staffAgents.id, agentId))
       .limit(1);
 
     const isChief = agent?.isHeadButler || agent?.staffRole === "head_butler";
+    const householdId = agent?.householdId;
 
     // System tools — every agent gets these
     const systemTools = [...this.tools.values()]
@@ -348,10 +513,32 @@ export class ToolRegistry {
       grantedNames = [...new Set([...systemTools, ...(DEFAULT_GRANTS[role] ?? DEFAULT_GRANTS.custom)])];
     }
 
-    // Only return tools that are actually registered
-    return grantedNames
-      .map((name) => this.tools.get(name)?.definition)
-      .filter((d): d is ToolDefinition => d !== undefined);
+    // Resolve each granted name to a definition. Built-ins live in the Map
+    // under their bare name. Custom tools live under `custom:{householdId}:{name}`
+    // because the Map is process-global and has to prevent cross-household
+    // collisions. Try bare first, then the household-scoped key.
+    //
+    // Dedupe by the final `definition.name` — different granted names can
+    // resolve to the same tool (e.g., legacy bare grant `ynab_list_budgets`
+    // and post-fix scoped grant `custom:{hh}:ynab_list_budgets` both map to
+    // the same custom tool). Without this dedup, createSdkMcpServer throws
+    // "Tool X is already registered" on the duplicate registration.
+    const resolved: ToolDefinition[] = [];
+    const seen = new Set<string>();
+    for (const name of grantedNames) {
+      const direct = this.tools.get(name);
+      let def: ToolDefinition | undefined;
+      if (direct) def = direct.definition;
+      else if (householdId) {
+        const scoped = this.tools.get(customKey(householdId, name));
+        if (scoped) def = scoped.definition;
+      }
+      if (!def) continue;
+      if (seen.has(def.name)) continue;
+      seen.add(def.name);
+      resolved.push(def);
+    }
+    return resolved;
   }
 
   /**
@@ -423,13 +610,79 @@ export class ToolRegistry {
       const agentToolNames = [
         "update_instructions", "update_personality", "update_role",
         "list_agents", "create_agent", "delete_agent", "pause_agent", "resume_agent", "update_agent_assignment",
+        "list_agent_tools", "grant_tool_to_agent", "revoke_tool_from_agent",
       ];
       if (agentToolNames.includes(name)) {
         const result = await handleAgentTool(
-          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId, isChiefOfStaff: ctx.isChiefOfStaff, multiRelay: ctx.multiRelay },
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId, isChiefOfStaff: ctx.isChiefOfStaff, multiRelay: ctx.multiRelay, toolRegistry: this },
           name,
           input,
         );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Agent guide loader
+      if (name === "get_agent_guide") {
+        const result = await handleAgentGuideTool(name, input);
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Redaction tools (scrub sensitive content from the DB post-processing)
+      if (REDACTION_TOOL_NAMES.has(name)) {
+        const result = await handleRedactionTool(
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, householdId: ctx.householdId },
+          name,
+          input,
+        );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Custom tool system tools (create_http_tool, store_secret, etc.)
+      if (CUSTOM_TOOL_NAMES.has(name)) {
+        const result = await handleCustomToolSystemTool(
+          {
+            db: ctx.db,
+            agentId: ctx.agentId,
+            householdId: ctx.householdId,
+            toolRegistry: this,
+            dataDir: this.dataDir,
+            isChiefOfStaff: ctx.isChiefOfStaff ?? false,
+            onToolChanged: async (event) => this.handleToolChange(ctx.householdId, event),
+          },
+          name,
+          input,
+        );
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // Household-scoped custom tool invocation
+      const customReg = this.getCustom(ctx.householdId, name);
+      if (customReg) {
+        const execCtx = {
+          db: ctx.db,
+          householdId: ctx.householdId,
+          memberId: ctx.memberId,
+          memberName: ctx.memberName,
+          memoryProvider: ctx.memoryProvider,
+          dataDir: this.dataDir,
+        };
+        let result: ToolResult;
+        if (customReg.kind === "http" && customReg.httpConfig) {
+          result = await executeHttpTool(customReg.httpConfig, input, execCtx);
+        } else if (customReg.kind === "prompt") {
+          result = executePromptTool(customReg.body, input);
+        } else if (customReg.kind === "script") {
+          const handlerPath = `${customReg.absDir}/handler.ts`;
+          result = await executeScriptTool(handlerPath, customReg.generation, input, execCtx);
+        } else {
+          result = { content: `Custom tool '${name}' has unknown kind`, is_error: true };
+        }
+        // Update usage stats asynchronously (non-blocking)
+        void this.bumpUsage(customReg.toolId);
         calls.push({ name, input, result });
         return result;
       }
@@ -486,25 +739,45 @@ export class ToolRegistry {
   }
 
   async grant(agentId: string, toolName: string, grantedBy?: string): Promise<void> {
-    if (!this.tools.has(toolName)) {
+    const resolvedToolName = await this.resolveGrantToolName(agentId, toolName);
+    if (!resolvedToolName) {
       throw new Error(`Tool "${toolName}" is not registered`);
     }
     await this.materializeDefaults(agentId);
     await this.db
       .insert(toolGrants)
-      .values({ agentId, toolName, grantedBy: grantedBy ?? null })
+      .values({ agentId, toolName: resolvedToolName, grantedBy: grantedBy ?? null })
       .onConflictDoNothing();
   }
 
   async revoke(agentId: string, toolName: string): Promise<void> {
+    const resolvedToolName = await this.resolveGrantToolName(agentId, toolName);
+    if (!resolvedToolName) {
+      throw new Error(`Tool "${toolName}" is not registered`);
+    }
     await this.materializeDefaults(agentId);
     await this.db
       .delete(toolGrants)
-      .where(and(eq(toolGrants.agentId, agentId), eq(toolGrants.toolName, toolName)));
+      .where(and(eq(toolGrants.agentId, agentId), eq(toolGrants.toolName, resolvedToolName)));
   }
 
   async listAgentGrants(agentId: string): Promise<string[]> {
     const tools = await this.getAgentTools(agentId);
     return tools.map((t) => t.name);
+  }
+
+  private async resolveGrantToolName(agentId: string, toolName: string): Promise<string | null> {
+    if (this.tools.has(toolName)) return toolName;
+
+    const [agent] = await this.db
+      .select({ householdId: staffAgents.householdId })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .limit(1);
+
+    if (!agent?.householdId) return null;
+
+    const scopedName = customKey(agent.householdId, toolName);
+    return this.tools.has(scopedName) ? scopedName : null;
   }
 }

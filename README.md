@@ -178,6 +178,24 @@ Agents get tools based on their role and trust level:
 | `create_calendar_event` | Create events (requires gws) |
 | `gmail_*` | Read, draft, and manage email (requires gws) |
 | `drive_*` | Search and list Drive files (requires gws) |
+| `create_http_tool` | Wrap any HTTPS API as a custom tool |
+| `create_prompt_tool` | Turn a recipe into an agent-invokable skill |
+| `create_script_tool` | Write a TypeScript handler for custom logic |
+| `list_custom_tools` | See every custom tool in the household |
+| `update_custom_tool` | Edit a tool's config or code |
+| `disable_custom_tool` | Deactivate without deleting |
+| `store_secret` | AES-256-GCM encrypted per-household API tokens |
+| `install_skill` | Install skills from GitHub (`owner/repo`) |
+
+### Custom Tools
+
+Agents can create their own tools at runtime. Files live as `SKILL.md` at `~/.carsonos/tools/{household-id}/{bundle?}/{tool}/`, compatible with [Claude Code skills](https://github.com/vercel-labs/skills). Three kinds:
+
+- **http** — declarative REST wrapper with auth injection, domain allowlist, timeout
+- **prompt** — markdown template, agent follows in-session
+- **script** — TypeScript handler compiled via esbuild
+
+See [CHANGELOG](CHANGELOG.md#020---2026-04-15) for the full v0.2.0 release notes including the security model.
 
 ### Trust Levels
 
@@ -235,6 +253,29 @@ ui/
 | `CARSONOS_MEMORY_PROVIDER` | `qmd` | Memory backend |
 | `CARSONOS_MEMORY_DIR` | `{DATA_DIR}/memory` | Memory file root |
 | `CARSONOS_HARD_EVALUATORS` | `false` | Hard clause evaluators (off for v1.0) |
+| `CARSONOS_SECRET` | _(unset)_ | Master key for encrypting custom tool secrets. If unset, a random key is generated at `~/.carsonos/.secret`. See [Backing Up Your Secret Key](#backing-up-your-secret-key). |
+| `CARSONOS_MAX_TURNS` | `50` | Max LLM turns per message (1–200). Raise for complex multi-tool workflows. |
+
+### Backing Up Your Secret Key
+
+Custom tools can store API keys (YNAB token, email credentials, etc.) encrypted with AES-256-GCM. The encryption key comes from one of two sources, in order:
+
+1. **`CARSONOS_SECRET` env var** (recommended for production) — any high-entropy string. Store it in your password manager. PBKDF2-derived at boot.
+2. **Keyfile at `~/.carsonos/.secret`** — auto-generated on first boot if the env var is unset. Mode 0600. 32 random bytes.
+
+**If you lose the key, every stored secret becomes unrecoverable.** You'll have to delete `tool_secrets` rows and re-enter each credential via `store_secret`.
+
+Back up whichever one you use:
+
+```bash
+# If using CARSONOS_SECRET: save the value in your password manager.
+
+# If using the auto-generated keyfile:
+cp ~/.carsonos/.secret ~/path/to/your/backup/carsonos-secret-$(date +%Y%m%d).bin
+chmod 600 ~/path/to/your/backup/carsonos-secret-*.bin
+```
+
+At boot, CarsonOS walks every `tool_secrets` row and tries to decrypt. Partial or total failures log a loud warning with operator instructions. Non-secret tool features still work; HTTP tools with auth injection fail until you restore the original key or re-enter credentials.
 
 ## Architecture
 
