@@ -30,6 +30,7 @@ export const familyMembers = sqliteTable(
     role: text("role").notNull(), // parent | student | child
     age: integer("age").notNull(),
     telegramUserId: text("telegram_user_id").unique(),
+    signalNumber: text("signal_number").unique(), // Signal phone number (e.g. +15551234567)
     profileContent: text("profile_content"), // Per-person profile document (member.md)
     profileUpdatedAt: integer("profile_updated_at", { mode: "timestamp" }),
     memoryDir: text("memory_dir"), // Override: point at existing brain directory instead of default
@@ -56,6 +57,8 @@ export const staffAgents = sqliteTable(
     soulContent: text("soul_content"), // Personality: voice, tone, values. NULL for internal agents.
     visibility: text("visibility").notNull().default("family"), // family | internal
     telegramBotToken: text("telegram_bot_token"), // Bot token for family-visible agents. NULL for internal.
+    signalAccount: text("signal_account"), // Signal phone number the agent's daemon is registered under
+    signalDaemonPort: integer("signal_daemon_port"), // signal-cli daemon HTTP port
     model: text("model").notNull().default("claude-sonnet-4-6"),
     status: text("status").notNull().default("active"), // active | paused | idle
     isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),

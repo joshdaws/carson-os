@@ -25,6 +25,7 @@ import type { ProfileInterviewEngine } from "./services/profile-interview.js";
 import type { PersonalityInterviewEngine } from "./services/personality-interview.js";
 import type { ToolRegistry } from "./services/tool-registry.js";
 import type { MultiRelayManager } from "./services/multi-relay-manager.js";
+import type { SignalRelayManager } from "./services/signal-relay-manager.js";
 
 import { createHealthRoutes } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
@@ -53,6 +54,7 @@ export interface AppDeps {
   personalityInterviewEngine: PersonalityInterviewEngine;
   toolRegistry: ToolRegistry;
   multiRelay?: MultiRelayManager;
+  signalRelay?: SignalRelayManager;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -92,7 +94,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/health", createHealthRoutes({ adapter }));
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
-  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay }));
+  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight }));
   app.use(
     "/api/constitution",

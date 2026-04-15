@@ -36,6 +36,7 @@ import { PersonalityInterviewEngine } from "./services/personality-interview.js"
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
+import { SignalRelayManager } from "./services/signal-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
@@ -232,6 +233,14 @@ async function main() {
   // Wire multiRelay into the constitution engine (for agent pause/resume tools)
   constitutionEngine.setMultiRelay(multiRelay);
 
+  // 7b. Signal relay (agents with signal_account + signal_daemon_port set)
+  const signalRelay = new SignalRelayManager({
+    db,
+    engine: constitutionEngine,
+    taskEngine,
+    orchestrator,
+  });
+
   // 8. Create Express app with all dependencies
   const app = await createApp({
     db,
@@ -244,6 +253,7 @@ async function main() {
     personalityInterviewEngine,
     toolRegistry,
     multiRelay,
+    signalRelay,
   });
 
   // 9. Create HTTP server and attach WebSocket
@@ -263,10 +273,13 @@ async function main() {
   eventBus.on("delegation.result", (event) => {
     if (!event.data) return;
     multiRelay.eventBus.emit("delegation.result", event.data);
+    signalRelay.eventBus.emit("delegation.result", event.data);
   });
 
   // Start per-agent bots (agents with telegramBotToken set)
   await multiRelay.startAll();
+  // Start per-agent Signal accounts (agents with signal_account + signal_daemon_port set)
+  await signalRelay.startAll();
 
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
@@ -297,7 +310,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log("\n[shutdown] closing...");
-    await multiRelay.stopAll();
+    await Promise.all([multiRelay.stopAll(), signalRelay.stopAll()]);
     server.close(() => {
       console.log("[shutdown] done");
       process.exit(0);
