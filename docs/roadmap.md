@@ -1,7 +1,7 @@
 # CarsonOS Roadmap
 
 Status: Living document
-Last updated: 2026-04-11
+Last updated: 2026-04-15
 
 ## Vision
 
@@ -21,6 +21,12 @@ Working (added in MVP): memory system (QMD-backed, 13 types, search/save/update/
 tools), Google Calendar + Gmail + Drive (via gws), session resume, model selector
 (Sonnet/Opus/Haiku), trust levels + skill access, first-contact profile interviews,
 memory deduplication (search before save + update_memory).
+
+Working (v0.2.0): custom tool registry — agents create their own HTTP, prompt, and
+script tools at runtime. `install_skill` pulls from GitHub (skills.sh ecosystem
+compatible). AES-256-GCM secret storage. Mid-session tool refresh. Activity log
+redaction. 11 security findings from dual Claude + Codex adversarial review all
+fixed before merge. See `CHANGELOG.md` v0.2.0.
 
 ## MVP (v1.0) — "Announce on X"
 
