@@ -70,20 +70,29 @@ export interface InstallResult {
 }
 
 /**
- * Resolve a `skills.sh/<slug>` shorthand or a full URL to an absolute HTTPS
- * URL. skills.sh is a hypothetical registry — point at the canonical archive.
+ * Resolve a `skills.sh/<path>` shorthand or a full URL to an absolute HTTPS
+ * URL pointing at the archive. Supports namespaced paths like
+ * `skills.sh/author/package` or `skills.sh/author/package/skill`, which
+ * resolve to `https://skills.sh/packages/<path>/latest.tar.gz` per the design.
+ * Full HTTPS URLs are returned as-is; the caller is responsible for pointing
+ * at an actual `.tar.gz` (we verify the gzip magic bytes after download).
  */
 export function resolveSourceUrl(source: string): string {
   const trimmed = source.trim();
   if (/^https:\/\//i.test(trimmed)) return trimmed;
-  const match = trimmed.match(/^skills\.sh\/([a-z0-9_-]+)$/i);
+  // Namespaced shorthand: up to 3 segments of [a-z0-9_-], separated by slashes.
+  // Enough for author/package or author/package/skill; more than that starts
+  // looking like something we shouldn't guess at.
+  const match = trimmed.match(
+    /^skills\.sh\/([a-z0-9_-]+(?:\/[a-z0-9_-]+){0,2})\/?$/i,
+  );
   if (match) {
-    // Canonical skills.sh layout: one tarball per skill slug
-    return `https://skills.sh/skills/${match[1]}.tar.gz`;
+    return `https://skills.sh/packages/${match[1]}/latest.tar.gz`;
   }
   throw new InstallError(
     "validation_error",
-    `Source must be an HTTPS URL or 'skills.sh/<slug>'. Got: ${source}`,
+    `Source must be an HTTPS URL to a .tar.gz archive, or a 'skills.sh/<author>/<package>' shorthand. Got: ${source}. ` +
+      `Page URLs like 'skills.sh/author/package/skill' that return HTML won't work — find the release archive URL.`,
   );
 }
 
@@ -157,10 +166,19 @@ async function fetchArchive(url: string): Promise<string> {
   // Verify gzip magic bytes (1F 8B). Catches HTML error pages served with 200.
   const head = readFileSync(archivePath).subarray(0, 2);
   if (head[0] !== 0x1f || head[1] !== 0x8b) {
+    // Peek at first bytes to give the agent a useful hint — most common
+    // failure is the user passing a web-page URL instead of an archive URL.
+    const preview = readFileSync(archivePath).subarray(0, 64).toString("utf8");
+    const looksLikeHtml = /^<!DOCTYPE|<html|<!doctype/i.test(preview);
     rmSync(stagingRoot, { recursive: true, force: true });
     throw new InstallError(
       "validation_error",
-      `Downloaded file is not a gzip archive (magic bytes mismatch). Check that the URL returns a .tar.gz.`,
+      `Downloaded file is not a gzip archive.${
+        looksLikeHtml
+          ? " It looks like an HTML page — that URL points at a web page, not a release archive. " +
+            "Find the direct '.tar.gz' download link (often under a 'Releases' or 'Assets' section)."
+          : ` First bytes: ${preview.slice(0, 40).replace(/\n/g, " ")}...`
+      }`,
     );
   }
 

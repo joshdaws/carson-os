@@ -400,10 +400,31 @@ describe("resolveSourceUrl", () => {
     expect(resolveSourceUrl("https://example.com/skill.tar.gz")).toBe("https://example.com/skill.tar.gz");
   });
 
-  it("expands skills.sh/<slug> shorthand", async () => {
+  it("expands skills.sh/<slug> shorthand (single segment)", async () => {
     const { resolveSourceUrl } = await import("../custom-tools/install.js");
     expect(resolveSourceUrl("skills.sh/youtube-transcript")).toBe(
-      "https://skills.sh/skills/youtube-transcript.tar.gz",
+      "https://skills.sh/packages/youtube-transcript/latest.tar.gz",
+    );
+  });
+
+  it("expands skills.sh/<author>/<package> namespaced shorthand", async () => {
+    const { resolveSourceUrl } = await import("../custom-tools/install.js");
+    expect(resolveSourceUrl("skills.sh/softwaredry/agent-toolkit")).toBe(
+      "https://skills.sh/packages/softwaredry/agent-toolkit/latest.tar.gz",
+    );
+  });
+
+  it("expands skills.sh/<author>/<package>/<skill> triple shorthand", async () => {
+    const { resolveSourceUrl } = await import("../custom-tools/install.js");
+    expect(resolveSourceUrl("skills.sh/softwaredry/agent-toolkit/humanizer")).toBe(
+      "https://skills.sh/packages/softwaredry/agent-toolkit/humanizer/latest.tar.gz",
+    );
+  });
+
+  it("tolerates a trailing slash on shorthand", async () => {
+    const { resolveSourceUrl } = await import("../custom-tools/install.js");
+    expect(resolveSourceUrl("skills.sh/author/pkg/")).toBe(
+      "https://skills.sh/packages/author/pkg/latest.tar.gz",
     );
   });
 
@@ -421,5 +442,10 @@ describe("resolveSourceUrl", () => {
     const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
     expect(() => resolveSourceUrl("skills.sh/my skill")).toThrow(InstallError);
     expect(() => resolveSourceUrl("skills.sh/../escape")).toThrow(InstallError);
+  });
+
+  it("rejects skills.sh path deeper than 3 segments", async () => {
+    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
+    expect(() => resolveSourceUrl("skills.sh/a/b/c/d")).toThrow(InstallError);
   });
 });

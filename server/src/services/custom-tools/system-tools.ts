@@ -238,16 +238,18 @@ export const CUSTOM_TOOL_SYSTEM_TOOLS: ToolDefinition[] = [
     name: "install_skill",
     description:
       "Install a skill from skills.sh or a URL as custom tools in this household. The skill's SKILL.md file(s) become registered tools. " +
-      "Only the installing agent is auto-granted; grant to others via the admin UI. " +
-      "Example: install_skill({ source: 'skills.sh/youtube-transcript' }). " +
-      "HTTPS only; archives must contain a MANIFEST.json at root OR exactly one SKILL.md at the top level.",
+      "Only the Chief of Staff can install; grant to others via the admin UI after install. " +
+      "Example: install_skill({ source: 'skills.sh/softwaredry/agent-toolkit' }). " +
+      "HTTPS only; the URL must return an actual .tar.gz archive, not a web page. " +
+      "Page URLs returning HTML will be rejected — look for a 'Download' or release asset link.",
     input_schema: {
       type: "object",
       properties: {
         source: {
           type: "string",
           description:
-            "skills.sh shorthand like 'skills.sh/youtube-transcript' OR a full HTTPS URL to a .tar.gz archive.",
+            "skills.sh shorthand ('skills.sh/<author>/<package>', 1-3 path segments) OR a direct HTTPS URL to a .tar.gz archive. " +
+            "Examples: 'skills.sh/youtube-transcript', 'skills.sh/softwaredry/agent-toolkit', 'https://github.com/user/skill/releases/download/v1/skill.tar.gz'.",
         },
         rename: {
           type: "string",
