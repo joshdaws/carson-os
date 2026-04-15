@@ -14,8 +14,9 @@
  */
 
 import { createServer } from "node:http";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createDb } from "@carsonos/db";
 import { getConfig } from "./config.js";
@@ -39,9 +40,22 @@ import { bootMemory } from "./services/memory/index.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
 
+// Read VERSION from the repo root (two levels up from server/src/). Single
+// source of truth — bumping VERSION at ship time updates the boot banner
+// without a separate code change.
+function readVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const versionPath = join(here, "..", "..", "VERSION");
+    return readFileSync(versionPath, "utf8").trim();
+  } catch {
+    return "unknown";
+  }
+}
+
 const BANNER = [
   "",
-  " CarsonOS v0.1",
+  ` CarsonOS v${readVersion()}`,
   " Your family's values, your family's AI.",
   "",
 ].join("\n");
