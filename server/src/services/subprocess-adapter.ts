@@ -35,6 +35,24 @@ export interface Adapter {
 // -- Constants -------------------------------------------------------
 
 const TIMEOUT_MS = 120_000;
+const IS_WIN = process.platform === "win32";
+const WHICH_CMD = IS_WIN ? "where" : "which";
+const CLAUDE_BIN = IS_WIN ? "claude.cmd" : "claude";
+const CODEX_BIN = IS_WIN ? "codex.cmd" : "codex";
+
+// Quote an arg for cmd.exe when spawning with shell:true. Node joins args with
+// spaces and hands the whole string to `cmd.exe /d /s /c` without quoting, so
+// any arg containing whitespace (e.g. a temp path under "C:\Users\John Doe\...")
+// will be misparsed unless we wrap it ourselves.
+function quoteWinArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\s"]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
+}
+
+function spawnArgs(args: string[]): string[] {
+  return IS_WIN ? args.map(quoteWinArg) : args;
+}
 
 type JsonSchemaProperty = {
   type?: string;
@@ -163,12 +181,14 @@ class ClaudeCodeAdapter implements Adapter {
     const promptFile = join(this.getCleanDir(), `prompt-${Date.now()}.txt`);
     writeFileSync(promptFile, systemPrompt);
 
+    // Pipe the user message via stdin instead of -p <arg>. This avoids cmd.exe
+    // mangling quotes/newlines on Windows when shell:true is required for .cmd files.
     const args = [
       "--output-format", "json",
       "--max-turns", "3",
       "--allowed-tools", "none",
       "--system-prompt-file", promptFile,
-      "-p", userMessage,
+      "-p",
     ];
 
     if (maxTokens) {
@@ -176,11 +196,16 @@ class ClaudeCodeAdapter implements Adapter {
     }
 
     return new Promise<AdapterExecuteResult>((resolve, reject) => {
-      const child = spawn("claude", args, {
-        stdio: ["ignore", "pipe", "pipe"],
+      // shell:true is required on Windows to spawn .cmd files (Node CVE-2024-27980).
+      const child = spawn(CLAUDE_BIN, spawnArgs(args), {
+        stdio: ["pipe", "pipe", "pipe"],
         timeout: TIMEOUT_MS,
         cwd: this.getCleanDir(),
+        shell: IS_WIN,
       });
+
+      child.stdin.write(userMessage);
+      child.stdin.end();
 
       let stdout = "";
       let stderr = "";
@@ -237,7 +262,7 @@ class ClaudeCodeAdapter implements Adapter {
 
   async healthCheck(): Promise<boolean> {
     try {
-      execFileSync("which", ["claude"], { stdio: "pipe" });
+      execFileSync(WHICH_CMD, ["claude"], { stdio: "pipe" });
       return true;
     } catch {
       return false;
@@ -259,13 +284,20 @@ class CodexAdapter implements Adapter {
 
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
 
-    const args = ["exec", fullPrompt];
+    // Pipe the prompt via stdin (codex exec reads stdin when no prompt arg is given).
+    // This avoids cmd.exe quoting issues on Windows for multi-line prompts with quotes.
+    const args = ["exec"];
 
     return new Promise<AdapterExecuteResult>((resolve, reject) => {
-      const child = spawn("codex", args, {
-        stdio: ["ignore", "pipe", "pipe"],
+      // shell:true is required on Windows to spawn .cmd files (Node CVE-2024-27980).
+      const child = spawn(CODEX_BIN, spawnArgs(args), {
+        stdio: ["pipe", "pipe", "pipe"],
         timeout: TIMEOUT_MS,
+        shell: IS_WIN,
       });
+
+      child.stdin.write(fullPrompt);
+      child.stdin.end();
 
       let stdout = "";
       let stderr = "";
@@ -307,7 +339,7 @@ class CodexAdapter implements Adapter {
 
   async healthCheck(): Promise<boolean> {
     try {
-      execFileSync("which", ["codex"], { stdio: "pipe" });
+      execFileSync(WHICH_CMD, ["codex"], { stdio: "pipe" });
       return true;
     } catch {
       return false;
@@ -690,7 +722,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
   async healthCheck(): Promise<boolean> {
     try {
-      execFileSync("which", ["claude"], { stdio: "pipe" });
+      execFileSync(WHICH_CMD, ["claude"], { stdio: "pipe" });
       return true;
     } catch {
       return false;

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AdapterType } from "@carsonos/shared";

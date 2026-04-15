@@ -22,10 +22,10 @@ CarsonOS is a self-hosted AI staff platform for families. Each family member get
 | **Node.js 20+** | [nodejs.org](https://nodejs.org) or `nvm install 20` | Runtime |
 | **pnpm** | `npm install -g pnpm` | Package manager (monorepo) |
 | **Claude CLI** | `npm install -g @anthropic-ai/claude-code` | Agent runtime (uses your Claude subscription) |
-| **QMD** | `npm install -g @anthropic-ai/qmd` | Local markdown search engine for memory |
+| **QMD** | `npm install -g @tobilu/qmd` | Local markdown search engine for memory |
 
 Optional:
-- **gws** — `npm install -g @anthropic-ai/gws` — Google Workspace CLI (Calendar, Gmail, Drive)
+- **gws** — `npm install -g googleworkspace/cli` — Google Workspace CLI (Calendar, Gmail, Drive)
 
 ## Quick Start
 
