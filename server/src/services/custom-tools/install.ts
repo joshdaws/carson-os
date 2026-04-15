@@ -336,29 +336,49 @@ async function extractSafely(archivePath: string, stagingRoot: string): Promise<
 
   let totalBytes = 0;
   let entryCount = 0;
+  let fatalError: InstallError | null = null;
+
+  // Filter runs inside tar's internal event loop. Throwing from here escapes
+  // our try/catch and crashes the Node process. Instead: stash the error,
+  // return false to skip the entry, and surface the error after tarExtract
+  // resolves. This also lets us safely SKIP entries we don't want (symlinks,
+  // hardlinks, devices) without aborting the whole extraction — skill repos
+  // routinely contain symlinks (CLAUDE.md → README.md and similar) that
+  // aren't security issues, we just don't need them.
+  const fail = (code: string, message: string): false => {
+    if (!fatalError) fatalError = new InstallError(code, message);
+    return false;
+  };
 
   try {
     await tarExtract({
       file: archivePath,
       cwd: extractDir,
       strict: true,
-      filter: (path, entry) => {
+      filter: (path, entry): boolean => {
+        if (fatalError) return false;
+
+        // Path traversal is the one thing we must fail hard on — archives
+        // with `..` are not a "weird entry to skip", they're an attack.
         if (path.split("/").some((seg) => seg === "..")) {
-          throw new InstallError("validation_error", `Rejected path with traversal: ${path}`);
+          return fail("validation_error", `Rejected path with traversal: ${path}`);
         }
-        if (!("type" in entry)) {
-          throw new InstallError("validation_error", `Unexpected entry shape for ${path}`);
-        }
+        if (!("type" in entry)) return false; // shouldn't happen during extract
+
         const type = entry.type;
+
+        // Silently skip entry types we don't extract. Symlinks and hardlinks
+        // are the common "decorative" cases in real repos. Devices, FIFOs,
+        // and GNU extensions can also be skipped — if the archive relies on
+        // them for SKILL.md discovery, we'll fail downstream when the SKILL.md
+        // isn't found at any of the expected locations.
         if (type !== "File" && type !== "Directory") {
-          throw new InstallError(
-            "validation_error",
-            `Rejected entry type '${type}' for '${path}' (only File and Directory allowed)`,
-          );
+          return false;
         }
+
         entryCount++;
         if (entryCount > MAX_FILE_COUNT) {
-          throw new InstallError(
+          return fail(
             "validation_error",
             `Archive contains more than ${MAX_FILE_COUNT} entries; rejected`,
           );
@@ -366,7 +386,7 @@ async function extractSafely(archivePath: string, stagingRoot: string): Promise<
         if (type === "File") {
           totalBytes += entry.size ?? 0;
           if (totalBytes > MAX_EXTRACTED_BYTES) {
-            throw new InstallError(
+            return fail(
               "validation_error",
               `Extracted size exceeds ${MAX_EXTRACTED_BYTES} bytes; rejected`,
             );
@@ -376,10 +396,15 @@ async function extractSafely(archivePath: string, stagingRoot: string): Promise<
       },
     });
   } catch (err) {
-    if (err instanceof InstallError) throw err;
+    if (fatalError) throw fatalError;
     throw new InstallError("validation_error", `Extraction failed: ${(err as Error).message}`);
   }
 
+  if (fatalError) throw fatalError;
+
+  // Post-extract lstat sweep: by now all symlinks were filtered out, so any
+  // symlink that shows up here is a bug in the filter (or tar invariant
+  // violation). Still worth checking before we hand files to the caller.
   assertNoSymlinks(extractDir);
   return extractDir;
 }
