@@ -117,13 +117,18 @@ describe("path validation", () => {
     expect(() => validateToolName("")).toThrow(PathError);
   });
 
-  it("rejects names with dots, slashes, traversal", () => {
+  it("rejects names with dots, slashes, spaces, uppercase", () => {
     expect(() => validateToolName(".hidden")).toThrow(PathError);
     expect(() => validateToolName("a/b")).toThrow(PathError);
     expect(() => validateToolName("..")).toThrow(PathError);
     expect(() => validateToolName("with space")).toThrow(PathError);
-    expect(() => validateToolName("tool-123")).toThrow(PathError);
     expect(() => validateToolName("A_tool")).toThrow(PathError);
+  });
+
+  it("accepts hyphenated names (ecosystem compatibility)", () => {
+    expect(() => validateToolName("find-skills")).not.toThrow();
+    expect(() => validateToolName("youtube-transcript")).not.toThrow();
+    expect(() => validateToolName("tool-123")).not.toThrow();
   });
 
   it("rejects _shared (reserved)", () => {
@@ -392,60 +397,102 @@ describe("executePromptTool", () => {
   });
 });
 
-// ── install_skill validation ──────────────────────────────────────────
+// ── install_skill source parsing ──────────────────────────────────────
 
-describe("resolveSourceUrl", () => {
-  it("returns full HTTPS URL untouched", async () => {
-    const { resolveSourceUrl } = await import("../custom-tools/install.js");
-    expect(resolveSourceUrl("https://example.com/skill.tar.gz")).toBe("https://example.com/skill.tar.gz");
+describe("parseSource", () => {
+  it("parses GitHub shorthand (owner/repo)", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("vercel-labs/skills");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.owner).toBe("vercel-labs");
+    expect(s.repo).toBe("skills");
+    expect(s.subpath).toBeUndefined();
   });
 
-  it("expands skills.sh/<slug> shorthand (single segment)", async () => {
-    const { resolveSourceUrl } = await import("../custom-tools/install.js");
-    expect(resolveSourceUrl("skills.sh/youtube-transcript")).toBe(
-      "https://skills.sh/packages/youtube-transcript/latest.tar.gz",
-    );
+  it("parses GitHub shorthand with subpath", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("vercel-labs/skills/find-skills");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.owner).toBe("vercel-labs");
+    expect(s.repo).toBe("skills");
+    expect(s.subpath).toBe("find-skills");
   });
 
-  it("expands skills.sh/<author>/<package> namespaced shorthand", async () => {
-    const { resolveSourceUrl } = await import("../custom-tools/install.js");
-    expect(resolveSourceUrl("skills.sh/softwaredry/agent-toolkit")).toBe(
-      "https://skills.sh/packages/softwaredry/agent-toolkit/latest.tar.gz",
-    );
+  it("parses multi-level subpath", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("softwaredry/agent-toolkit/humanizer");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.subpath).toBe("humanizer");
   });
 
-  it("expands skills.sh/<author>/<package>/<skill> triple shorthand", async () => {
-    const { resolveSourceUrl } = await import("../custom-tools/install.js");
-    expect(resolveSourceUrl("skills.sh/softwaredry/agent-toolkit/humanizer")).toBe(
-      "https://skills.sh/packages/softwaredry/agent-toolkit/humanizer/latest.tar.gz",
-    );
+  it("parses @skill-name filter", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("vercel-labs/skills@find-skills");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.repo).toBe("skills");
+    expect(s.skillFilter).toBe("find-skills");
   });
 
-  it("tolerates a trailing slash on shorthand", async () => {
-    const { resolveSourceUrl } = await import("../custom-tools/install.js");
-    expect(resolveSourceUrl("skills.sh/author/pkg/")).toBe(
-      "https://skills.sh/packages/author/pkg/latest.tar.gz",
-    );
+  it("parses skills.sh/ display URLs by unwrapping", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("skills.sh/softwaredry/agent-toolkit/humanizer");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.owner).toBe("softwaredry");
+    expect(s.repo).toBe("agent-toolkit");
+    expect(s.subpath).toBe("humanizer");
   });
 
-  it("rejects non-HTTPS URL", async () => {
-    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
-    expect(() => resolveSourceUrl("http://example.com/skill.tar.gz")).toThrow(InstallError);
+  it("parses full https://github.com URL", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("https://github.com/vercel-labs/skills");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.owner).toBe("vercel-labs");
+    expect(s.repo).toBe("skills");
   });
 
-  it("rejects bare string that isn't a URL or shorthand", async () => {
-    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
-    expect(() => resolveSourceUrl("my-local-skill")).toThrow(InstallError);
+  it("parses GitHub URL with tree/branch/path", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("https://github.com/vercel-labs/skills/tree/main/skills/find-skills");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.ref).toBe("main");
+    expect(s.subpath).toBe("skills/find-skills");
   });
 
-  it("rejects skills.sh slug with invalid chars", async () => {
-    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
-    expect(() => resolveSourceUrl("skills.sh/my skill")).toThrow(InstallError);
-    expect(() => resolveSourceUrl("skills.sh/../escape")).toThrow(InstallError);
+  it("parses fragment ref (#branch)", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("vercel-labs/skills#experimental");
+    expect(s.type).toBe("github");
+    if (s.type !== "github") return;
+    expect(s.ref).toBe("experimental");
   });
 
-  it("rejects skills.sh path deeper than 3 segments", async () => {
-    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
-    expect(() => resolveSourceUrl("skills.sh/a/b/c/d")).toThrow(InstallError);
+  it("parses direct HTTPS tar.gz URL", async () => {
+    const { parseSource } = await import("../custom-tools/install.js");
+    const s = parseSource("https://example.com/bundle.tar.gz");
+    expect(s.type).toBe("direct");
+    if (s.type !== "direct") return;
+    expect(s.url).toBe("https://example.com/bundle.tar.gz");
+  });
+
+  it("rejects subpath with traversal", async () => {
+    const { parseSource, InstallError } = await import("../custom-tools/install.js");
+    expect(() => parseSource("owner/repo/../escape")).toThrow(InstallError);
+  });
+
+  it("rejects bare string that isn't a shorthand", async () => {
+    const { parseSource, InstallError } = await import("../custom-tools/install.js");
+    expect(() => parseSource("just-one-segment")).toThrow(InstallError);
+  });
+
+  it("rejects non-HTTPS", async () => {
+    const { parseSource, InstallError } = await import("../custom-tools/install.js");
+    expect(() => parseSource("http://github.com/owner/repo")).toThrow(InstallError);
   });
 });

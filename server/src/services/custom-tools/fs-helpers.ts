@@ -27,7 +27,12 @@ export const TOOLS_ROOT = process.env.CARSONOS_TOOLS_DIR ?? join(homedir(), ".ca
 
 // ── Path validation ───────────────────────────────────────────────────
 
-const TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
+// Tool names accept lowercase letters, numbers, underscores, and hyphens.
+// Hyphens are necessary for ecosystem compatibility — skills in the broader
+// agent-skills world (vercel-labs/skills, skills.sh packages) routinely use
+// hyphenated names like 'find-skills' or 'youtube-transcript'. MCP tool
+// calls, file paths, and DB columns all handle hyphens fine.
+const TOOL_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 const BUNDLE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MAX_NAME_LEN = 64;
 
@@ -36,7 +41,7 @@ export function validateToolName(name: string): void {
   if (name.length > MAX_NAME_LEN) throw new PathError(`Tool name exceeds ${MAX_NAME_LEN} chars`);
   if (!TOOL_NAME_RE.test(name)) {
     throw new PathError(
-      `Tool name '${name}' must be snake_case: start with a lowercase letter, then use lowercase letters, numbers, or underscores`,
+      `Tool name '${name}' must start with a lowercase letter, then use lowercase letters, numbers, underscores, or hyphens`,
     );
   }
   if (name === "_shared") throw new PathError("'_shared' is reserved for bundle helper files");
