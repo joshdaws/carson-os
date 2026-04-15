@@ -220,7 +220,6 @@ class ClaudeCodeAdapter implements Adapter {
 
       child.on("error", (err) => {
         reject(new Error(`Claude Code binary failed to start: ${err.message}`));
-        console.log(err);
       });
 
       child.on("close", (code) => {
