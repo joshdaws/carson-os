@@ -610,10 +610,11 @@ export class ToolRegistry {
       const agentToolNames = [
         "update_instructions", "update_personality", "update_role",
         "list_agents", "create_agent", "delete_agent", "pause_agent", "resume_agent", "update_agent_assignment",
+        "list_agent_tools", "grant_tool_to_agent", "revoke_tool_from_agent",
       ];
       if (agentToolNames.includes(name)) {
         const result = await handleAgentTool(
-          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId, isChiefOfStaff: ctx.isChiefOfStaff, multiRelay: ctx.multiRelay },
+          { db: ctx.db, agentId: ctx.agentId, memberId: ctx.memberId, memberName: ctx.memberName, householdId: ctx.householdId, isChiefOfStaff: ctx.isChiefOfStaff, multiRelay: ctx.multiRelay, toolRegistry: this },
           name,
           input,
         );
