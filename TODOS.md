@@ -16,6 +16,30 @@
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
 
+## Custom Tools Admin UI (React)
+- **What:** React pages for listing, inspecting, approving, and toggling custom tools; secrets manager; pending-approvals queue; orphan file importer
+- **Why:** Admin routes at `/api/tools/custom/*` and `/api/tools/secrets` exist and are working; only the UI layer is missing. Currently managed via API calls or direct DB access.
+- **Pros:** Parents get visual review/approval flow for kid-created tools (when kid-agent approval lands), orphan file cleanup, easy grant management
+- **Cons:** React work, design decisions for the approval queue UX
+- **Context:** Deferred from the custom tools M1 PR per the design doc's Phase 3d. Routes are shipped and tested; the UI ships separately.
+- **Depends on:** Custom tools registry (shipped in v0.2.0)
+
+## CoS Dev Mode: Harness Self-Modification
+- **What:** Let the Chief of Staff agent modify CarsonOS source itself — add new system tools, fix bugs in the harness, ship commits via the agent. Includes a GUIDE.md for repo layout + git workflow, and git operations (commit/push/PR) as first-class agent capabilities with proper canUseTool gating.
+- **Why:** Today a CoS can create custom tools but can't add a new TOOL KIND or fix a harness bug without a human opening the editor. The platform should learn from itself.
+- **Pros:** Self-improving harness, Claude Code-parity for CarsonOS developers, unlocks "the right answer is to add a new system tool, not a custom one" scenarios
+- **Cons:** Needs safe-restart path (tsx watch reloads on save — works for typos, crashes for real logic errors). Git as agent capability needs careful auth plumbing.
+- **Context:** User surfaced during the custom tools retrospective (2026-04-14): "I want CoS to be in dev mode where it can edit CarsonOS code." Identified as the natural next layer above custom tools.
+- **Depends on:** Custom tools registry (shipped in v0.2.0)
+
+## Tiered Creation by Trust Level
+- **What:** Loosen custom tool creation gates: all agents can create `prompt` tools (text-only, no execution); full-trust agents can create `http` tools (network, sandboxed); CoS only can create `script` tools (full server privilege).
+- **Why:** Currently every tool kind is CoS-only, which is too strict. A teenager's agent should be able to write a study-flow recipe (prompt tool) without going through parent approval.
+- **Pros:** Unlocks creative recipe authoring for non-CoS agents, matches the actual threat model (prompts are safe, HTTP is medium, scripts are dangerous)
+- **Cons:** 1-day fix. Need to map trust level to allowed tool kinds in the create path.
+- **Context:** Surfaced during v0.2.0 retrospective (2026-04-14). All three tool kinds currently require CoS trust.
+- **Depends on:** Custom tools registry (shipped in v0.2.0)
+
 ## Delegation: Chief of Staff → Specialist Agent for Big Tasks
 - **What:** When the Chief of Staff recognizes a request will take many turns or
   requires capabilities a specialist has (e.g., coding), it dispatches to a
