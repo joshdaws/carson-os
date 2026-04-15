@@ -377,4 +377,49 @@ describe("executePromptTool", () => {
     const result = executePromptTool(template, { action: "Y" });
     expect(result.content).toContain("Step 2: Do Y");
   });
+
+  it("returns body when no placeholders are present", () => {
+    // Static prompt tools (pure instructions, no inputs) should just return the body
+    const result = executePromptTool("Read the recent messages and summarize them.", {});
+    expect(result.content).toBe("Read the recent messages and summarize them.");
+  });
+
+  it("treats template as unstructured text (no parsing required)", () => {
+    // Even markdown-heavy prompt bodies should pass through substituteTemplate
+    const body = "# {{title}}\n\n- Item one\n- {{second}}\n";
+    const result = executePromptTool(body, { title: "Daily", second: "Item two" });
+    expect(result.content).toBe("# Daily\n\n- Item one\n- Item two\n");
+  });
+});
+
+// ── install_skill validation ──────────────────────────────────────────
+
+describe("resolveSourceUrl", () => {
+  it("returns full HTTPS URL untouched", async () => {
+    const { resolveSourceUrl } = await import("../custom-tools/install.js");
+    expect(resolveSourceUrl("https://example.com/skill.tar.gz")).toBe("https://example.com/skill.tar.gz");
+  });
+
+  it("expands skills.sh/<slug> shorthand", async () => {
+    const { resolveSourceUrl } = await import("../custom-tools/install.js");
+    expect(resolveSourceUrl("skills.sh/youtube-transcript")).toBe(
+      "https://skills.sh/skills/youtube-transcript.tar.gz",
+    );
+  });
+
+  it("rejects non-HTTPS URL", async () => {
+    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
+    expect(() => resolveSourceUrl("http://example.com/skill.tar.gz")).toThrow(InstallError);
+  });
+
+  it("rejects bare string that isn't a URL or shorthand", async () => {
+    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
+    expect(() => resolveSourceUrl("my-local-skill")).toThrow(InstallError);
+  });
+
+  it("rejects skills.sh slug with invalid chars", async () => {
+    const { resolveSourceUrl, InstallError } = await import("../custom-tools/install.js");
+    expect(() => resolveSourceUrl("skills.sh/my skill")).toThrow(InstallError);
+    expect(() => resolveSourceUrl("skills.sh/../escape")).toThrow(InstallError);
+  });
 });

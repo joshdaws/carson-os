@@ -121,11 +121,12 @@ export async function executeHttpTool(
 
     // Handle redirects with per-hop allowlist re-check
     let finalRes = res;
+    let currentHost = parsedUrl.hostname;
     let hops = 0;
     while (finalRes.status >= 300 && finalRes.status < 400 && hops < 5) {
       const loc = finalRes.headers.get("location");
       if (!loc) break;
-      const nextUrl = new URL(loc, parsedUrl);
+      const nextUrl = new URL(loc, `https://${currentHost}`);
       if (nextUrl.protocol !== "https:") {
         return toolError("domain_blocked", `Redirect to non-HTTPS '${loc}' blocked.`);
       }
@@ -135,13 +136,20 @@ export async function executeHttpTool(
           `Redirect to '${nextUrl.hostname}' blocked (not in allowlist).`,
         );
       }
+      // Cross-host redirect: strip auth headers before re-issuing so a
+      // domainAllowlist with more than one host can't leak a bearer token
+      // from the intended API to another allowlisted domain.
+      const nextHeaders = nextUrl.hostname !== currentHost
+        ? stripAuthHeaders(headers, config.auth)
+        : headers;
       finalRes = await fetch(nextUrl.toString(), {
         method: config.method,
-        headers,
+        headers: nextHeaders,
         body,
         redirect: "manual",
         signal: controller.signal,
       });
+      currentHost = nextUrl.hostname;
       hops++;
     }
 
@@ -190,6 +198,27 @@ async function applyAuth(
     url.searchParams.set(auth.param, secret);
   }
   return { ok: true };
+}
+
+/**
+ * Strip auth-bearing headers before following a cross-host redirect. Matches
+ * the browser / curl --location-trusted default: never hand a bearer token to
+ * a different origin than the one the user configured. Case-insensitive
+ * because header maps are sometimes canonicalized upstream.
+ */
+function stripAuthHeaders(
+  headers: Record<string, string>,
+  authConfig: HttpAuth | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const stripNames = new Set(["authorization", "cookie", "proxy-authorization"]);
+  if (authConfig?.method === "header") {
+    stripNames.add(authConfig.name.toLowerCase());
+  }
+  for (const [k, v] of Object.entries(headers)) {
+    if (!stripNames.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
 }
 
 async function loadSecret(
@@ -360,12 +389,15 @@ async function loadHandler(handlerTsPath: string, generation: number): Promise<L
   }
   const code = bundleResult.outputFiles[0].text;
 
-  // Write to a unique temp path so dynamic import()'s cache is per-generation
+  // Write to a unique temp path so dynamic import()'s cache is per-generation.
+  // mode 0700/0600 prevents other local users on a shared machine from reading
+  // compiled handler source (which can contain inlined string literals that
+  // esbuild doesn't strip even with `packages: "external"`).
   const outDir = join(tmpdir(), "carsonos-custom-tools");
-  mkdirSync(outDir, { recursive: true });
+  mkdirSync(outDir, { recursive: true, mode: 0o700 });
   const token = randomBytes(6).toString("hex");
   const outPath = join(outDir, `handler.${generation}.${token}.mjs`);
-  writeFileSync(outPath, code, "utf8");
+  writeFileSync(outPath, code, { encoding: "utf8", mode: 0o600 });
 
   const url = `file://${outPath}?gen=${generation}`;
   const mod = (await import(url)) as { handler?: unknown };

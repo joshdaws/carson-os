@@ -28,6 +28,7 @@ import { build as esbuildBuild } from "esbuild";
 import { encryptSecret } from "./secrets.js";
 import { invalidateHandlerCache } from "./executors.js";
 import { CUSTOM_TOOL_NAMES, CUSTOM_TOOL_SYSTEM_TOOLS } from "./system-tools.js";
+import { cleanupStaging, InstallError, prepareInstall, promoteTool } from "./install.js";
 
 // Keep system-tools re-exports tidy
 export { CUSTOM_TOOL_NAMES, CUSTOM_TOOL_SYSTEM_TOOLS };
@@ -217,7 +218,7 @@ async function writeAndRegisterTool(
     return errResult("validation_error", (err as Error).message);
   }
 
-  // Check uniqueness + built-in name collision
+  // Reserved-name check is purely in-memory, safe to run outside the lock.
   if (CUSTOM_TOOL_NAMES.has(name)) {
     return errResult(
       "validation_error",
@@ -225,55 +226,78 @@ async function writeAndRegisterTool(
     );
   }
 
-  const existing = ctx.db
-    .select({ id: customTools.id, status: customTools.status })
-    .from(customTools)
-    .where(and(eq(customTools.householdId, ctx.householdId), eq(customTools.name, name)))
-    .all();
-  if (existing.length > 0) {
-    return errResult(
-      "validation_error",
-      `A custom tool named '${name}' already exists in this household (status=${existing[0].status}). Use update_custom_tool to modify, or pick a different name.`,
-    );
-  }
-
   return withLock(`${ctx.householdId}:${name}`, async () => {
+    // Uniqueness check lives INSIDE the lock so two concurrent creates for the
+    // same name can't both pass. Without this, the loser would overwrite the
+    // winner's files on disk after the winner's DB insert, leaving the DB row
+    // pointing at attacker-controlled content.
+    const existing = ctx.db
+      .select({ id: customTools.id, status: customTools.status })
+      .from(customTools)
+      .where(and(eq(customTools.householdId, ctx.householdId), eq(customTools.name, name)))
+      .all();
+    if (existing.length > 0) {
+      return errResult(
+        "validation_error",
+        `A custom tool named '${name}' already exists in this household (status=${existing[0].status}). Use update_custom_tool to modify, or pick a different name.`,
+      );
+    }
+
     // 1. Prepare paths
     ensureToolsDir(ctx.householdId);
     const dir = toolDirPath(ctx.householdId, bundle, name);
     const relPath = toolRelPath(bundle, name);
 
-    // 2. Write files atomically
-    atomicWriteFile(join(dir, "SKILL.md"), writeSkillMd(doc));
-    if (kind === "script" && handlerCode) {
-      atomicWriteFile(join(dir, "handler.ts"), handlerCode);
+    // 2. Decide initial status before writes so we know what state to persist
+    const initialStatus = kind === "script" && !ctx.isChiefOfStaff ? "pending_approval" : "active";
+
+    // 3. Insert DB row FIRST. Relies on the unique index on (household_id,
+    // name) as the authoritative tiebreaker — if a racing insert snuck past
+    // the in-memory lock somehow, the DB rejects the second writer before we
+    // touch disk.
+    let row: typeof customTools.$inferSelect;
+    try {
+      [row] = await ctx.db
+        .insert(customTools)
+        .values({
+          householdId: ctx.householdId,
+          name,
+          kind,
+          path: relPath,
+          createdByAgentId: ctx.agentId,
+          source: "agent",
+          status: initialStatus,
+          approvedContentHash: null, // filled in after file write + hash
+          schemaVersion: 1,
+          generation: 1,
+        })
+        .returning();
+    } catch (err) {
+      return errResult(
+        "validation_error",
+        `Failed to register '${name}' (database rejected insert, possibly a duplicate): ${(err as Error).message}`,
+      );
     }
 
-    // 3. Compute hash
+    // 4. Write files atomically. If either write fails we must roll back the
+    // DB row so we don't leave an orphan entry pointing at a missing file.
+    try {
+      atomicWriteFile(join(dir, "SKILL.md"), writeSkillMd(doc));
+      if (kind === "script" && handlerCode) {
+        atomicWriteFile(join(dir, "handler.ts"), handlerCode);
+      }
+    } catch (err) {
+      await ctx.db.delete(customTools).where(eq(customTools.id, row.id));
+      return errResult("validation_error", `Failed to write tool files: ${(err as Error).message}`);
+    }
+
+    // 5. Hash the written content and finalize the row
     const hash = hashToolDir(dir);
-
-    // 4. Decide initial status
-    // Script tools created by non-CoS enter pending_approval
-    const initialStatus = kind === "script" && !ctx.isChiefOfStaff ? "pending_approval" : "active";
-    // Only set approved_content_hash if activating now
     const approvedHash = initialStatus === "active" ? hash : null;
-
-    // 5. Insert DB row
-    const [row] = await ctx.db
-      .insert(customTools)
-      .values({
-        householdId: ctx.householdId,
-        name,
-        kind,
-        path: relPath,
-        createdByAgentId: ctx.agentId,
-        source: "agent",
-        status: initialStatus,
-        approvedContentHash: approvedHash,
-        schemaVersion: 1,
-        generation: 1,
-      })
-      .returning();
+    await ctx.db
+      .update(customTools)
+      .set({ approvedContentHash: approvedHash })
+      .where(eq(customTools.id, row.id));
 
     // 6. Notify registry
     await ctx.onToolChanged({ type: "created", toolId: row.id });
@@ -293,7 +317,9 @@ async function writeAndRegisterTool(
 
     return {
       content: `Created custom ${kind} tool '${name}'. ${
-        kind === "prompt" ? "Invoke it like any other tool; the filled template will be returned to you." : "Available in subsequent messages."
+        kind === "prompt"
+          ? "Invoke it like any other tool; the filled template will be returned to you."
+          : "It's now available for use in this conversation (mid-session refresh)."
       }`,
     };
   });
@@ -368,8 +394,13 @@ async function handleUpdateCustomTool(
 
     const doc = parseSkillMd(readFileSync(skillPath, "utf8"));
     let affectsScript = false;
+    let stagedHandlerCode: string | null = null;
 
-    // Apply updates by kind
+    // Apply updates in memory first — do NOT touch disk until every piece of
+    // input has been validated. Writing handler.ts before validating the full
+    // update lets a bad-metadata submission swap in unapproved script code
+    // while leaving the DB row in its old state; the next uncached invocation
+    // would then compile and run the unapproved code.
     if (input.description !== undefined) {
       doc.frontmatter.description = String(input.description);
     }
@@ -395,16 +426,24 @@ async function handleUpdateCustomTool(
       if (input.body !== undefined) doc.body = String(input.body);
     } else if (row.kind === "script") {
       if (input.handler_code !== undefined) {
-        const handlerErr = await validateScriptHandler(String(input.handler_code));
+        const code = String(input.handler_code);
+        const handlerErr = await validateScriptHandler(code);
         if (handlerErr) return handlerErr;
-        atomicWriteFile(join(dir, "handler.ts"), String(input.handler_code));
-        affectsScript = true;
+        stagedHandlerCode = code;
       }
     }
 
+    // Validate the fully-assembled doc BEFORE any writes hit disk. If this
+    // rejects, nothing on disk changed.
     const validationErr = validateUpdatedToolDoc(row.kind as ToolKind, doc);
     if (validationErr) return validationErr;
 
+    // All validation passed. Writes are atomic (temp + rename) so a crash
+    // between them leaves either old or new content but never a partial file.
+    if (stagedHandlerCode !== null) {
+      atomicWriteFile(join(dir, "handler.ts"), stagedHandlerCode);
+      affectsScript = true;
+    }
     atomicWriteFile(skillPath, writeSkillMd(doc));
 
     // Compute new hash
@@ -538,22 +577,114 @@ async function handleStoreSecret(
 // ── Install skill ─────────────────────────────────────────────────────
 
 async function handleInstallSkill(
-  _ctx: CustomToolHandlerContext,
-  _input: Record<string, unknown>,
+  ctx: CustomToolHandlerContext,
+  input: Record<string, unknown>,
 ): Promise<ToolResult> {
-  // M1 implementation note: the full fetch+extract+manifest validation pipeline
-  // is non-trivial (~200 lines with tarball handling, MANIFEST.json parsing,
-  // HTTPS enforcement, size caps). Ship as follow-up PR. For now, return a
-  // useful message so agents know the surface exists.
+  const source = String(input.source ?? "").trim();
+  if (!source) {
+    return errResult("validation_error", "source is required. Example: 'skills.sh/youtube-transcript' or 'https://example.com/skill.tar.gz'.");
+  }
+  const rename = input.rename !== undefined ? String(input.rename).trim() : undefined;
+
+  // Only CoS can install skills — they run as `active` immediately and
+  // script tools inside skip the per-creation approval because the operator
+  // chose to trust the source. Non-CoS would need a review queue we haven't
+  // built yet.
+  if (!ctx.isChiefOfStaff) {
+    return errResult(
+      "permission_denied",
+      "Only the Chief of Staff can install skills. Ask a parent to run install_skill, then request a grant.",
+    );
+  }
+
+  let result;
+  try {
+    result = await prepareInstall(source);
+  } catch (err) {
+    if (err instanceof InstallError) {
+      return errResult(err.code, err.message);
+    }
+    return errResult("http_error", `install_skill failed: ${(err as Error).message}`);
+  }
+
+  // If the caller passed `rename` but the archive contains multiple tools,
+  // that's ambiguous — refuse rather than silently rename the first one.
+  if (rename && result.entries.length > 1) {
+    cleanupStaging(result.stagingRoot);
+    return errResult(
+      "validation_error",
+      `Archive contains ${result.entries.length} tools; 'rename' can only be used when installing a single tool.`,
+    );
+  }
+
+  // Check for collisions against existing custom tools in this household.
+  const names = result.entries.map((e) => (rename && result.entries.length === 1 ? rename : e.toolName));
+  const collisions = ctx.db
+    .select({ name: customTools.name })
+    .from(customTools)
+    .where(and(eq(customTools.householdId, ctx.householdId), inArray(customTools.name, names)))
+    .all();
+  if (collisions.length > 0) {
+    cleanupStaging(result.stagingRoot);
+    return errResult(
+      "validation_error",
+      `Tool name(s) already exist: ${collisions.map((c) => c.name).join(", ")}. Use 'rename' (single-tool archives) or delete the existing tool first.`,
+    );
+  }
+
+  // Promote each tool. If any fails, roll back everything installed so far.
+  const installedRows: Array<{ id: string; name: string }> = [];
+  try {
+    for (const entry of result.entries) {
+      const finalName = rename && result.entries.length === 1 ? rename : entry.toolName;
+      const relPath = toolRelPath(entry.bundle, finalName);
+      const destDir = toolDirPath(ctx.householdId, entry.bundle, finalName);
+      ensureToolsDir(ctx.householdId);
+      promoteTool(entry, destDir);
+
+      const [row] = await ctx.db
+        .insert(customTools)
+        .values({
+          householdId: ctx.householdId,
+          name: finalName,
+          kind: entry.kind,
+          path: relPath,
+          createdByAgentId: ctx.agentId,
+          source: "skill_install",
+          status: "active",
+          approvedContentHash: entry.contentHash,
+          schemaVersion: 1,
+          generation: 1,
+        })
+        .returning({ id: customTools.id, name: customTools.name });
+      installedRows.push(row);
+
+      await ctx.onToolChanged({ type: "created", toolId: row.id });
+      await ctx.toolRegistry.grant(ctx.agentId, finalName, ctx.agentId);
+    }
+  } catch (err) {
+    // Roll back DB rows + installed files
+    for (const row of installedRows) {
+      try {
+        await ctx.db.delete(customTools).where(eq(customTools.id, row.id));
+      } catch {
+        /* best effort */
+      }
+    }
+    cleanupStaging(result.stagingRoot);
+    return errResult(
+      "validation_error",
+      `install_skill failed partway through: ${(err as Error).message}. Partial install rolled back.`,
+    );
+  }
+
+  cleanupStaging(result.stagingRoot);
+
   return {
     content:
-      "install_skill is registered but not yet implemented in this build. " +
-      "To install a skill manually, extract it to ~/.carsonos/tools/{household-id}/{skill-name}/ " +
-      "and restart the server; boot reconciliation will import the SKILL.md files as orphans " +
-      "for admin approval. Full install_skill pipeline lands in a follow-up.",
-    is_error: true,
-    error_code: "not_found",
-  } as ToolResult;
+      `Installed ${installedRows.length} tool(s) from ${result.sourceUrl}: ${installedRows.map((r) => r.name).join(", ")}. ` +
+      `They're granted to you and available in subsequent messages. Grant to others via the admin UI.`,
+  };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

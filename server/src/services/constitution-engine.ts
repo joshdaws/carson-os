@@ -42,7 +42,8 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
-import { activityLog } from "@carsonos/db";
+import { activityLog, toolSecrets } from "@carsonos/db";
+import { decryptSecret, redactSecrets } from "./custom-tools/secrets.js";
 import {
   buildMemorySchemaInstructions,
   DEFAULT_MEMORY_SCHEMA,
@@ -129,6 +130,53 @@ function redactToolLogInput(name: string, input: Record<string, unknown>): Recor
     ...input,
     ...(Object.prototype.hasOwnProperty.call(input, "value") ? { value: "[REDACTED]" } : {}),
   };
+}
+
+/**
+ * Scrub a logged tool-call record against every known household secret.
+ * Prevents HTTP tool responses that reflect auth headers, script tool results
+ * that include ctx.getSecret() values, and error messages with embedded tokens
+ * from landing in activity_log in plaintext.
+ */
+function redactToolCallAgainstSecrets(
+  record: { input: unknown; result: unknown },
+  secrets: Array<{ keyName: string; value: string }>,
+): { input: unknown; result: unknown } {
+  if (secrets.length === 0) return record;
+  const json = JSON.stringify(record);
+  const scrubbed = redactSecrets(json, secrets);
+  if (scrubbed === json) return record;
+  try {
+    return JSON.parse(scrubbed) as { input: unknown; result: unknown };
+  } catch {
+    // Parse failure = our split/join produced invalid JSON (e.g. escaped quote
+    // inside a secret). Fall back to the stringified form so nothing leaks.
+    return { input: "[REDACTED:serialize-failed]", result: "[REDACTED:serialize-failed]" };
+  }
+}
+
+/**
+ * Load and decrypt all tool_secrets for a household. Runs at most once per
+ * message, only if a custom tool was actually invoked. Return value is kept
+ * in memory for the log-scrub pass then discarded.
+ */
+async function loadHouseholdSecrets(
+  db: Db,
+  householdId: string,
+): Promise<Array<{ keyName: string; value: string }>> {
+  const rows = await db
+    .select()
+    .from(toolSecrets)
+    .where(eq(toolSecrets.householdId, householdId));
+  const decoded: Array<{ keyName: string; value: string }> = [];
+  for (const row of rows) {
+    try {
+      decoded.push({ keyName: row.keyName, value: decryptSecret(row.encryptedValue) });
+    } catch {
+      // Single corrupted row shouldn't stop redaction for other keys
+    }
+  }
+  return decoded;
 }
 
 // -- Engine ----------------------------------------------------------
@@ -514,14 +562,23 @@ export class ConstitutionEngine {
 
       // Log tool calls to activity log
       if (toolCallLog && toolCallLog.length > 0) {
+        // Load household secrets once per message so we can scrub any leaked
+        // value from tool inputs or results. A custom HTTP tool pointing at a
+        // reflector endpoint would otherwise persist its Bearer token into
+        // activity_log verbatim.
+        const secrets = await loadHouseholdSecrets(this.db, householdId);
         for (const call of toolCallLog) {
           try {
+            const scrubbed = redactToolCallAgainstSecrets(
+              { input: redactToolLogInput(call.name, call.input), result: call.result },
+              secrets,
+            );
             await this.db.insert(activityLog).values({
               id: crypto.randomUUID(),
               householdId,
               agentId,
               action: `tool:${call.name}`,
-              details: { input: redactToolLogInput(call.name, call.input), result: call.result },
+              details: scrubbed,
             });
           } catch {
             // Don't let logging failures break the pipeline
