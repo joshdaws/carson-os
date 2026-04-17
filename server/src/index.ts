@@ -40,6 +40,7 @@ import { bootMemory } from "./services/memory/index.js";
 import { hydrateEnvFromSettings } from "./services/env-hydration.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
+import { CalDavProvider, CALDAV_CALENDAR_TOOLS } from "./services/caldav/index.js";
 
 // Read VERSION from the repo root (two levels up from server/src/). Single
 // source of truth — bumping VERSION at ship time updates the boot banner
@@ -115,11 +116,18 @@ async function main() {
     console.warn("[memory] Boot failed, running without memory:", err);
   }
 
-  // 2c. Google Calendar provider
+  // 2c. Calendar providers
   const googleDir = join(config.dataDir, "google");
   const calendarProvider = new GoogleCalendarProvider(googleDir);
   const gwsHealthy = await calendarProvider.healthCheck();
   console.log(`[google] Calendar provider ${gwsHealthy ? "ready" : "unavailable (gws not installed)"}`);
+
+  // CalDAV — always available, no external CLI dependency. Used for members
+  // with iCloud/CalDAV credentials. Wins over Google at dispatch time for
+  // members who have creds saved.
+  const caldavDir = join(config.dataDir, "caldav");
+  const caldavProvider = new CalDavProvider(caldavDir);
+  console.log("[caldav] Calendar provider ready");
 
   // 2d. Tool registry
   const toolRegistry = new ToolRegistry(db);
@@ -147,6 +155,18 @@ async function main() {
       DRIVE_TOOLS.map((def) => ({ definition: def, category: "drive", tier: "builtin" as const })),
       googlePlaceholder,
     );
+  } else {
+    // gws not installed — register calendar tools under CalDAV so agents can
+    // still use the calendar tools for members with CalDAV credentials saved.
+    const caldavPlaceholder = async (_name: string, _input: Record<string, unknown>) => ({
+      content: "CalDAV not configured for this member. Save credentials to ~/.carsonos/caldav/<member>/credentials.json",
+      is_error: true as const,
+    });
+
+    toolRegistry.registerAll(
+      CALDAV_CALENDAR_TOOLS.map((def) => ({ definition: def, category: "calendar", tier: "builtin" as const })),
+      caldavPlaceholder,
+    );
   }
 
   // Skills are enabled via trust level ("Skill" built-in for full trust).
@@ -166,6 +186,7 @@ async function main() {
     memoryProvider,
     toolRegistry,
     calendarProvider: gwsHealthy ? calendarProvider : undefined,
+    caldavProvider,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
