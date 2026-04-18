@@ -265,8 +265,48 @@ export class MultiRelayManager {
       }
     });
 
-    // Media message handlers (photos, voice, documents, stickers, video)
-    const mediaTypes = ["message:photo", "message:voice", "message:document", "message:sticker", "message:video"] as const;
+    // Voice and audio handlers — dedicated, not in the generic media loop.
+    // Key reasons:
+    //   1. Sends "typing" immediately so the user knows transcription is running
+    //   2. Uses real ctx (not a spread fake) — spreading a Grammy Context loses all
+    //      prototype methods (reply, replyWithChatAction, api getters), which was the
+    //      root cause of the "I had trouble processing that" error
+    //   3. Labels real transcripts clearly so the LLM understands the source
+    for (const voiceType of ["message:voice", "message:audio"] as const) {
+      bot.on(voiceType, async (ctx) => {
+        const updateId = ctx.update.update_id;
+        if (managed.recentUpdateIds.has(updateId)) return;
+        managed.recentUpdateIds.add(updateId);
+        managed.lastActivity = Date.now();
+
+        try {
+          // Typing indicator right away — transcription takes a moment
+          try { await ctx.replyWithChatAction("typing"); } catch { /* swallow */ }
+
+          const { extractMediaText } = await import("./telegram-media.js");
+          const extraction = await extractMediaText(ctx, agent.telegramBotToken!);
+
+          if (extraction) {
+            // Real transcript vs. "could not be transcribed" fallback
+            const isRealTranscript = !extraction.text.startsWith("[Voice message");
+            const fullText = isRealTranscript
+              ? `[Voice transcript]\n\n${extraction.text}`
+              : extraction.text;
+            await this.handleMessage(ctx, agentId, agent.name, fullText);
+          } else {
+            await ctx.reply("I couldn't process that voice message. Please try again or send it as text.");
+          }
+        } catch (err) {
+          console.error(`[multi-relay:${agent.name}] Voice error:`, err);
+          await ctx.reply("I had trouble with that voice message. Try sending it as text.");
+        }
+      });
+    }
+
+    // Generic media handlers (photos, documents, stickers, video).
+    // Voice/audio are handled above. Pass real ctx + textOverride to handleMessage
+    // — same fix as above to avoid the Grammy prototype-loss bug.
+    const mediaTypes = ["message:photo", "message:document", "message:sticker", "message:video"] as const;
     for (const mediaType of mediaTypes) {
       bot.on(mediaType, async (ctx) => {
         const updateId = ctx.update.update_id;
@@ -281,11 +321,7 @@ export class MultiRelayManager {
             const fullText = extraction.caption
               ? `${extraction.caption}\n\n${extraction.text}`
               : extraction.text;
-            await this.handleMessage(
-              { ...ctx, message: { ...ctx.message!, text: fullText } } as unknown as Context,
-              agentId,
-              agent.name,
-            );
+            await this.handleMessage(ctx, agentId, agent.name, fullText);
           } else {
             await ctx.reply("I received your message but couldn't process that type of content yet.");
           }
@@ -374,9 +410,10 @@ export class MultiRelayManager {
     ctx: Context,
     agentId: string,
     agentName: string,
+    textOverride?: string,
   ): Promise<void> {
     const telegramUserId = String(ctx.from!.id);
-    const text = ctx.message!.text!;
+    const text = textOverride ?? ctx.message!.text!;
 
     console.log(
       `[multi-relay:${agentName}] Message from ${ctx.from!.first_name} (${telegramUserId}): ${text.slice(0, 50)}`,

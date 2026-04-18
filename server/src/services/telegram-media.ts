@@ -15,7 +15,7 @@ import type { Context } from "grammy";
 
 export interface MediaExtraction {
   text: string;
-  mediaType: "photo" | "voice" | "document" | "sticker" | "video";
+  mediaType: "photo" | "voice" | "audio" | "document" | "sticker" | "video";
   caption?: string;
   fileUrl?: string;
 }
@@ -24,7 +24,7 @@ export interface MediaExtraction {
 
 const MAX_DOCUMENT_CHARS = 10_000;
 const GROQ_WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-const GROQ_WHISPER_MODEL = "whisper-large-v3";
+const GROQ_WHISPER_MODEL = "whisper-large-v3-turbo";
 
 const TEXT_MIME_TYPES = new Set([
   "application/json",
@@ -56,6 +56,10 @@ export async function extractMediaText(
 
     if (msg.voice) {
       return await extractVoice(msg, botToken);
+    }
+
+    if (msg.audio) {
+      return await extractAudio(msg, botToken);
     }
 
     if (msg.document) {
@@ -135,6 +139,46 @@ async function extractVoice(
     return {
       text: "[Voice message received but could not be transcribed. Please type your message instead.]",
       mediaType: "voice",
+      caption,
+      fileUrl,
+    };
+  }
+}
+
+// ── Audio (audio files sent via Telegram's "audio" message type) ────
+
+async function extractAudio(
+  msg: NonNullable<Context["message"]>,
+  botToken: string,
+): Promise<MediaExtraction> {
+  const audio = msg.audio!;
+  const caption = msg.caption || undefined;
+  const filename = audio.file_name || "audio file";
+  const duration = audio.duration ? ` (${audio.duration}s)` : "";
+
+  const filePath = await getTelegramFilePath(botToken, audio.file_id);
+  const fileUrl = buildFileUrl(botToken, filePath);
+  const audioBuffer = await downloadTelegramFile(botToken, filePath);
+
+  const groqApiKey = process.env.GROQ_API_KEY;
+  if (!groqApiKey) {
+    console.error("[telegram-media] GROQ_API_KEY not set, cannot transcribe audio");
+    return {
+      text: `[Audio file received: ${filename}${duration}. Could not transcribe — please send your message as text.]`,
+      mediaType: "audio",
+      caption,
+      fileUrl,
+    };
+  }
+
+  try {
+    const transcript = await transcribeVoice(audioBuffer, groqApiKey);
+    return { text: transcript, mediaType: "audio", caption, fileUrl };
+  } catch (err) {
+    console.error("[telegram-media] Audio transcription failed:", err);
+    return {
+      text: `[Audio file received: ${filename}${duration}. Transcription failed — please send your message as text.]`,
+      mediaType: "audio",
       caption,
       fileUrl,
     };
