@@ -16,6 +16,8 @@
 
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +34,11 @@ import {
   AlertTriangle,
   Key,
   RefreshCw,
+  Package,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Download,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -113,6 +120,135 @@ function formatDate(iso: string | null): string {
   }
   if (diff < 7 * day) return `${Math.floor(diff / day)}d ago`;
   return d.toLocaleDateString();
+}
+
+// ── Bundle helpers ─────────────────────────────────────────────────
+
+/**
+ * Tools live at ~/.carsonos/tools/{household}/{path}/. The path is either
+ *   - "tool_name"               (standalone)
+ *   - "bundle_name/tool_name"   (bundle of related tools)
+ * Returns the bundle name if the tool lives in one, otherwise null.
+ */
+function bundleNameFor(tool: CustomTool): string | null {
+  const segments = tool.path.split("/").filter(Boolean);
+  return segments.length > 1 ? segments[0] : null;
+}
+
+interface BundleGroup {
+  type: "bundle";
+  name: string;
+  tools: CustomTool[];
+  activeCount: number;
+  pendingCount: number;
+  brokenCount: number;
+  totalUsage: number;
+}
+
+interface SoloEntry {
+  type: "solo";
+  tool: CustomTool;
+}
+
+type ToolsListEntry = BundleGroup | SoloEntry;
+
+/**
+ * Group tools by bundle. Bundles with only one member collapse to a solo entry
+ * so we don't add nesting overhead for nothing. Sort: bundles first (alpha),
+ * then solo tools (alpha).
+ */
+function groupByBundle(tools: CustomTool[]): ToolsListEntry[] {
+  const bundles = new Map<string, CustomTool[]>();
+  const solos: CustomTool[] = [];
+
+  for (const t of tools) {
+    const b = bundleNameFor(t);
+    if (b) {
+      const list = bundles.get(b) ?? [];
+      list.push(t);
+      bundles.set(b, list);
+    } else {
+      solos.push(t);
+    }
+  }
+
+  const groups: ToolsListEntry[] = [];
+  for (const [name, members] of [...bundles.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (members.length === 1) {
+      solos.push(members[0]);
+      continue;
+    }
+    const stats = members.reduce(
+      (acc, m) => {
+        if (m.status === "active") acc.activeCount++;
+        if (m.status === "pending_approval") acc.pendingCount++;
+        if (m.status === "broken") acc.brokenCount++;
+        acc.totalUsage += m.usageCount;
+        return acc;
+      },
+      { activeCount: 0, pendingCount: 0, brokenCount: 0, totalUsage: 0 },
+    );
+    groups.push({
+      type: "bundle",
+      name,
+      tools: members.sort((a, b) => a.name.localeCompare(b.name)),
+      ...stats,
+    });
+  }
+  for (const t of solos.sort((a, b) => a.name.localeCompare(b.name))) {
+    groups.push({ type: "solo", tool: t });
+  }
+  return groups;
+}
+
+// ── SKILL.md frontmatter parsing ───────────────────────────────────
+
+interface ParsedSkillMd {
+  frontmatter: Record<string, string> | null;
+  body: string;
+}
+
+/**
+ * Split out the YAML frontmatter from the markdown body. Only the metadata
+ * fields humans care about (name, description, kind, source-related) are
+ * surfaced. Implementation details (input_schema, http config, script entry
+ * point) live in the YAML but are noisy in a metadata table — they're skipped
+ * here. Everything past the closing `---` is rendered as markdown.
+ */
+const METADATA_KEYS = new Set([
+  "name",
+  "description",
+  "kind",
+  "version",
+  "author",
+  "source",
+  "url",
+  "license",
+  "homepage",
+]);
+
+function parseSkillMd(content: string): ParsedSkillMd {
+  const trimmed = content.replace(/^\uFEFF/, "");
+  if (!trimmed.startsWith("---")) {
+    return { frontmatter: null, body: trimmed };
+  }
+  const end = trimmed.indexOf("\n---", 3);
+  if (end === -1) {
+    return { frontmatter: null, body: trimmed };
+  }
+  const frontmatterRaw = trimmed.slice(3, end).trim();
+  const body = trimmed.slice(end + 4).trim();
+  const fm: Record<string, string> = {};
+  for (const line of frontmatterRaw.split("\n")) {
+    if (/^\s/.test(line)) continue; // skip indented (nested) lines
+    const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*(.+)$/);
+    if (!m) continue;
+    const value = m[2].trim();
+    if (!value || value === "{}" || value === "[]" || value === "|" || value === ">") continue;
+    if (!METADATA_KEYS.has(m[1])) continue;
+    fm[m[1]] = value;
+  }
+  return { frontmatter: fm, body };
 }
 
 // ── Sub-components ─────────────────────────────────────────────────
@@ -213,6 +349,197 @@ function ConfirmDeleteOverlay({
         </div>
       </div>
     </div>
+  );
+}
+
+function SkillMdView({ skillMd }: { skillMd: string | null }) {
+  const parsed = useMemo(() => (skillMd ? parseSkillMd(skillMd) : null), [skillMd]);
+
+  if (!skillMd || !parsed) {
+    return (
+      <div>
+        <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+          SKILL.md
+        </p>
+        <p className="text-xs italic" style={{ color: "#a09080" }}>
+          No SKILL.md file found.
+        </p>
+      </div>
+    );
+  }
+
+  const fm = parsed.frontmatter;
+
+  return (
+    <div className="space-y-4">
+      {fm && Object.keys(fm).length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+            Metadata
+          </p>
+          <div
+            className="rounded border divide-y"
+            style={{ borderColor: "#eee8dd", background: "#faf8f4" }}
+          >
+            {Object.entries(fm).map(([k, v]) => (
+              <div
+                key={k}
+                className="grid grid-cols-[120px_1fr] gap-3 px-3 py-2 text-xs"
+                style={{ borderColor: "#eee8dd" }}
+              >
+                <code style={{ color: "#7a7060" }}>{k}</code>
+                <span className="break-words" style={{ color: "#1a1f2e" }}>
+                  {v}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+          SKILL.md
+        </p>
+        <div
+          className="prose prose-sm max-w-none rounded border p-4"
+          style={{ borderColor: "#eee8dd", background: "#faf8f4", color: "#1a1f2e" }}
+        >
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              h1: ({ children }) => (
+                <h1 className="text-base font-semibold mb-2 mt-0" style={{ color: "#1a1f2e" }}>
+                  {children}
+                </h1>
+              ),
+              h2: ({ children }) => (
+                <h2
+                  className="text-sm font-semibold mb-2 mt-4"
+                  style={{ color: "#1a1f2e" }}
+                >
+                  {children}
+                </h2>
+              ),
+              h3: ({ children }) => (
+                <h3 className="text-xs font-semibold mb-1.5 mt-3" style={{ color: "#1a1f2e" }}>
+                  {children}
+                </h3>
+              ),
+              p: ({ children }) => (
+                <p className="text-xs leading-relaxed mb-2" style={{ color: "#1a1f2e" }}>
+                  {children}
+                </p>
+              ),
+              ul: ({ children }) => (
+                <ul className="text-xs leading-relaxed mb-2 ml-5 list-disc" style={{ color: "#1a1f2e" }}>
+                  {children}
+                </ul>
+              ),
+              ol: ({ children }) => (
+                <ol
+                  className="text-xs leading-relaxed mb-2 ml-5 list-decimal"
+                  style={{ color: "#1a1f2e" }}
+                >
+                  {children}
+                </ol>
+              ),
+              li: ({ children }) => <li className="mb-0.5">{children}</li>,
+              code: ({ children, className }) => {
+                // Block code (has className like "language-xxx")
+                if (className) {
+                  return (
+                    <code
+                      className={className}
+                      style={{
+                        display: "block",
+                        background: "#f1ece2",
+                        padding: "8px 10px",
+                        borderRadius: 3,
+                        fontSize: 11,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        color: "#1a1f2e",
+                      }}
+                    >
+                      {children}
+                    </code>
+                  );
+                }
+                // Inline code
+                return (
+                  <code
+                    style={{
+                      background: "#f1ece2",
+                      padding: "1px 5px",
+                      borderRadius: 3,
+                      fontSize: 11,
+                      color: "#3a4060",
+                    }}
+                  >
+                    {children}
+                  </code>
+                );
+              },
+              pre: ({ children }) => <>{children}</>,
+              a: ({ href, children }) => (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#3a4060", textDecoration: "underline" }}
+                >
+                  {children}
+                </a>
+              ),
+              hr: () => (
+                <hr className="my-3" style={{ borderColor: "#eee8dd", borderTopWidth: 1 }} />
+              ),
+              blockquote: ({ children }) => (
+                <blockquote
+                  className="text-xs italic pl-3 my-2"
+                  style={{ borderLeft: "2px solid #ddd5c8", color: "#5a5a5a" }}
+                >
+                  {children}
+                </blockquote>
+              ),
+            }}
+          >
+            {parsed.body}
+          </Markdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RawSkillMdToggle({ skillMd }: { skillMd: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="text-xs"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary
+        className="cursor-pointer select-none py-1"
+        style={{ color: "#7a7060" }}
+      >
+        {open ? "Hide" : "Show"} raw SKILL.md
+      </summary>
+      <pre
+        className="text-xs font-mono p-3 mt-2 rounded border overflow-x-auto"
+        style={{
+          background: "#faf8f4",
+          borderColor: "#eee8dd",
+          color: "#1a1f2e",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {skillMd}
+      </pre>
+    </details>
   );
 }
 
@@ -359,6 +686,42 @@ function ToolDetailPanel({
                 </div>
               </div>
 
+              {/* Source — extra prominence for installed skills */}
+              {tool.source === "installed-skill" && tool.sourceUrl && (
+                <Card className="border" style={{ borderColor: "#dde6f0", background: "#f6f9fc" }}>
+                  <CardContent className="p-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className="text-[10px] uppercase tracking-[1.5px] mb-1"
+                        style={{ color: "#3a4060" }}
+                      >
+                        Installed skill
+                      </p>
+                      <a
+                        href={tool.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs hover:underline inline-flex items-center gap-1 break-all"
+                        style={{ color: "#3a4060" }}
+                      >
+                        {tool.sourceUrl}
+                        <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                      </a>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled
+                      title="Upstream update check coming in a future release"
+                      style={{ borderColor: "#ddd5c8" }}
+                    >
+                      <Download className="h-3.5 w-3.5 mr-1.5" />
+                      Check for updates
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Last error (broken tools) */}
               {tool.status === "broken" && tool.lastError && (
                 <Card className="border" style={{ borderColor: "#fde8e8", background: "#fff8f8" }}>
@@ -392,26 +755,13 @@ function ToolDetailPanel({
                 </code>
               </div>
 
-              {/* SKILL.md */}
-              <div>
-                <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
-                  SKILL.md
-                </p>
-                {data?.skillMd ? (
-                  <pre
-                    className="text-xs font-mono p-3 rounded border overflow-x-auto"
-                    style={{ background: "#faf8f4", borderColor: "#eee8dd", color: "#1a1f2e" }}
-                  >
-                    {data.skillMd}
-                  </pre>
-                ) : (
-                  <p className="text-xs italic" style={{ color: "#a09080" }}>
-                    No SKILL.md file found.
-                  </p>
-                )}
-              </div>
+              {/* SKILL.md — frontmatter as metadata, body as rendered markdown */}
+              <SkillMdView skillMd={data?.skillMd ?? null} />
 
-              {/* handler.ts (script tools only) */}
+              {/* Raw view toggle for the curious / debugging */}
+              {data?.skillMd && <RawSkillMdToggle skillMd={data.skillMd} />}
+
+              {/* handler.ts (script tools only) — wrap long lines so it doesn't punch out of the panel */}
               {tool.kind === "script" && (
                 <div>
                   <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
@@ -419,8 +769,14 @@ function ToolDetailPanel({
                   </p>
                   {data?.handlerTs ? (
                     <pre
-                      className="text-xs font-mono p-3 rounded border overflow-x-auto"
-                      style={{ background: "#faf8f4", borderColor: "#eee8dd", color: "#1a1f2e" }}
+                      className="text-xs font-mono p-3 rounded border"
+                      style={{
+                        background: "#faf8f4",
+                        borderColor: "#eee8dd",
+                        color: "#1a1f2e",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
                     >
                       {data.handlerTs}
                     </pre>
@@ -503,6 +859,245 @@ function ToolDetailPanel({
   );
 }
 
+// ── Tools table ────────────────────────────────────────────────────
+
+function BundleStatusSummary({ b }: { b: BundleGroup }) {
+  // Show pending and broken loud, "active" muted because it's the common case.
+  return (
+    <div className="flex items-center gap-1.5">
+      {b.pendingCount > 0 && (
+        <Badge
+          variant="secondary"
+          className="text-[10px]"
+          style={{ background: "#fff4e0", color: "#a06010" }}
+        >
+          {b.pendingCount} pending
+        </Badge>
+      )}
+      {b.brokenCount > 0 && (
+        <Badge
+          variant="secondary"
+          className="text-[10px]"
+          style={{ background: "#fde8e8", color: "#a82020" }}
+        >
+          {b.brokenCount} broken
+        </Badge>
+      )}
+      {b.pendingCount === 0 && b.brokenCount === 0 && (
+        <Badge
+          variant="secondary"
+          className="text-[10px]"
+          style={{ background: "#e8f5e9", color: "#2e7d32" }}
+        >
+          all active
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+function ToolRow({
+  t,
+  agentMap,
+  onSelect,
+  indent,
+}: {
+  t: CustomTool;
+  agentMap: Map<string, string>;
+  onSelect: (id: string) => void;
+  indent?: boolean;
+}) {
+  return (
+    <tr
+      onClick={() => onSelect(t.id)}
+      className="cursor-pointer hover:bg-[#faf8f4] transition-colors"
+      style={{ borderBottom: "1px solid #f4efe6" }}
+    >
+      <td className="px-4 py-2.5">
+        <div
+          className="flex items-center gap-2"
+          style={{ paddingLeft: indent ? 24 : 0 }}
+        >
+          <KindIcon kind={t.kind} />
+          <span style={{ color: "#1a1f2e" }}>{t.name}</span>
+        </div>
+      </td>
+      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        {t.kind}
+      </td>
+      <td className="px-4 py-2.5">
+        <StatusBadge status={t.status} />
+      </td>
+      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        {agentMap.get(t.createdByAgentId) ?? "—"}
+      </td>
+      <td className="px-4 py-2.5 text-xs text-right" style={{ color: "#7a7060" }}>
+        {t.usageCount}
+      </td>
+      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        {formatDate(t.lastUsedAt)}
+      </td>
+    </tr>
+  );
+}
+
+function ToolsTable({
+  entries,
+  agentMap,
+  expandedBundles,
+  onToggleBundle,
+  onSelectTool,
+}: {
+  entries: ToolsListEntry[];
+  agentMap: Map<string, string>;
+  expandedBundles: Set<string>;
+  onToggleBundle: (name: string) => void;
+  onSelectTool: (id: string) => void;
+}) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr style={{ borderBottom: "1px solid #eee8dd" }}>
+          <th
+            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Name
+          </th>
+          <th
+            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Kind
+          </th>
+          <th
+            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Status
+          </th>
+          <th
+            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Created by
+          </th>
+          <th
+            className="text-right px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Usage
+          </th>
+          <th
+            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
+            style={{ color: "#8a8070" }}
+          >
+            Last used
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.map((entry) => {
+          if (entry.type === "solo") {
+            return (
+              <ToolRow
+                key={entry.tool.id}
+                t={entry.tool}
+                agentMap={agentMap}
+                onSelect={onSelectTool}
+              />
+            );
+          }
+          const expanded = expandedBundles.has(entry.name);
+          return (
+            <ToolBundleRows
+              key={`bundle:${entry.name}`}
+              bundle={entry}
+              expanded={expanded}
+              onToggle={() => onToggleBundle(entry.name)}
+              agentMap={agentMap}
+              onSelectTool={onSelectTool}
+            />
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function ToolBundleRows({
+  bundle,
+  expanded,
+  onToggle,
+  agentMap,
+  onSelectTool,
+}: {
+  bundle: BundleGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  agentMap: Map<string, string>;
+  onSelectTool: (id: string) => void;
+}) {
+  const Chevron = expanded ? ChevronDown : ChevronRight;
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        className="cursor-pointer hover:bg-[#faf8f4] transition-colors"
+        style={{ borderBottom: "1px solid #f4efe6", background: "#faf8f4" }}
+      >
+        <td className="px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <Chevron className="h-3.5 w-3.5" style={{ color: "#7a7060" }} />
+            <Package className="h-3.5 w-3.5" style={{ color: "#7a7060" }} />
+            <span className="font-medium" style={{ color: "#1a1f2e" }}>
+              {bundle.name}
+            </span>
+            <span className="text-xs" style={{ color: "#7a7060" }}>
+              ({bundle.tools.length} tools)
+            </span>
+          </div>
+        </td>
+        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+          bundle
+        </td>
+        <td className="px-4 py-2.5">
+          <BundleStatusSummary b={bundle} />
+        </td>
+        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+          {(() => {
+            const agents = new Set(
+              bundle.tools.map((t) => agentMap.get(t.createdByAgentId) ?? "—"),
+            );
+            return agents.size === 1 ? [...agents][0] : `${agents.size} agents`;
+          })()}
+        </td>
+        <td className="px-4 py-2.5 text-xs text-right" style={{ color: "#7a7060" }}>
+          {bundle.totalUsage}
+        </td>
+        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+          {(() => {
+            const last = bundle.tools
+              .map((t) => (t.lastUsedAt ? new Date(t.lastUsedAt).getTime() : 0))
+              .reduce((a, b) => Math.max(a, b), 0);
+            return last === 0 ? "—" : formatDate(new Date(last).toISOString());
+          })()}
+        </td>
+      </tr>
+      {expanded &&
+        bundle.tools.map((t) => (
+          <ToolRow
+            key={t.id}
+            t={t}
+            agentMap={agentMap}
+            onSelect={onSelectTool}
+            indent
+          />
+        ))}
+    </>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────
 
 export default function ToolsPage() {
@@ -563,6 +1158,9 @@ export default function ToolsPage() {
     if (filter === "all") return allTools;
     return allTools.filter((t) => t.status === filter);
   }, [allTools, filter]);
+
+  const groupedEntries = useMemo(() => groupByBundle(filteredTools), [filteredTools]);
+  const [expandedBundles, setExpandedBundles] = useState<Set<string>>(new Set());
 
   const filterTabs: Array<{ key: StatusFilter; label: string; emphasize?: boolean }> = [
     { key: "all", label: "All" },
@@ -645,62 +1243,20 @@ export default function ToolsPage() {
               </p>
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr style={{ borderBottom: "1px solid #eee8dd" }}>
-                  <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Name
-                  </th>
-                  <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Kind
-                  </th>
-                  <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Status
-                  </th>
-                  <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Created by
-                  </th>
-                  <th className="text-right px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Usage
-                  </th>
-                  <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium" style={{ color: "#8a8070" }}>
-                    Last used
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTools.map((t) => (
-                  <tr
-                    key={t.id}
-                    onClick={() => setSelectedToolId(t.id)}
-                    className="cursor-pointer hover:bg-[#faf8f4] transition-colors"
-                    style={{ borderBottom: "1px solid #f4efe6" }}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <KindIcon kind={t.kind} />
-                        <span style={{ color: "#1a1f2e" }}>{t.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-xs" style={{ color: "#7a7060" }}>
-                      {t.kind}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={t.status} />
-                    </td>
-                    <td className="px-4 py-3 text-xs" style={{ color: "#7a7060" }}>
-                      {agentMap.get(t.createdByAgentId) ?? "—"}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-right" style={{ color: "#7a7060" }}>
-                      {t.usageCount}
-                    </td>
-                    <td className="px-4 py-3 text-xs" style={{ color: "#7a7060" }}>
-                      {formatDate(t.lastUsedAt)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ToolsTable
+              entries={groupedEntries}
+              agentMap={agentMap}
+              expandedBundles={expandedBundles}
+              onToggleBundle={(name) =>
+                setExpandedBundles((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(name)) next.delete(name);
+                  else next.add(name);
+                  return next;
+                })
+              }
+              onSelectTool={setSelectedToolId}
+            />
           )}
         </CardContent>
       </Card>
