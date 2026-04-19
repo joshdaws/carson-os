@@ -1,7 +1,7 @@
 # CarsonOS Roadmap
 
 Status: Living document
-Last updated: 2026-04-15
+Last updated: 2026-04-18
 
 ## Vision
 
@@ -27,6 +27,18 @@ script tools at runtime. `install_skill` pulls from GitHub (skills.sh ecosystem
 compatible). AES-256-GCM secret storage. Mid-session tool refresh. Activity log
 redaction. 11 security findings from dual Claude + Codex adversarial review all
 fixed before merge. See `CHANGELOG.md` v0.2.0.
+
+Working (v0.3.0): Telegram media handling, end-to-end. Voice messages and audio
+attachments transcribe via Groq Whisper. Photos go inline to the agent's actual
+model as Anthropic image content blocks (multimodal, one round-trip). Local media
+cache at `~/.carsonos/media/` with 1-hour TTL keyed by `file_unique_id`.
+Per-capability size guards (image 10MB, voice/audio 20MB, doc 20MB, video 50MB).
+New env-hydration service reads an allow-list of platform secrets (currently just
+`GROQ_API_KEY`) from `instance_settings` into `process.env` at boot —
+`ANTHROPIC_API_KEY` is intentionally excluded so the Claude Max subscription is
+never bypassed. Settings UI gains a "Voice & Media" section with live env update
+on save (no restart). Shutdown handler hardened: hot reloads release port 3300
+cleanly, no more `EADDRINUSE` zombies. See `CHANGELOG.md` v0.3.0.
 
 ## MVP (v1.0) — "Announce on X"
 

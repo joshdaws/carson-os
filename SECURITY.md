@@ -22,17 +22,21 @@ CarsonOS is a self-hosted application that runs on localhost. The primary threat
 - **Prompt injection** -- manipulating agent behavior through user-controlled content
 - **Data exposure** -- sensitive family data (conversations, profiles, bot tokens) leaking
 
-## Known Limitations (v0.1)
+## Known Limitations (v0.3)
 
 These are documented, not bugs:
 
 - **No API authentication** -- all API routes are unauthenticated. Mitigated by localhost-only binding and CORS.
 - **Telegram bot tokens stored in plaintext** -- in the SQLite database. Same threat model as the DB file itself.
+- **`GROQ_API_KEY` and other hydratable platform secrets stored in plaintext** -- in the `instance_settings` SQLite table. Same threat model as the DB file. The hydration allow-list explicitly excludes `ANTHROPIC_API_KEY` so the Claude Max subscription is never bypassed.
 - **Hard evaluators disabled** -- constitution enforcement is prompt-based only. Hard clause evaluators (keyword_block, age_gate) are built but feature-flagged off.
 - **bypassPermissions on Agent SDK** -- required for autonomous operation. Trust levels are the mitigation.
+- **Custom tool secrets** -- per-household credentials in the `tool_secrets` table are encrypted with AES-256-GCM. Key derivation: `CARSONOS_SECRET` env var (preferred) or auto-generated keyfile at `~/.carsonos/.secret`.
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes       |
+| 0.3.x   | Yes       |
+| 0.2.x   | Best-effort |
+| < 0.2   | No        |
