@@ -16,13 +16,6 @@
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
 
-## Custom Tools — Upstream Update Check (stub button shipped)
-- **What:** When a tool was installed via `install_skill`, periodically check the upstream source for changes. If the remote skill file hash differs from the locally-stored `approvedContentHash`, surface an "Update available" affordance and a one-click pull.
-- **Why:** Currently installed skills are frozen at install time. The Tools UI panel ships a disabled "Check for updates" button as a placeholder for this feature.
-- **Cons:** Needs a backend route that fetches the source URL, computes the hash, compares against the stored approved hash, and (on user approval) re-downloads and updates the registry row + content hash.
-- **Context:** UI affordance landed in v0.3.1. Backend implementation pending.
-- **Depends on:** Custom tools registry (shipped in v0.2.0).
-
 ## CoS Dev Mode: Harness Self-Modification
 - **What:** Let the Chief of Staff agent modify CarsonOS source itself — add new system tools, fix bugs in the harness, ship commits via the agent. Includes a GUIDE.md for repo layout + git workflow, and git operations (commit/push/PR) as first-class agent capabilities with proper canUseTool gating.
 - **Why:** Today a CoS can create custom tools but can't add a new TOOL KIND or fix a harness bug without a human opening the editor. The platform should learn from itself.

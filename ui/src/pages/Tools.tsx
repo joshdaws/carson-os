@@ -354,6 +354,129 @@ function ConfirmDeleteOverlay({
   );
 }
 
+interface UpdateCheckResult {
+  hasUpdate: boolean;
+  upstreamMissing: boolean;
+  currentHash: string | null;
+  upstreamHash: string | null;
+  message: string;
+}
+
+function InstalledSkillCard({
+  toolId,
+  sourceUrl,
+  onApplied,
+}: {
+  toolId: string;
+  sourceUrl: string;
+  onApplied: () => void;
+}) {
+  const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(null);
+
+  const checkMutation = useMutation({
+    mutationFn: () => api.get<UpdateCheckResult>(`/tools/custom/${toolId}/check-update`),
+    onSuccess: (data) => setCheckResult(data),
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; applied: boolean; newHash?: string; message?: string }>(
+        `/tools/custom/${toolId}/apply-update`,
+      ),
+    onSuccess: (data) => {
+      if (data.applied) {
+        setCheckResult({
+          hasUpdate: false,
+          upstreamMissing: false,
+          currentHash: data.newHash ?? null,
+          upstreamHash: data.newHash ?? null,
+          message: "Updated to the latest version.",
+        });
+        onApplied();
+      } else {
+        setCheckResult((prev) =>
+          prev
+            ? { ...prev, hasUpdate: false, message: data.message ?? "Already up to date." }
+            : null,
+        );
+      }
+    },
+  });
+
+  const checkError = checkMutation.error as Error | undefined;
+  const applyError = applyMutation.error as Error | undefined;
+
+  return (
+    <Card className="border" style={{ borderColor: "#dde6f0", background: "#f6f9fc" }}>
+      <CardContent className="p-3 space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p
+              className="text-[10px] uppercase tracking-[1.5px] mb-1"
+              style={{ color: "#3a4060" }}
+            >
+              Installed skill
+            </p>
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs hover:underline inline-flex items-center gap-1 break-all"
+              style={{ color: "#3a4060" }}
+            >
+              {sourceUrl}
+              <ExternalLink className="h-3 w-3 flex-shrink-0" />
+            </a>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => checkMutation.mutate()}
+            disabled={checkMutation.isPending || applyMutation.isPending}
+            style={{ borderColor: "#ddd5c8" }}
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            {checkMutation.isPending ? "Checking..." : "Check for updates"}
+          </Button>
+        </div>
+
+        {/* Check result */}
+        {checkResult && (
+          <div
+            className="text-xs flex items-start justify-between gap-3 pt-2 border-t"
+            style={{
+              borderColor: "#dde6f0",
+              color: checkResult.upstreamMissing
+                ? "#a06010"
+                : checkResult.hasUpdate
+                  ? "#a06010"
+                  : "#2e7d32",
+            }}
+          >
+            <span>{checkResult.message}</span>
+            {checkResult.hasUpdate && !checkResult.upstreamMissing && (
+              <Button
+                size="sm"
+                onClick={() => applyMutation.mutate()}
+                disabled={applyMutation.isPending}
+                style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+              >
+                {applyMutation.isPending ? "Applying..." : "Apply update"}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {(checkError || applyError) && (
+          <p className="text-xs pt-2 border-t" style={{ borderColor: "#dde6f0", color: "#a82020" }}>
+            {(checkError ?? applyError)?.message}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function SkillMdView({ skillMd }: { skillMd: string | null }) {
   const parsed = useMemo(() => (skillMd ? parseSkillMd(skillMd) : null), [skillMd]);
 
@@ -688,40 +811,13 @@ function ToolDetailPanel({
                 </div>
               </div>
 
-              {/* Source — extra prominence for installed skills */}
+              {/* Installed skill card — source link + upstream update check */}
               {tool.source === "installed-skill" && tool.sourceUrl && (
-                <Card className="border" style={{ borderColor: "#dde6f0", background: "#f6f9fc" }}>
-                  <CardContent className="p-3 flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p
-                        className="text-[10px] uppercase tracking-[1.5px] mb-1"
-                        style={{ color: "#3a4060" }}
-                      >
-                        Installed skill
-                      </p>
-                      <a
-                        href={tool.sourceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs hover:underline inline-flex items-center gap-1 break-all"
-                        style={{ color: "#3a4060" }}
-                      >
-                        {tool.sourceUrl}
-                        <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                      </a>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled
-                      title="Upstream update check coming in a future release"
-                      style={{ borderColor: "#ddd5c8" }}
-                    >
-                      <Download className="h-3.5 w-3.5 mr-1.5" />
-                      Check for updates
-                    </Button>
-                  </CardContent>
-                </Card>
+                <InstalledSkillCard
+                  toolId={tool.id}
+                  sourceUrl={tool.sourceUrl}
+                  onApplied={invalidateTools}
+                />
               )}
 
               {/* Last error (broken tools) */}

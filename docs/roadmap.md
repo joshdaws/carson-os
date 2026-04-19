@@ -58,6 +58,18 @@ the rows to the household's CoS and reloads the registry. Two new admin
 routes: `GET /api/tools/custom/orphans` and `POST /api/tools/custom/import-orphans`.
 Closes one of the two v0.3.1 follow-ups. See `CHANGELOG.md` v0.3.2.
 
+Working (v0.3.3): Bug fix. `install_skill` was writing `source: "skill_install"`
+and never persisting `source_url`. Schema documents `"installed-skill"` as the
+legal value and the UI checks for that exact string + a non-empty `sourceUrl`
+before showing the Installed Skill card. Fixed.
+
+Working (v0.3.4): Upstream update check. The "Check for updates" button on
+installed skills now actually works — re-fetches the source via the install
+pipeline, compares hashes, and offers a one-click Apply that atomically
+swaps the local files. Three small parser fixes shipped alongside: `https://`
+prefix on skills.sh URLs, multi-element YAML arrays, and one-bad-skill
+resilience in the install loop. Closes the second v0.3.1 follow-up.
+
 ## MVP (v1.0) — "Announce on X"
 
 Design doc: ~/.gstack/projects/joshdaws-carson-os/joshdaws-feature/tool-registry-architecture-design-20260409-163500.md

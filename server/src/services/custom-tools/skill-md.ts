@@ -96,6 +96,22 @@ function parseSimpleYaml(text: string): Record<string, unknown> {
     const indent = line.match(/^ */)![0].length;
     const content = line.slice(indent);
 
+    // Special case: continuing a sequence at the same indent as the array's
+    // frame. The default pop loop uses `indent <= top.indent` and would
+    // destroy the array frame here, throwing "Unexpected '-'". Real-world
+    // skill files (e.g. allowed-tools: with multiple `- Tool` entries below)
+    // hit this constantly.
+    const sequenceAtSameIndent =
+      content.startsWith("- ") &&
+      Array.isArray(stack[stack.length - 1].obj) &&
+      indent === stack[stack.length - 1].indent;
+    if (sequenceAtSameIndent) {
+      const val = parseScalar(content.slice(2).trim());
+      (stack[stack.length - 1].obj as unknown[]).push(val);
+      i++;
+      continue;
+    }
+
     // Pop stack until we find the parent (lower indent)
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
       stack.pop();

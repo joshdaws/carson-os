@@ -22,3 +22,4 @@ export {
 export { parseSkillMd, writeSkillMd, type SkillDoc, type ToolKind, type HttpConfig, type HttpAuth } from "./skill-md.js";
 export { encryptSecret, decryptSecret, redactSecrets, getEncryptionKey } from "./secrets.js";
 export { TOOLS_ROOT, bundleFromPath, hashToolDir, walkForSkills, type FoundSkill } from "./fs-helpers.js";
+export { prepareInstall, promoteTool, cleanupStaging, type ResolvedSkillEntry, type InstallResult, InstallError } from "./install.js";

@@ -119,7 +119,9 @@ export function parseSource(raw: string): ParsedSource {
 
   // skills.sh/<rest> is a display URL that wraps the GitHub shorthand.
   // skills.sh doesn't host tarballs itself; the shorthand is what matters.
-  const skillsShMatch = input.match(/^skills\.sh\/(.+)$/i);
+  // Accept both bare `skills.sh/...` and full `https://skills.sh/...` so URLs
+  // copied from the browser address bar work without surgery.
+  const skillsShMatch = input.match(/^(?:https?:\/\/)?skills\.sh\/(.+)$/i);
   if (skillsShMatch) {
     input = skillsShMatch[1];
   }
@@ -618,7 +620,19 @@ export async function prepareInstall(source: string): Promise<InstallResult> {
     const entries: ResolvedSkillEntry[] = [];
     for (const loc of locations) {
       const skillMdContent = readFileSync(loc.skillPath, "utf8");
-      const doc = parseSkillMd(skillMdContent);
+      // One unparseable skill in a multi-skill bundle (e.g. a YAML construct
+      // our minimal parser doesn't handle) used to fail the entire install
+      // or update-check. Skip the bad one with a warning instead so the
+      // rest of the bundle still works.
+      let doc;
+      try {
+        doc = parseSkillMd(skillMdContent);
+      } catch (err) {
+        console.warn(
+          `[install] Skipping skill at '${loc.label}' (SKILL.md parse failed): ${(err as Error).message}`,
+        );
+        continue;
+      }
       const toolName = doc.frontmatter.name;
       const kind = (doc.frontmatter.kind ?? "prompt") as "http" | "prompt" | "script";
 

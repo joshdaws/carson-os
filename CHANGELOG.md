@@ -4,6 +4,27 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.4] - 2026-04-19
+
+Closes the second of the two v0.3.1 follow-ups: the disabled "Check for updates" button on installed skills now actually works.
+
+### Added
+
+- **Upstream update check.** Click "Check for updates" in an installed skill's detail panel and CarsonOS re-fetches the source URL through the same pipeline `install_skill` uses, finds the matching tool by name, and compares the upstream content hash against the locally stored `approvedContentHash`. Returns either "Up to date", "Update available" with an Apply button, or "The upstream source no longer contains a tool named X" if it was renamed/removed upstream.
+- **Apply update.** When an update is available, click Apply and the new files atomically replace the local copy. Existing dir is moved to a `.bak` sibling, the upstream gets promoted into the canonical path, then the backup is removed. If anything fails, the backup is restored so a half-applied update never strands you. The DB row's `approvedContentHash`, `generation`, and `schemaVersion` all bump on success and the registry is reloaded so the new version is callable on the next message.
+- **Two new admin routes:** `GET /api/tools/custom/:id/check-update` and `POST /api/tools/custom/:id/apply-update`. Both clean up their staging tarball on every exit (success or failure).
+
+### Fixed
+
+- **`install_skill` accepts `https://skills.sh/...` URLs.** The parser only recognized bare `skills.sh/owner/repo`. Users copy URLs from the browser address bar with the protocol prefix; that now parses cleanly. One-line regex change.
+- **The minimal YAML parser handles continuation array items at the same indent.** Real-world example: `allowed-tools:` followed by `  - Read`, `  - Write`, etc. The pop-stack logic was using `<=` and over-popped the array frame after the first item, throwing "Unexpected '-' at line N" on every multi-element array. Common enough that humanizer's upstream SKILL.md (v2.1.1) hit it, which is why the update check kept reporting "upstream missing" before this fix.
+- **`prepareInstall` is resilient to one bad SKILL.md.** Previously, a single skill with YAML the parser couldn't handle would fail the whole install or update-check batch. Now bad skills are logged with a `[install] Skipping skill...` warning and the rest of the bundle proceeds.
+
+### For contributors
+
+- Exposed `prepareInstall`, `promoteTool`, `cleanupStaging`, `ResolvedSkillEntry`, `InstallResult`, and `InstallError` from the custom-tools barrel for reuse by the new update routes.
+- The atomic-swap pattern in apply-update (rename existing → promote → rmSync backup, with restore on failure) is the right shape for any future "replace files in place" workflow.
+
 ## [0.3.3] - 2026-04-19
 
 ### Fixed
