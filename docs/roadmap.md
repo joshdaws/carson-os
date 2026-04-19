@@ -1,7 +1,7 @@
 # CarsonOS Roadmap
 
 Status: Living document
-Last updated: 2026-04-18
+Last updated: 2026-04-19
 
 ## Vision
 
@@ -39,6 +39,16 @@ New env-hydration service reads an allow-list of platform secrets (currently jus
 never bypassed. Settings UI gains a "Voice & Media" section with live env update
 on save (no restart). Shutdown handler hardened: hot reloads release port 3300
 cleanly, no more `EADDRINUSE` zombies. See `CHANGELOG.md` v0.3.0.
+
+Working (v0.3.1): Custom Tools admin UI. New dashboard page at `/tools` that
+consumes the v0.2.0 admin routes — list every custom tool with bundle grouping
+(tools sharing a directory collapse into one expandable row with aggregate
+stats), slide-out detail panel with parsed metadata + fully rendered SKILL.md
+(markdown via react-markdown), approve / toggle / soft-delete actions, source
+attribution and a stub "Check for updates" button for installed skills, secrets
+manager (key names only — values are never returned). Two follow-ups remain
+in TODOS.md: orphan file importer and the upstream update check that backs the
+stubbed button. See `CHANGELOG.md` v0.3.1.
 
 ## MVP (v1.0) — "Announce on X"
 

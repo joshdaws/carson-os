@@ -196,7 +196,7 @@ Agents can create their own tools at runtime. Files live as `SKILL.md` at `~/.ca
 - **prompt** — markdown template, agent follows in-session
 - **script** — TypeScript handler compiled via esbuild
 
-See [CHANGELOG](CHANGELOG.md#020---2026-04-15) for the full v0.2.0 release notes including the security model.
+Manage tools from the dashboard at `/tools` — list with bundle grouping, click a row for the rendered SKILL.md, approve pending changes, toggle active/disabled, view stored secret names. See [CHANGELOG](CHANGELOG.md#020---2026-04-15) for the full v0.2.0 release notes including the security model.
 
 ### Trust Levels
 
@@ -243,6 +243,7 @@ ui/
     pages/
       Onboarding.tsx            <- 3-step setup flow
       Dashboard.tsx             <- Household overview
+      Tools.tsx                 <- Custom tools admin (bundling, SKILL.md render, secrets)
     components/                 <- Shared UI components
 ```
 

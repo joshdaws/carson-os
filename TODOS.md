@@ -16,13 +16,19 @@
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
 
-## Custom Tools Admin UI (React)
-- **What:** React pages for listing, inspecting, approving, and toggling custom tools; secrets manager; pending-approvals queue; orphan file importer
-- **Why:** Admin routes at `/api/tools/custom/*` and `/api/tools/secrets` exist and are working; only the UI layer is missing. Currently managed via API calls or direct DB access.
-- **Pros:** Parents get visual review/approval flow for kid-created tools (when kid-agent approval lands), orphan file cleanup, easy grant management
-- **Cons:** React work, design decisions for the approval queue UX
-- **Context:** Deferred from the custom tools M1 PR per the design doc's Phase 3d. Routes are shipped and tested; the UI ships separately.
-- **Depends on:** Custom tools registry (shipped in v0.2.0)
+## Custom Tools Admin UI — Orphan File Importer (deferred)
+- **What:** Detect SKILL.md files on disk under `~/.carsonos/tools/{household}/` that have no matching row in `custom_tools`, and offer to import them.
+- **Why:** A power user (or a sync from another machine) could drop tool files in the directory directly. Without an importer, they're invisible to the registry.
+- **Cons:** Needs a new backend route (`POST /api/tools/custom/import-orphans`) that walks the dir, detects unregistered SKILL.md files, parses them, and inserts rows. Plus a UI surface (banner on the Tools page when orphans are detected, or a modal listing them).
+- **Context:** Deferred from the v0.3.1 admin UI ship. Most of the Custom Tools Admin UI scope shipped (listing, bundling, detail panel with markdown SKILL.md, approve/toggle/delete, secrets list). The orphan importer is the only missing piece because there's no backend route for it yet.
+- **Depends on:** New backend route for orphan detection + import.
+
+## Custom Tools — Upstream Update Check (stub button shipped)
+- **What:** When a tool was installed via `install_skill`, periodically check the upstream source for changes. If the remote skill file hash differs from the locally-stored `approvedContentHash`, surface an "Update available" affordance and a one-click pull.
+- **Why:** Currently installed skills are frozen at install time. The Tools UI panel ships a disabled "Check for updates" button as a placeholder for this feature.
+- **Cons:** Needs a backend route that fetches the source URL, computes the hash, compares against the stored approved hash, and (on user approval) re-downloads and updates the registry row + content hash.
+- **Context:** UI affordance landed in v0.3.1. Backend implementation pending.
+- **Depends on:** Custom tools registry (shipped in v0.2.0).
 
 ## CoS Dev Mode: Harness Self-Modification
 - **What:** Let the Chief of Staff agent modify CarsonOS source itself — add new system tools, fix bugs in the harness, ship commits via the agent. Includes a GUIDE.md for repo layout + git workflow, and git operations (commit/push/PR) as first-class agent capabilities with proper canUseTool gating.

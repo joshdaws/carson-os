@@ -4,6 +4,25 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] - 2026-04-19
+
+A new dashboard page for the custom tool registry that shipped in v0.2.0. Manage every tool your agents have created or installed without leaving the browser.
+
+### Added
+
+- **Tools page in the dashboard.** New entry in the System nav (Wrench icon) at `/tools`. Shows every custom tool in your household with kind, status, the agent who created it, usage count, and last-used timestamp. Filter tabs for All / Pending / Active / Disabled / Broken with badge counts that pop in amber when there's something to look at.
+- **Bundle grouping.** Tools that live in a bundle directory (path like `bundle/tool`) collapse into one expandable row. A 12-tool YNAB integration becomes a single `ynab (7 tools)` row with aggregate stats — total usage, latest last-used, status summary like "all active" or "2 pending". Click the chevron to expand and see member tools indented underneath. Single-member bundles fall through to a normal row, no extra nesting overhead.
+- **Slide-out detail panel.** Click any tool to open a panel with parsed metadata (name, description, kind, version, source), a fully rendered SKILL.md (markdown via react-markdown + remark-gfm — same engine the Constitution and StaffDetail pages use), and a "Show raw SKILL.md" toggle for the curious.
+- **Action buttons in the panel.** Approve a `pending_approval` script tool (triggers the existing content-hash refresh on the server). Toggle active/disabled. Soft-delete (marks the row disabled and unregisters from the live registry; files stay on disk so the action is recoverable).
+- **Source attribution for installed skills.** When a tool came from `install_skill`, the panel surfaces a dedicated card with the source URL as a real `target=_blank` link and a "Check for updates" button. The button is disabled with a tooltip noting it's a future feature — the affordance is wired now so the eventual upstream-hash check only needs the backend route, not new UI.
+- **Tool secrets management.** Section at the bottom lists every encrypted secret name (values are never shown — by design) with a delete button. Helper text reminds you that agents create new secrets through conversation using `store_secret`.
+
+### For contributors
+
+- New page at `ui/src/pages/Tools.tsx` (~900 lines), wired into `ui/src/App.tsx` and `ui/src/components/Layout.tsx`.
+- Bundles are derived from the `path` column's first segment — no schema changes needed.
+- Frontmatter parser is intentionally naive (regex over top-level scalar lines, allow-listed metadata keys). When SKILL.md spec stabilizes around a richer schema, swap in a real YAML parser.
+
 ## [0.3.0] - 2026-04-18
 
 Voice messages, audio files, and photos now work end-to-end. Send a voice note and Carson transcribes it. Send a photo and Carson actually sees it. Plus a new Settings field for the Groq key and a hardened shutdown so dev iterations don't fight the relay.
