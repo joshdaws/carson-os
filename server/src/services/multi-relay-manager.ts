@@ -19,7 +19,6 @@ import type { Db } from "@carsonos/db";
 import { staffAgents, familyMembers, staffAssignments } from "@carsonos/db";
 import { eq, and } from "drizzle-orm";
 import type { ConstitutionEngine } from "./constitution-engine.js";
-import type { TaskEngine } from "./task-engine.js";
 import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
 import type { Adapter } from "./subprocess-adapter.js";
 import { createTelegramStream } from "./telegram-streaming.js";
@@ -31,7 +30,6 @@ interface MultiRelayConfig {
   db: Db;
   adapter: Adapter;
   engine: ConstitutionEngine;
-  taskEngine: TaskEngine;
   orchestrator: DelegationOrchestrator;
 }
 
@@ -50,6 +48,8 @@ interface DebounceBuffer {
   messages: string[];
   timer: ReturnType<typeof setTimeout>;
   ctx: Context;
+  /** Multimodal attachments collected from any buffered photo turns. */
+  attachments: import("@carsonos/shared").MediaAttachment[];
 }
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -61,12 +61,20 @@ const MAX_DEBOUNCE_PARTS = 12;
 const MAX_DEBOUNCE_CHARS = 50_000;
 const MEMORY_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_MESSAGE_LENGTH = 4096;
-const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 min dedup window
 const DEDUP_MAX_SIZE = 2000;
 const STALL_CHECK_INTERVAL_MS = 60_000;
 const STALL_THRESHOLD_MS = 300_000; // 5 min — SDK calls can take 30-60s with tool loops
-const CONFLICT_BACKOFF_MS = 5_000;
-const SHUTDOWN_TIMEOUT_MS = 5_000;
+// Conflict backoff: short enough that hot-reload restarts don't sit silent for
+// long, long enough that the prior process has time to release its long-poll.
+const CONFLICT_BACKOFF_MS = 1_500;
+// Long-poll timeout — kept short so runner.stop() returns quickly during a
+// hot reload. Telegram still pushes updates instantly when present; this only
+// caps how long an idle poll blocks waiting for new messages.
+const POLL_TIMEOUT_S = 3;
+// Shutdown grace per bot — must be > POLL_TIMEOUT_S so an in-flight poll can
+// finish cleanly. With Promise.all stopping all bots in parallel, the whole
+// shutdown completes in this window.
+const SHUTDOWN_TIMEOUT_MS = 3_500;
 
 // ── Shared Rate Limiter ─────────────────────────────────────────────
 
@@ -94,7 +102,6 @@ export class MultiRelayManager {
   private db: Db;
   private adapter: Adapter;
   private engine: ConstitutionEngine;
-  private taskEngine: TaskEngine;
   private orchestrator: DelegationOrchestrator;
   private bots = new Map<string, ManagedBot>();
   private rateLimiter = new SharedRateLimiter();
@@ -108,7 +115,6 @@ export class MultiRelayManager {
     this.db = config.db;
     this.adapter = config.adapter;
     this.engine = config.engine;
-    this.taskEngine = config.taskEngine;
     this.orchestrator = config.orchestrator;
 
     this.events.on("delegation.result", (data: {
@@ -265,14 +271,67 @@ export class MultiRelayManager {
       }
     });
 
-    // Media message handlers (photos, voice, documents, stickers, video)
-    const mediaTypes = ["message:photo", "message:voice", "message:document", "message:sticker", "message:video"] as const;
+    // Voice and audio handlers — dedicated, not in the generic media loop.
+    // Key reasons:
+    //   1. Sends "typing" immediately so the user knows transcription is running
+    //   2. Uses real ctx (not a spread fake) — spreading a Grammy Context loses all
+    //      prototype methods (reply, replyWithChatAction, api getters), which was the
+    //      root cause of the "I had trouble processing that" error
+    //   3. Labels real transcripts clearly so the LLM understands the source
+    for (const voiceType of ["message:voice", "message:audio"] as const) {
+      bot.on(voiceType, async (ctx) => {
+        const updateId = ctx.update.update_id;
+        if (managed.recentUpdateIds.has(updateId)) return;
+        managed.recentUpdateIds.add(updateId);
+        managed.lastActivity = Date.now();
+
+        try {
+          // Typing indicator right away — transcription takes a moment
+          try { await ctx.replyWithChatAction("typing"); } catch { /* swallow */ }
+
+          const { extractMediaText } = await import("./telegram-media.js");
+          const extraction = await extractMediaText(ctx, agent.telegramBotToken!);
+
+          if (extraction) {
+            // Real transcript vs. "could not be transcribed" fallback
+            const isRealTranscript = !extraction.text.startsWith("[Voice message");
+            const fullText = isRealTranscript
+              ? `[Voice transcript]\n\n${extraction.text}`
+              : extraction.text;
+            await this.handleMessage(ctx, agentId, agent.name, fullText);
+          } else {
+            await ctx.reply("I couldn't process that voice message. Please try again or send it as text.");
+          }
+        } catch (err) {
+          console.error(`[multi-relay:${agent.name}] Voice error:`, err);
+          await ctx.reply("I had trouble with that voice message. Try sending it as text.");
+        }
+      });
+    }
+
+    // Generic media handlers (photos, documents, stickers, video).
+    // Voice/audio are handled above. Pass real ctx + textOverride to handleMessage
+    // — same fix as above to avoid the Grammy prototype-loss bug.
+    //
+    // Photos in particular trigger a vision pre-describe (Haiku via Agent SDK)
+    // before the main agent call, which adds a few seconds. Send "typing"
+    // immediately and keep refreshing it so the user doesn't think the relay
+    // is dead.
+    const mediaTypes = ["message:photo", "message:document", "message:sticker", "message:video"] as const;
     for (const mediaType of mediaTypes) {
       bot.on(mediaType, async (ctx) => {
         const updateId = ctx.update.update_id;
         if (managed.recentUpdateIds.has(updateId)) return;
         managed.recentUpdateIds.add(updateId);
         managed.lastActivity = Date.now();
+
+        // Keep typing visible for the entire extraction window. Telegram's
+        // chat action expires after ~5s, so refresh every 4s.
+        let typingInterval: ReturnType<typeof setInterval> | null = null;
+        try { await ctx.replyWithChatAction("typing"); } catch { /* swallow */ }
+        typingInterval = setInterval(() => {
+          ctx.replyWithChatAction("typing").catch(() => { /* swallow */ });
+        }, 4000);
 
         try {
           const { extractMediaText } = await import("./telegram-media.js");
@@ -281,17 +340,22 @@ export class MultiRelayManager {
             const fullText = extraction.caption
               ? `${extraction.caption}\n\n${extraction.text}`
               : extraction.text;
-            await this.handleMessage(
-              { ...ctx, message: { ...ctx.message!, text: fullText } } as unknown as Context,
-              agentId,
-              agent.name,
-            );
+            const attachments = extraction.image
+              ? [{
+                  type: "image" as const,
+                  mediaType: extraction.image.mediaType,
+                  base64: extraction.image.base64,
+                }]
+              : undefined;
+            await this.handleMessage(ctx, agentId, agent.name, fullText, attachments);
           } else {
             await ctx.reply("I received your message but couldn't process that type of content yet.");
           }
         } catch (err) {
           console.error(`[multi-relay:${agent.name}] Media error:`, err);
           await ctx.reply("I had trouble processing that. Try sending it as text.");
+        } finally {
+          if (typingInterval) clearInterval(typingInterval);
         }
       });
     }
@@ -302,7 +366,10 @@ export class MultiRelayManager {
 
       const runner = run(bot, {
         runner: {
-          fetch: { timeout: 30 },
+          // Short long-poll so runner.stop() returns within a few seconds
+          // during hot reloads. Telegram still pushes updates instantly when
+          // present — this only caps how long an idle poll blocks.
+          fetch: { timeout: POLL_TIMEOUT_S },
           silent: true,
         },
         sink: { concurrency: 4 },
@@ -374,9 +441,11 @@ export class MultiRelayManager {
     ctx: Context,
     agentId: string,
     agentName: string,
+    textOverride?: string,
+    attachments?: import("@carsonos/shared").MediaAttachment[],
   ): Promise<void> {
     const telegramUserId = String(ctx.from!.id);
-    const text = ctx.message!.text!;
+    const text = textOverride ?? ctx.message!.text!;
 
     console.log(
       `[multi-relay:${agentName}] Message from ${ctx.from!.first_name} (${telegramUserId}): ${text.slice(0, 50)}`,
@@ -434,6 +503,7 @@ export class MultiRelayManager {
       if (existingBuf.messages.length < MAX_DEBOUNCE_PARTS && totalChars < MAX_DEBOUNCE_CHARS) {
         existingBuf.messages.push(text);
         existingBuf.ctx = ctx;
+        if (attachments) existingBuf.attachments.push(...attachments);
         existingBuf.timer = setTimeout(
           () => this.flushBuffer(bufferKey, agentId, agentName, member),
           DEBOUNCE_MS,
@@ -444,6 +514,7 @@ export class MultiRelayManager {
         this.debounceBuffers.set(bufferKey, {
           messages: [text],
           ctx,
+          attachments: attachments ? [...attachments] : [],
           timer: setTimeout(
             () => this.flushBuffer(bufferKey, agentId, agentName, member),
             DEBOUNCE_MS,
@@ -454,6 +525,7 @@ export class MultiRelayManager {
       this.debounceBuffers.set(bufferKey, {
         messages: [text],
         ctx,
+        attachments: attachments ? [...attachments] : [],
         timer: setTimeout(
           () => this.flushBuffer(bufferKey, agentId, agentName, member),
           DEBOUNCE_MS,
@@ -475,11 +547,12 @@ export class MultiRelayManager {
 
     const combinedMessage = buffer.messages.join("\n");
     const ctx = buffer.ctx;
+    const attachments = buffer.attachments.length > 0 ? buffer.attachments : undefined;
 
     const previousWork = this.agentQueues.get(agentId) ?? Promise.resolve();
     const currentWork = previousWork.then(async () => {
       try {
-        await this.processMessage(ctx, agentId, agentName, member, combinedMessage);
+        await this.processMessage(ctx, agentId, agentName, member, combinedMessage, attachments);
       } catch (err) {
         console.error(`[multi-relay:${agentName}] Error in processMessage:`, err);
         try {
@@ -499,6 +572,7 @@ export class MultiRelayManager {
     agentName: string,
     member: typeof familyMembers.$inferSelect,
     message: string,
+    attachments?: import("@carsonos/shared").MediaAttachment[],
   ): Promise<void> {
     // Typing indicator until first delta arrives
     let typingInterval: ReturnType<typeof setInterval> | null = null;
@@ -523,6 +597,7 @@ export class MultiRelayManager {
         message,
         channel: "telegram",
         onTextDelta: stream.onDelta,
+        attachments,
       });
     } catch (err) {
       if (typingInterval) { clearInterval(typingInterval); typingInterval = null; }
@@ -587,39 +662,6 @@ export class MultiRelayManager {
     }
   }
 
-  /**
-   * Edit an existing message with formatted HTML content.
-   * Falls back to delete+resend if the edit fails (e.g., content too long for single message).
-   */
-  private async editFormatted(ctx: Context, messageId: number, text: string): Promise<void> {
-    const { markdownToTelegramHtml, chunkMessage, stripThinkingBlocks } =
-      await import("./telegram-format.js");
-
-    const cleaned = stripThinkingBlocks(text);
-    const html = markdownToTelegramHtml(cleaned);
-    const chunks = chunkMessage(html);
-
-    if (chunks.length === 1 && chunks[0].trim()) {
-      // Single chunk — edit in place
-      try {
-        await ctx.api.editMessageText(ctx.chat!.id, messageId, chunks[0], {
-          parse_mode: "HTML",
-        });
-        return;
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(`[multi-relay] HTML edit failed: ${errMsg}`);
-        // Fall through to delete+resend
-      }
-    }
-
-    // Multiple chunks or edit failed — delete streaming msg, send formatted chunks
-    try {
-      await ctx.api.deleteMessage(ctx.chat!.id, messageId);
-    } catch { /* swallow */ }
-    await this.sendFormatted(ctx, text);
-  }
-
   // ── Formatted sending ─────────────────────────────────────────────
 
   /**
@@ -631,7 +673,6 @@ export class MultiRelayManager {
       await import("./telegram-format.js");
     const { extractAndRenderTables } =
       await import("./telegram-table-image.js");
-    const { InputFile } = await import("grammy");
 
     // Strip thinking blocks
     const cleaned = stripThinkingBlocks(text);

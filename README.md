@@ -10,6 +10,7 @@ CarsonOS is a self-hosted AI staff platform for families. Each family member get
 
 - **Personal agents** — Each family member gets their own AI on Telegram with a distinct personality
 - **Memory that sticks** — Agents remember facts, preferences, events, and commitments across conversations
+- **Voice, audio, and photos** — Send a voice message and the agent transcribes it. Send a photo and the agent actually sees it. Audio file attachments work too.
 - **Calendar & email** — Check schedules, create events, draft emails (never sends without your OK)
 - **A constitution** — Your family's rules and values, enforced across every agent
 - **Trust levels** — A parent's agent has full system access; a 6-year-old's is locked down
@@ -232,6 +233,8 @@ server/
       tool-registry.ts          <- Tool registration, grants, trust levels
       telegram-streaming.ts     <- Edit-in-place streaming with markdown formatting
       multi-relay-manager.ts    <- One Telegram bot per agent
+      telegram-media.ts         <- Voice/audio transcription, photo passthrough, media cache
+      env-hydration.ts          <- Hydrate platform secrets from instance_settings → env
       memory/                   <- MemoryProvider, QMD provider, schema, tools
       google/                   <- Calendar, Gmail, Drive providers
 
@@ -255,6 +258,7 @@ ui/
 | `CARSONOS_HARD_EVALUATORS` | `false` | Hard clause evaluators (off for v1.0) |
 | `CARSONOS_SECRET` | _(unset)_ | Master key for encrypting custom tool secrets. If unset, a random key is generated at `~/.carsonos/.secret`. See [Backing Up Your Secret Key](#backing-up-your-secret-key). |
 | `CARSONOS_MAX_TURNS` | `50` | Max LLM turns per message (1–200). Raise for complex multi-tool workflows. |
+| `GROQ_API_KEY` | _(unset)_ | Groq Cloud key for voice/audio transcription via Whisper. Without it, voice messages fall back to a "please type instead" reply. Get one at [console.groq.com/keys](https://console.groq.com/keys). Can also be set via the Settings UI (saved to `instance_settings`, hydrated to env at boot). |
 
 ### Backing Up Your Secret Key
 

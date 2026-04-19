@@ -33,8 +33,15 @@ pnpm test          # run all tests
 ## Testing
 
 ```bash
-pnpm test                    # all tests (79 across 5 files)
+pnpm test                    # all tests (153 across 8 files)
 pnpm --filter @carsonos/server test  # server tests only
 ```
 
 Test files live next to source: `services/__tests__/`, `routes/__tests__/`
+
+## Telegram Media
+
+- Voice/audio transcribed via Groq Whisper (`whisper-large-v3-turbo`). Set `GROQ_API_KEY` in env or via Settings UI.
+- Photos go inline to the agent's model as Anthropic image content blocks (multimodal). Uses Claude Max subscription via Agent SDK — no `ANTHROPIC_API_KEY` needed.
+- Downloaded media cached at `~/.carsonos/media/` keyed by Telegram `file_unique_id`, 1-hour TTL.
+- Per-capability size guards: image 10MB, voice/audio 20MB, doc 20MB, video 50MB. Min audio 1KB.
