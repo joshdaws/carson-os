@@ -68,6 +68,12 @@ export interface ProcessMessageParams {
   channel: Channel;
   /** Streaming callback — forwarded to the adapter for real-time text deltas */
   onTextDelta?: (text: string) => void;
+  /**
+   * Optional multimodal attachments (images, etc) to merge into this turn.
+   * Used by the Telegram relay for photos so the agent's actual model sees
+   * the image inline — no Haiku pre-describe round-trip.
+   */
+  attachments?: import("@carsonos/shared").MediaAttachment[];
 }
 
 export interface ProcessMessageResult {
@@ -567,6 +573,7 @@ export class ConstitutionEngine {
         enabledSkills,
         onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
+        attachments: params.attachments,
         // Mid-session tool refresh: re-run buildExecutor after a custom tool
         // is created/updated/disabled. The adapter uses this to call
         // setMcpServers so the new tool is immediately usable in this conv.

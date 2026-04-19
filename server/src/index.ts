@@ -37,6 +37,7 @@ import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
+import { hydrateEnvFromSettings } from "./services/env-hydration.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
 
@@ -92,6 +93,11 @@ async function main() {
     backupDatabase(dbPath, config.dataDir, reason);
   });
   console.log(`[db] SQLite open at ${dbPath}`);
+
+  // 1b. Hydrate allow-listed platform secrets (currently GROQ_API_KEY) from
+  // instance_settings into process.env so services that read process.env can
+  // pick up keys saved via the Settings UI without the operator editing files.
+  await hydrateEnvFromSettings(db);
 
   // 2. Create adapter
   const adapter = createAdapter(config.adapterType);
@@ -225,7 +231,6 @@ async function main() {
     db,
     adapter,
     engine: constitutionEngine,
-    taskEngine,
     orchestrator,
   });
 
@@ -248,7 +253,7 @@ async function main() {
 
   // 9. Create HTTP server and attach WebSocket
   const server = createServer(app);
-  setupWebSocket(server);
+  const wss = setupWebSocket(server);
 
   // 10. Wire event consumers
   eventBus.on("*", broadcast);
@@ -295,17 +300,63 @@ async function main() {
   });
 
   // Graceful shutdown
-  const shutdown = async () => {
-    console.log("\n[shutdown] closing...");
-    await multiRelay.stopAll();
-    server.close(() => {
+  //
+  // The hard requirement for dev ergonomics: when tsx watch sends SIGTERM, this
+  // process MUST fully exit before tsx force-kills it (~5s grace), AND must
+  // release port 3300 cleanly so the next process can rebind without
+  // EADDRINUSE.
+  //
+  // Order matters:
+  //   1. Stop the bot pollers — releases Telegram's lock so the new process
+  //      doesn't 409. Each bot has POLL_TIMEOUT_S = 3s, all stop in parallel.
+  //   2. Force-disconnect WebSocket clients — without this, server.close()
+  //      hangs on the open ws connections and the port stays bound.
+  //   3. Force-disconnect any lingering HTTP keep-alives via closeAllConnections.
+  //   4. server.close() releases the port. After this returns, rebinding works.
+  //   5. process.exit(0).
+  //
+  // Hard deadline (4s) under tsx's force-kill so we never get killed mid-shutdown.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[shutdown] ${signal} received, closing...`);
+
+    const HARD_EXIT_MS = 4_000;
+    const exitTimer = setTimeout(() => {
+      console.warn("[shutdown] hard deadline hit, exiting");
+      process.exit(0);
+    }, HARD_EXIT_MS);
+    exitTimer.unref();
+
+    void (async () => {
+      try {
+        await multiRelay.stopAll();
+      } catch (err) {
+        console.error("[shutdown] relay stop error:", err);
+      }
+
+      // Force-close all WebSocket clients so server.close() can complete.
+      try {
+        for (const client of wss.clients) {
+          try { client.terminate(); } catch { /* swallow */ }
+        }
+        wss.close();
+      } catch { /* swallow */ }
+
+      // Force-drop lingering keep-alive HTTP connections.
+      try { server.closeAllConnections(); } catch { /* swallow */ }
+
+      // Now server.close() returns quickly because nothing is open.
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+
       console.log("[shutdown] done");
       process.exit(0);
-    });
+    })();
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

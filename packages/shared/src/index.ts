@@ -258,9 +258,25 @@ export type AdapterType = "claude-code" | "codex" | "anthropic-sdk";
 
 export type AdapterMode = "chat" | "task";
 
+/**
+ * Multimodal attachments for the current user turn. Currently only images are
+ * supported (Claude vision). The adapter merges these as content blocks on
+ * the last user message so the model sees text + image in one turn — no
+ * pre-describe round-trip.
+ */
+export interface MediaAttachment {
+  type: "image";
+  /** "image/jpeg" | "image/png" | "image/gif" | "image/webp" */
+  mediaType: string;
+  /** Raw base64 data, no data: URI prefix. */
+  base64: string;
+}
+
 export interface AdapterExecuteParams {
   systemPrompt: string;
   messages: Array<{ role: string; content: string }>;
+  /** Optional attachments to merge into the latest user message. */
+  attachments?: MediaAttachment[];
   maxTokens?: number;
   model?: string;
   tools?: ToolDefinition[];
