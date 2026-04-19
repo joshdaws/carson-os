@@ -19,6 +19,7 @@ import {
   EyeOff,
   Save,
   Check,
+  Mic,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -351,6 +352,40 @@ export function SettingsPage() {
             onClick={() => {
               if ("HOUSEHOLD_NAME" in dirty) saveKey("HOUSEHOLD_NAME");
               if ("TIMEZONE" in dirty) saveKey("TIMEZONE");
+            }}
+          />
+        </div>
+      </SettingSection>
+
+      {/* Voice & Media — Groq for voice transcription */}
+      <SettingSection title="Voice & Media" icon={Mic}>
+        <PasswordField
+          label="GROQ_API_KEY"
+          value={val("GROQ_API_KEY")}
+          onChange={(v) => setVal("GROQ_API_KEY", v)}
+          placeholder="gsk_..."
+        />
+        <p className="text-xs" style={{ color: "#7a7060" }}>
+          Used by Groq Whisper to transcribe voice messages and audio
+          attachments. Get a key at{" "}
+          <a
+            href="https://console.groq.com/keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "#3a4060", textDecoration: "underline" }}
+          >
+            console.groq.com/keys
+          </a>
+          . Without it, voice messages fall back to a "please type instead"
+          response.
+        </p>
+        <div className="flex justify-end">
+          <SaveButton
+            dirty={"GROQ_API_KEY" in dirty}
+            saved={!!saved["GROQ_API_KEY"]}
+            loading={updateSetting.isPending}
+            onClick={() => {
+              if ("GROQ_API_KEY" in dirty) saveKey("GROQ_API_KEY");
             }}
           />
         </div>
