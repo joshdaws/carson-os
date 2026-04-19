@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Settings,
   Clock,
+  Wrench,
   Wifi,
   WifiOff,
   Menu,
@@ -178,6 +179,7 @@ export function Layout() {
         </div>
         <NavItem to="/conversations" icon={MessageSquare} label="Conversations" />
         <NavItem to="/schedules" icon={Clock} label="Schedules" />
+        <NavItem to="/tools" icon={Wrench} label="Tools" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
 

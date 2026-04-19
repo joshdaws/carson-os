@@ -10,6 +10,7 @@ import { ConversationsPage } from "./pages/Conversations";
 import { SettingsPage } from "./pages/Settings";
 import { SchedulesPage } from "./pages/Schedules";
 import { OnboardingPage } from "./pages/Onboarding";
+import ToolsPage from "./pages/Tools";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -83,6 +84,7 @@ export function App() {
           <Route path="/staff/:staffId" element={<StaffDetailPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
