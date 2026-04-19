@@ -4,6 +4,16 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.3] - 2026-04-19
+
+### Fixed
+
+- **Skills installed via `install_skill` are now tagged correctly.** The handler used to write `source: "skill_install"` to the registry row and never set `source_url`. The schema documents the legal value as `"installed-skill"` and the Tools UI checks for that exact string + a non-empty `sourceUrl` before showing the Installed Skill card and the "Check for updates" button. Net effect: every skill installed via the proper flow looked indistinguishable from an agent-created tool. Now installs land as `source: "installed-skill"` with the full source URL persisted.
+
+### For contributors
+
+- Existing rows written before this fix retain their old source value. To backfill, run `UPDATE custom_tools SET source='installed-skill', source_url='<url>' WHERE name='<tool>';` against `~/.carsonos/carsonos.db`. The fix only catches new installs.
+
 ## [0.3.2] - 2026-04-19
 
 Closes the orphan-file follow-up tracked against v0.3.1's Custom Tools Admin UI. SKILL.md files that exist on disk but have no matching registry row are now surfaced and importable from the dashboard.
