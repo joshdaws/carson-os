@@ -50,6 +50,14 @@ manager (key names only — values are never returned). Two follow-ups remain
 in TODOS.md: orphan file importer and the upstream update check that backs the
 stubbed button. See `CHANGELOG.md` v0.3.1.
 
+Working (v0.3.2): Orphan SKILL.md importer. SKILL.md files that exist on disk
+but have no matching `custom_tools` row are now surfaced via an amber banner
+on the Tools page, openable into a modal that lists each orphan with parsed
+metadata, parse errors, and name conflicts. One-click batch import attributes
+the rows to the household's CoS and reloads the registry. Two new admin
+routes: `GET /api/tools/custom/orphans` and `POST /api/tools/custom/import-orphans`.
+Closes one of the two v0.3.1 follow-ups. See `CHANGELOG.md` v0.3.2.
+
 ## MVP (v1.0) — "Announce on X"
 
 Design doc: ~/.gstack/projects/joshdaws-carson-os/joshdaws-feature/tool-registry-architecture-design-20260409-163500.md
