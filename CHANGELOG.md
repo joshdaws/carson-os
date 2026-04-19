@@ -4,6 +4,38 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-04-18
+
+Voice messages, audio files, and photos now work end-to-end. Send a voice note and Carson transcribes it. Send a photo and Carson actually sees it. Plus a new Settings field for the Groq key and a hardened shutdown so dev iterations don't fight the relay.
+
+### Added
+
+- **Voice & audio transcription:** Voice messages and audio file attachments are transcribed via Groq Whisper (whisper-large-v3-turbo) and answered like text. Dedicated handlers send a "typing" indicator immediately so you know the agent is working.
+- **Photo understanding (multimodal):** Photos go inline to the agent's actual model (Sonnet by default) as image content blocks. The agent sees the image directly and replies. Works with the Claude Max subscription via the Agent SDK, no Anthropic API key needed.
+- **Local media cache:** Downloaded files land at `~/.carsonos/media/` keyed by Telegram's `file_unique_id` (stable across bots). 1-hour TTL with auto-prune every 30 minutes. Re-asking about an image within an hour skips the redownload.
+- **Per-capability size guards:** Images up to 10MB, voice/audio up to 20MB, video up to 50MB, documents up to 20MB. Sizes checked from Telegram's update before any download starts. Friendly fallback message when exceeded.
+- **Min audio guard:** Clips under 1KB are skipped (almost always silence/corrupt) instead of failing through to a Whisper error.
+- **Document text injection:** Text-readable documents now inject up to 100K characters of content (was 10K) so the agent has more to work with.
+- **Settings → Voice & Media section:** New field for `GROQ_API_KEY` in the Settings page. Saving the key updates `process.env` immediately, no restart needed.
+- **Env hydration from instance_settings:** New boot-time service reads an explicit allow-list of platform secrets (currently just `GROQ_API_KEY`) from the SQLite `instance_settings` table into `process.env`. Operator env vars still win, the DB value only fills the gap. `ANTHROPIC_API_KEY` is intentionally excluded so the Claude Max subscription is never bypassed.
+
+### Changed
+
+- **Telegram message handlers:** Voice/audio split into dedicated handlers separate from the generic photo/document/sticker/video loop. Real Grammy `Context` is always passed through (the previous spread-the-context pattern was the root cause of the "I had trouble processing that" error).
+- **Photo flow simplified:** Removed the Haiku pre-describe round-trip. Photos now go in the same LLM call as the user's message, one round-trip instead of two.
+- **Whisper model:** `whisper-large-v3` to `whisper-large-v3-turbo` (faster, same quality).
+- **Telegram polling timeout:** 30s to 3s long-poll. Updates still arrive instantly when present; this only changes how fast `runner.stop()` returns during a hot reload.
+- **Shutdown handler:** Force-terminates WebSocket clients and HTTP keep-alives before closing the server, with a 4-second hard exit deadline. Hot reloads now release port 3300 cleanly so the new process can rebind without `EADDRINUSE`.
+- **Multimodal adapter API:** `AdapterExecuteParams` and `ProcessMessageParams` accept an optional `attachments` array. When present, the Claude Agent SDK is called with `AsyncIterable<SDKUserMessage>` containing image content blocks instead of a string prompt.
+
+### Fixed
+
+- **Voice messages no longer crash on dispatch:** The generic media handler used to spread the Grammy `Context` to inject extracted text. Spreading a class instance loses prototype methods (`reply()`, `replyWithChatAction()`, API getters), so `handleMessage()` threw a `TypeError` that the outer catch reported as "I had trouble processing that." Replaced with an explicit `textOverride` parameter.
+
+### Removed
+
+- Dead code in `multi-relay-manager.ts`: unused `DEDUP_TTL_MS` constant, unused `taskEngine` injection, unused `editFormatted` private method, and a duplicate `InputFile` import inside `sendFormatted`.
+
 ## [0.2.0] - 2026-04-15
 
 Custom tool registry: agents can now create, register, and invoke their own tools at runtime.
