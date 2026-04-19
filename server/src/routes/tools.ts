@@ -5,7 +5,7 @@
 
 import { Router } from "express";
 import { and, eq, inArray } from "drizzle-orm";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
 import { customTools, staffAgents, toolSecrets } from "@carsonos/db";
@@ -16,6 +16,10 @@ import {
   loadCustomTools,
   parseSkillMd,
   walkForSkills,
+  prepareInstall,
+  promoteTool,
+  cleanupStaging,
+  InstallError,
 } from "../services/custom-tools/index.js";
 
 export interface ToolRouteDeps {
@@ -323,6 +327,143 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
     }
 
     res.json({ imported: imported.length, importedPaths: imported, failed });
+  });
+
+  // ── Upstream update check + apply (installed skills only) ──────────
+  //
+  // The detail panel shows a "Check for updates" button on tools where
+  // source === "installed-skill" and sourceUrl is set. These routes power it.
+  //
+  // The check re-runs prepareInstall (same fetch+validate+hash pipeline as
+  // install_skill) against the saved sourceUrl, finds the matching tool by
+  // name, and compares the upstream contentHash to the locally stored
+  // approvedContentHash. The apply route does the same fetch then promotes
+  // the new files in place, bumps generation, refreshes content hash, and
+  // reloads the registry so the new version is callable immediately.
+  //
+  // IMPORTANT: declared BEFORE /custom/:id so Express doesn't match
+  // "check-update" or "apply-update" as the :id param.
+
+  // GET /custom/:id/check-update — fetch upstream and compare hashes
+  router.get("/custom/:id/check-update", async (req, res) => {
+    const row = db.select().from(customTools).where(eq(customTools.id, req.params.id)).get();
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    if (row.source !== "installed-skill" || !row.sourceUrl) {
+      res.status(400).json({ error: "Tool was not installed from a source URL" });
+      return;
+    }
+
+    let result;
+    try {
+      result = await prepareInstall(row.sourceUrl);
+    } catch (err) {
+      const msg = err instanceof InstallError ? err.message : (err as Error).message;
+      res.status(502).json({ error: `Upstream fetch failed: ${msg}` });
+      return;
+    }
+
+    try {
+      const entry = result.entries.find((e) => e.toolName === row.name);
+      if (!entry) {
+        res.json({
+          hasUpdate: false,
+          upstreamMissing: true,
+          currentHash: row.approvedContentHash,
+          upstreamHash: null,
+          message: `The upstream source no longer contains a tool named "${row.name}". It may have been renamed or removed.`,
+        });
+        return;
+      }
+
+      res.json({
+        hasUpdate: entry.contentHash !== row.approvedContentHash,
+        upstreamMissing: false,
+        currentHash: row.approvedContentHash,
+        upstreamHash: entry.contentHash,
+        message: entry.contentHash === row.approvedContentHash ? "Up to date." : "Update available.",
+      });
+    } finally {
+      cleanupStaging(result.stagingRoot);
+    }
+  });
+
+  // POST /custom/:id/apply-update — re-fetch and overwrite the local copy
+  router.post("/custom/:id/apply-update", async (req, res) => {
+    const row = db.select().from(customTools).where(eq(customTools.id, req.params.id)).get();
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    if (row.source !== "installed-skill" || !row.sourceUrl) {
+      res.status(400).json({ error: "Tool was not installed from a source URL" });
+      return;
+    }
+
+    let result;
+    try {
+      result = await prepareInstall(row.sourceUrl);
+    } catch (err) {
+      const msg = err instanceof InstallError ? err.message : (err as Error).message;
+      res.status(502).json({ error: `Upstream fetch failed: ${msg}` });
+      return;
+    }
+
+    try {
+      const entry = result.entries.find((e) => e.toolName === row.name);
+      if (!entry) {
+        res.status(404).json({
+          error: `The upstream source no longer contains a tool named "${row.name}". It may have been renamed or removed. To switch to the new name, run install_skill again.`,
+        });
+        return;
+      }
+
+      if (entry.contentHash === row.approvedContentHash) {
+        res.json({ ok: true, applied: false, message: "Already up to date." });
+        return;
+      }
+
+      const destDir = join(TOOLS_ROOT, row.householdId, row.path);
+      // Atomic swap: move the existing dir aside, promote the upstream into
+      // its place, then remove the backup. If the promote fails, restore the
+      // backup so we never leave the user with a half-installed tool.
+      const backupDir = `${destDir}.bak.${Date.now()}`;
+      let backupCreated = false;
+      try {
+        if (existsSync(destDir)) {
+          renameSync(destDir, backupDir);
+          backupCreated = true;
+        }
+        promoteTool(entry, destDir);
+        if (backupCreated) {
+          rmSync(backupDir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        if (backupCreated && !existsSync(destDir)) {
+          // Restore the backup since the new files never landed
+          try { renameSync(backupDir, destDir); } catch { /* swallow restore error; original is more relevant */ }
+        }
+        res.status(500).json({
+          error: `Failed to promote upstream files: ${(err as Error).message}`,
+        });
+        return;
+      }
+
+      db.update(customTools)
+        .set({
+          approvedContentHash: entry.contentHash,
+          generation: row.generation + 1,
+          schemaVersion: row.schemaVersion + 1,
+          status: "active",
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(customTools.id, row.id))
+        .run();
+
+      try { await loadCustomTools(db, toolRegistry); }
+      catch (err) { console.error("[tools] Registry reload after update failed:", err); }
+
+      res.json({ ok: true, applied: true, newHash: entry.contentHash });
+    } finally {
+      cleanupStaging(result.stagingRoot);
+    }
   });
 
   // GET /custom/pending — convenience endpoint for the admin approvals queue
