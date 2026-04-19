@@ -4,6 +4,26 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.2] - 2026-04-19
+
+Closes the orphan-file follow-up tracked against v0.3.1's Custom Tools Admin UI. SKILL.md files that exist on disk but have no matching registry row are now surfaced and importable from the dashboard.
+
+### Added
+
+- **Orphan banner on the Tools page.** When the loader finds SKILL.md files in `~/.carsonos/tools/{household}/` that have no matching `custom_tools` row, an amber banner appears above the filter tabs with a one-click open into the import modal. Common sources: hand-authored SKILL.md files, files synced from another machine without the DB, files restored from backup.
+- **Import modal.** Lists every orphan with parsed metadata (name, description, kind), parse errors if the SKILL.md is malformed, and name-conflict warnings if a tool with that name already exists. Importable orphans are pre-selected with checkboxes; click "Import N tools" to insert the rows. Imports are attributed to the household's Chief of Staff (or first active agent as fallback) and registered immediately so the new tools are callable on the next message.
+- **Two new admin routes:** `GET /api/tools/custom/orphans?household_id=` returns the parsed orphan list. `POST /api/tools/custom/import-orphans` takes `{household_id, paths: [...]}` and writes the rows + reloads the registry. Per-orphan failures (parse error, name conflict, missing handler.ts for script tools) are reported individually so a partial import doesn't abort the batch.
+
+### Fixed
+
+- **Route order in tools.ts** — `/custom/orphans` and `/custom/import-orphans` declared BEFORE `/custom/:id` so Express doesn't match `orphans` as the `:id` param.
+
+### For contributors
+
+- `walkForSkills` and `FoundSkill` are now exported from the custom-tools barrel.
+- The orphan importer reuses the existing `parseSkillMd` helper for validation, so any tightening of SKILL.md parsing applies uniformly to fresh imports and boot-time loading.
+- Frontmatter parsing in the modal is server-side (full subset YAML parser); the UI just displays what came back. No drift between what the importer accepts and what the loader accepts.
+
 ## [0.3.1] - 2026-04-19
 
 A new dashboard page for the custom tool registry that shipped in v0.2.0. Manage every tool your agents have created or installed without leaving the browser.

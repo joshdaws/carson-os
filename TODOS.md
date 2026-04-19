@@ -16,13 +16,6 @@
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
 
-## Custom Tools Admin UI — Orphan File Importer (deferred)
-- **What:** Detect SKILL.md files on disk under `~/.carsonos/tools/{household}/` that have no matching row in `custom_tools`, and offer to import them.
-- **Why:** A power user (or a sync from another machine) could drop tool files in the directory directly. Without an importer, they're invisible to the registry.
-- **Cons:** Needs a new backend route (`POST /api/tools/custom/import-orphans`) that walks the dir, detects unregistered SKILL.md files, parses them, and inserts rows. Plus a UI surface (banner on the Tools page when orphans are detected, or a modal listing them).
-- **Context:** Deferred from the v0.3.1 admin UI ship. Most of the Custom Tools Admin UI scope shipped (listing, bundling, detail panel with markdown SKILL.md, approve/toggle/delete, secrets list). The orphan importer is the only missing piece because there's no backend route for it yet.
-- **Depends on:** New backend route for orphan detection + import.
-
 ## Custom Tools — Upstream Update Check (stub button shipped)
 - **What:** When a tool was installed via `install_skill`, periodically check the upstream source for changes. If the remote skill file hash differs from the locally-stored `approvedContentHash`, surface an "Update available" affordance and a one-click pull.
 - **Why:** Currently installed skills are frozen at install time. The Tools UI panel ships a disabled "Check for updates" button as a placeholder for this feature.

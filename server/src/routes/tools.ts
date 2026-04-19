@@ -10,7 +10,13 @@ import { join } from "node:path";
 import type { Db } from "@carsonos/db";
 import { customTools, staffAgents, toolSecrets } from "@carsonos/db";
 import type { ToolRegistry } from "../services/tool-registry.js";
-import { TOOLS_ROOT, hashToolDir, loadCustomTools } from "../services/custom-tools/index.js";
+import {
+  TOOLS_ROOT,
+  hashToolDir,
+  loadCustomTools,
+  parseSkillMd,
+  walkForSkills,
+} from "../services/custom-tools/index.js";
 
 export interface ToolRouteDeps {
   db: Db;
@@ -131,6 +137,192 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
       ? db.select().from(customTools).where(eq(customTools.householdId, String(householdId))).all()
       : db.select().from(customTools).all();
     res.json({ customTools: rows });
+  });
+
+  // ── Orphan SKILL.md detection + import ──────────────────────────────
+  //
+  // The loader counts orphans at boot but only logs them. These routes
+  // expose them to the admin UI so the operator can review and import
+  // (insert custom_tools rows + register in the live registry).
+  //
+  // Sources of orphans: hand-authored SKILL.md files, files synced from
+  // another machine without the DB, recovered files from a backup.
+  //
+  // IMPORTANT: declared BEFORE /custom/:id so Express doesn't match
+  // "orphans" as the :id param.
+
+  // GET /custom/orphans — list SKILL.md files on disk that have no DB row
+  router.get("/custom/orphans", async (req, res) => {
+    const householdId = typeof req.query.household_id === "string" ? req.query.household_id : null;
+    if (!householdId) { res.status(400).json({ error: "household_id required" }); return; }
+
+    const householdDir = join(TOOLS_ROOT, householdId);
+    if (!existsSync(householdDir)) { res.json({ orphans: [] }); return; }
+
+    const knownPaths = new Set(
+      db
+        .select({ path: customTools.path })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.path),
+    );
+    const knownNames = new Set(
+      db
+        .select({ name: customTools.name })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.name),
+    );
+
+    const found = walkForSkills(householdDir);
+    const orphans: Array<{
+      bundle: string | null;
+      toolName: string;
+      relPath: string;
+      parsed: { name: string; description: string; kind: string; hasHandler: boolean } | null;
+      parseError: string | null;
+      nameConflict: boolean;
+    }> = [];
+
+    for (const f of found) {
+      const relPath = f.bundle ? `${f.bundle}/${f.toolName}` : f.toolName;
+      if (knownPaths.has(relPath)) continue;
+
+      let parsed: { name: string; description: string; kind: string; hasHandler: boolean } | null = null;
+      let parseError: string | null = null;
+      let conflictName: string | null = null;
+      try {
+        const doc = parseSkillMd(readFileSync(f.absPath, "utf8"));
+        const kind = doc.frontmatter.kind ?? "prompt";
+        const handlerPath = join(f.absPath, "..", "handler.ts");
+        const hasHandler = existsSync(handlerPath);
+        if (kind === "script" && !hasHandler) {
+          parseError = "Script tool missing handler.ts next to SKILL.md";
+        } else {
+          parsed = { name: doc.frontmatter.name, description: doc.frontmatter.description, kind, hasHandler };
+          conflictName = doc.frontmatter.name;
+        }
+      } catch (err) {
+        parseError = (err as Error).message;
+      }
+
+      orphans.push({
+        bundle: f.bundle ?? null,
+        toolName: f.toolName,
+        relPath,
+        parsed,
+        parseError,
+        nameConflict: conflictName ? knownNames.has(conflictName) : false,
+      });
+    }
+
+    res.json({ orphans });
+  });
+
+  // POST /custom/import-orphans — body: { household_id, paths: string[] }
+  router.post("/custom/import-orphans", async (req, res) => {
+    const { household_id: householdId, paths } = req.body as {
+      household_id?: string;
+      paths?: string[];
+    };
+    if (!householdId) { res.status(400).json({ error: "household_id required" }); return; }
+    if (!Array.isArray(paths) || paths.length === 0) {
+      res.status(400).json({ error: "paths must be a non-empty array" });
+      return;
+    }
+
+    const agents = db
+      .select()
+      .from(staffAgents)
+      .where(eq(staffAgents.householdId, householdId))
+      .all();
+    const defaultAgent =
+      agents.find((a) => a.staffRole === "chief_of_staff") ??
+      agents.find((a) => a.status === "active") ??
+      agents[0];
+    if (!defaultAgent) {
+      res.status(400).json({ error: "No staff agents in this household to attribute imports to" });
+      return;
+    }
+
+    const householdDir = join(TOOLS_ROOT, householdId);
+    const found = walkForSkills(householdDir);
+    const byRelPath = new Map<string, typeof found[0]>();
+    for (const f of found) {
+      const relPath = f.bundle ? `${f.bundle}/${f.toolName}` : f.toolName;
+      byRelPath.set(relPath, f);
+    }
+
+    const knownNames = new Set(
+      db
+        .select({ name: customTools.name })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.name),
+    );
+
+    const imported: string[] = [];
+    const failed: Array<{ relPath: string; error: string }> = [];
+
+    for (const relPath of paths) {
+      const f = byRelPath.get(relPath);
+      if (!f) { failed.push({ relPath, error: "No SKILL.md found at that path on disk" }); continue; }
+
+      let doc;
+      try {
+        doc = parseSkillMd(readFileSync(f.absPath, "utf8"));
+      } catch (err) {
+        failed.push({ relPath, error: `SKILL.md parse failed: ${(err as Error).message}` });
+        continue;
+      }
+
+      const kind = doc.frontmatter.kind ?? "prompt";
+      const dir = join(f.absPath, "..");
+      if (kind === "script" && !existsSync(join(dir, "handler.ts"))) {
+        failed.push({ relPath, error: "Script tool missing handler.ts" });
+        continue;
+      }
+
+      if (knownNames.has(doc.frontmatter.name)) {
+        failed.push({
+          relPath,
+          error: `Tool name '${doc.frontmatter.name}' already exists in this household`,
+        });
+        continue;
+      }
+
+      let approvedContentHash: string | null = null;
+      if (kind === "script") {
+        try { approvedContentHash = hashToolDir(dir); } catch { /* leave null */ }
+      }
+
+      try {
+        db.insert(customTools).values({
+          householdId,
+          name: doc.frontmatter.name,
+          kind,
+          path: relPath,
+          createdByAgentId: defaultAgent.id,
+          source: "imported",
+          status: "active",
+          approvedContentHash,
+        }).run();
+        knownNames.add(doc.frontmatter.name);
+        imported.push(relPath);
+      } catch (err) {
+        failed.push({ relPath, error: `DB insert failed: ${(err as Error).message}` });
+      }
+    }
+
+    if (imported.length > 0) {
+      try { await loadCustomTools(db, toolRegistry); }
+      catch (err) { console.error("[tools] Registry reload after import failed:", err); }
+    }
+
+    res.json({ imported: imported.length, importedPaths: imported, failed });
   });
 
   // GET /custom/pending — convenience endpoint for the admin approvals queue

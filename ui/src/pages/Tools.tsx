@@ -39,6 +39,8 @@ import {
   ChevronRight,
   ExternalLink,
   Download,
+  FileQuestion,
+  ArrowRight,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -1098,6 +1100,200 @@ function ToolBundleRows({
   );
 }
 
+// ── Orphan importer ────────────────────────────────────────────────
+
+interface OrphanEntry {
+  bundle: string | null;
+  toolName: string;
+  relPath: string;
+  parsed: { name: string; description: string; kind: string; hasHandler: boolean } | null;
+  parseError: string | null;
+  nameConflict: boolean;
+}
+
+function OrphanImporterModal({
+  householdId,
+  orphans,
+  onClose,
+  onImported,
+}: {
+  householdId: string;
+  orphans: OrphanEntry[];
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  // Default-select every orphan that's parseable and conflict-free
+  const importable = useMemo(
+    () => orphans.filter((o) => o.parsed && !o.parseError && !o.nameConflict),
+    [orphans],
+  );
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(importable.map((o) => o.relPath)),
+  );
+
+  const importMutation = useMutation({
+    mutationFn: (paths: string[]) =>
+      api.post<{ imported: number; importedPaths: string[]; failed: Array<{ relPath: string; error: string }> }>(
+        `/tools/custom/import-orphans`,
+        { household_id: householdId, paths },
+      ),
+    onSuccess: (result) => {
+      if (result.failed.length === 0) {
+        onImported();
+        onClose();
+      }
+      // If some failed, leave the modal open so the user can see what didn't import
+    },
+  });
+
+  const toggle = (relPath: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(relPath)) next.delete(relPath);
+      else next.add(relPath);
+      return next;
+    });
+  };
+
+  const failedMap = new Map(
+    (importMutation.data?.failed ?? []).map((f) => [f.relPath, f.error]),
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(26, 31, 46, 0.4)" }}
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-md border max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col"
+        style={{ borderColor: "#ddd5c8" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="px-5 py-4 border-b flex items-start justify-between"
+          style={{ borderColor: "#eee8dd" }}
+        >
+          <div>
+            <h3 className="text-base font-semibold" style={{ color: "#1a1f2e" }}>
+              Import orphan tools
+            </h3>
+            <p className="text-xs mt-1" style={{ color: "#7a7060" }}>
+              Found {orphans.length} SKILL.md file{orphans.length === 1 ? "" : "s"} on disk
+              with no matching registry row. Pick which to import.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-3 p-1 rounded hover:bg-[#faf8f4]"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" style={{ color: "#7a7060" }} />
+          </button>
+        </div>
+
+        {/* List */}
+        <div className="overflow-y-auto flex-1 p-5 space-y-2">
+          {orphans.map((o) => {
+            const blocked = !o.parsed || !!o.parseError || o.nameConflict;
+            const importFailed = failedMap.get(o.relPath);
+            const isSelected = selected.has(o.relPath);
+
+            return (
+              <div
+                key={o.relPath}
+                className="rounded border p-3"
+                style={{
+                  borderColor: blocked ? "#fde8e8" : isSelected ? "#8b6f4e" : "#eee8dd",
+                  background: blocked ? "#fff8f8" : "#faf8f4",
+                  opacity: blocked ? 0.85 : 1,
+                }}
+              >
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    disabled={blocked || importMutation.isPending}
+                    onChange={() => toggle(o.relPath)}
+                    className="mt-1"
+                    style={{ accentColor: "#8b6f4e" }}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <code className="text-xs font-mono" style={{ color: "#1a1f2e" }}>
+                        {o.relPath}
+                      </code>
+                      {o.parsed && (
+                        <Badge
+                          variant="secondary"
+                          className="text-[10px]"
+                          style={{ background: "#f4efe6", color: "#5a5a5a" }}
+                        >
+                          {o.parsed.kind}
+                        </Badge>
+                      )}
+                    </div>
+                    {o.parsed && (
+                      <p className="text-xs mt-1" style={{ color: "#5a5a5a" }}>
+                        <span className="font-medium" style={{ color: "#1a1f2e" }}>
+                          {o.parsed.name}
+                        </span>{" "}
+                        — {o.parsed.description}
+                      </p>
+                    )}
+                    {o.parseError && (
+                      <p className="text-xs mt-1" style={{ color: "#a82020" }}>
+                        Parse error: {o.parseError}
+                      </p>
+                    )}
+                    {o.nameConflict && o.parsed && (
+                      <p className="text-xs mt-1" style={{ color: "#a82020" }}>
+                        Name conflict: a tool named "{o.parsed.name}" already exists. Rename
+                        the SKILL.md or delete the existing tool first.
+                      </p>
+                    )}
+                    {importFailed && (
+                      <p className="text-xs mt-1" style={{ color: "#a82020" }}>
+                        Import failed: {importFailed}
+                      </p>
+                    )}
+                  </div>
+                </label>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div
+          className="px-5 py-3 border-t flex items-center justify-between"
+          style={{ borderColor: "#eee8dd" }}
+        >
+          <p className="text-xs" style={{ color: "#7a7060" }}>
+            {selected.size} of {importable.length} importable selected
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="ghost" onClick={onClose} disabled={importMutation.isPending}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => importMutation.mutate([...selected])}
+              disabled={selected.size === 0 || importMutation.isPending}
+              style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+            >
+              {importMutation.isPending
+                ? "Importing..."
+                : `Import ${selected.size} tool${selected.size === 1 ? "" : "s"}`}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────
 
 export default function ToolsPage() {
@@ -1134,6 +1330,14 @@ export default function ToolsPage() {
     queryFn: () => api.get(`/tools/secrets?household_id=${householdId}`),
     enabled: !!householdId,
   });
+
+  const { data: orphansData } = useQuery<{ orphans: OrphanEntry[] }>({
+    queryKey: ["tools", "orphans", householdId],
+    queryFn: () => api.get(`/tools/custom/orphans?household_id=${householdId}`),
+    enabled: !!householdId,
+  });
+  const orphans = orphansData?.orphans ?? [];
+  const [orphanModalOpen, setOrphanModalOpen] = useState(false);
 
   const deleteSecretMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/tools/secrets/${id}`),
@@ -1188,6 +1392,27 @@ export default function ToolsPage() {
           <code style={{ color: "#3a4060" }}>~/.carsonos/tools/</code>.
         </p>
       </div>
+
+      {/* Orphan banner — only when SKILL.md files on disk are not registered */}
+      {orphans.length > 0 && (
+        <button
+          onClick={() => setOrphanModalOpen(true)}
+          className="w-full text-left mb-4 rounded border p-3 flex items-center gap-3 hover:bg-[#fef9eb] transition-colors"
+          style={{ borderColor: "#f0d99b", background: "#fffaef" }}
+        >
+          <FileQuestion className="h-4 w-4 flex-shrink-0" style={{ color: "#a06010" }} />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium" style={{ color: "#1a1f2e" }}>
+              Found {orphans.length} SKILL.md file{orphans.length === 1 ? "" : "s"} on disk
+              that {orphans.length === 1 ? "isn't" : "aren't"} registered.
+            </p>
+            <p className="text-[10px]" style={{ color: "#7a7060" }}>
+              Hand-authored, synced from another machine, or restored from backup. Review and import.
+            </p>
+          </div>
+          <ArrowRight className="h-4 w-4 flex-shrink-0" style={{ color: "#a06010" }} />
+        </button>
+      )}
 
       {/* Filter tabs */}
       <div
@@ -1334,6 +1559,19 @@ export default function ToolsPage() {
           onConfirm={() => deleteSecretMutation.mutate(confirmSecretDelete.id)}
           onCancel={() => setConfirmSecretDelete(null)}
           pending={deleteSecretMutation.isPending}
+        />
+      )}
+
+      {/* Orphan importer modal */}
+      {orphanModalOpen && householdId && (
+        <OrphanImporterModal
+          householdId={householdId}
+          orphans={orphans}
+          onClose={() => setOrphanModalOpen(false)}
+          onImported={() => {
+            queryClient.invalidateQueries({ queryKey: ["tools", "custom"] });
+            queryClient.invalidateQueries({ queryKey: ["tools", "orphans"] });
+          }}
         />
       )}
     </div>
