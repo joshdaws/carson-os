@@ -53,6 +53,8 @@ import type { GoogleCalendarProvider } from "./google/index.js";
 import { createCalendarToolHandler, createGmailToolHandler, createDriveToolHandler } from "./google/index.js";
 import type { CalDavProvider } from "./caldav/index.js";
 import { createCalDavCalendarToolHandler } from "./caldav/index.js";
+import type { ImapProvider } from "./imap/index.js";
+import { createImapEmailToolHandler } from "./imap/index.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -92,6 +94,7 @@ export interface EngineConfig {
   toolRegistry?: ToolRegistry;
   calendarProvider?: GoogleCalendarProvider;
   caldavProvider?: CalDavProvider;
+  imapProvider?: ImapProvider;
   multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
@@ -227,6 +230,7 @@ export class ConstitutionEngine {
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
   private caldavProvider: CalDavProvider | null;
+  private imapProvider: ImapProvider | null;
   private hardEvaluatorsEnabled: boolean;
   private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
 
@@ -238,6 +242,7 @@ export class ConstitutionEngine {
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
     this.caldavProvider = config.caldavProvider ?? null;
+    this.imapProvider = config.imapProvider ?? null;
     this.multiRelay = config.multiRelay ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
   }
@@ -563,6 +568,17 @@ export class ConstitutionEngine {
             return base(name, input);
           };
         }
+
+        // Same pattern for IMAP email tools.
+        if (this.imapProvider && this.imapProvider.getAuthStatus(memberSlug).authenticated) {
+          const imapHandler = createImapEmailToolHandler(this.imapProvider, memberSlug);
+          const imapToolNames = new Set(["imap_triage", "imap_read", "imap_search"]);
+          const base = toolExecutor;
+          toolExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (imapToolNames.has(name)) return imapHandler(name, input);
+            return base(name, input);
+          };
+        }
       }
 
       // Expose a refresh callback to the adapter so mid-session custom tool
@@ -577,6 +593,15 @@ export class ConstitutionEngine {
           const base = refreshedExecutor;
           refreshedExecutor = async (name: string, input: Record<string, unknown>) => {
             if (caldavToolNames.has(name)) return caldavHandler(name, input);
+            return base(name, input);
+          };
+        }
+        if (this.imapProvider && this.imapProvider.getAuthStatus(memberSlug).authenticated) {
+          const imapHandler = createImapEmailToolHandler(this.imapProvider, memberSlug);
+          const imapToolNames = new Set(["imap_triage", "imap_read", "imap_search"]);
+          const base = refreshedExecutor;
+          refreshedExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (imapToolNames.has(name)) return imapHandler(name, input);
             return base(name, input);
           };
         }

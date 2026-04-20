@@ -41,6 +41,7 @@ import { hydrateEnvFromSettings } from "./services/env-hydration.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
 import { CalDavProvider, CALDAV_CALENDAR_TOOLS } from "./services/caldav/index.js";
+import { ImapProvider, IMAP_EMAIL_TOOLS } from "./services/imap/index.js";
 
 // Read VERSION from the repo root (two levels up from server/src/). Single
 // source of truth — bumping VERSION at ship time updates the boot banner
@@ -116,7 +117,7 @@ async function main() {
     console.warn("[memory] Boot failed, running without memory:", err);
   }
 
-  // 2c. Calendar providers
+  // 2c. External providers
   const googleDir = join(config.dataDir, "google");
   const calendarProvider = new GoogleCalendarProvider(googleDir);
   const gwsHealthy = await calendarProvider.healthCheck();
@@ -128,6 +129,12 @@ async function main() {
   const caldavDir = join(config.dataDir, "caldav");
   const caldavProvider = new CalDavProvider(caldavDir);
   console.log("[caldav] Calendar provider ready");
+
+  // IMAP — always available, no external CLI dependency.
+  // Per-member credentials resolved at dispatch time.
+  const imapDir = join(config.dataDir, "imap");
+  const imapProvider = new ImapProvider(imapDir);
+  console.log("[imap] Email provider ready");
 
   // 2d. Tool registry
   const toolRegistry = new ToolRegistry(db);
@@ -169,6 +176,17 @@ async function main() {
     );
   }
 
+  // Register IMAP email tools (always available — per-member auth checked at call time)
+  const imapPlaceholder = async (_name: string, _input: Record<string, unknown>) => ({
+    content: "IMAP not configured for this member. Save credentials to ~/.carsonos/imap/<member>/credentials.json",
+    is_error: true as const,
+  });
+
+  toolRegistry.registerAll(
+    IMAP_EMAIL_TOOLS.map((def) => ({ definition: def, category: "email", tier: "builtin" as const })),
+    imapPlaceholder,
+  );
+
   // Skills are enabled via trust level ("Skill" built-in for full trust).
   // No need to discover/register them — the SDK handles skill loading.
 
@@ -187,6 +205,7 @@ async function main() {
     toolRegistry,
     calendarProvider: gwsHealthy ? calendarProvider : undefined,
     caldavProvider,
+    imapProvider,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
