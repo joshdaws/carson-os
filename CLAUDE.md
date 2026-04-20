@@ -39,6 +39,16 @@ pnpm --filter @carsonos/server test  # server tests only
 
 Test files live next to source: `services/__tests__/`, `routes/__tests__/`
 
+## Work routing
+
+Three-way rule for deciding how to do something:
+
+- **Deterministic** (same input → same output, no judgment) → plain code / service call / cron. No LLM.
+- **Judgment-requiring** (synthesis, writing, deciding between options) → the calling agent does it inline via its existing `query()`. Don't spawn anyone.
+- **Agent-to-agent handoff** (long-running, different persona, different model, different tools) → `delegate_task` to a hired specialist (Developer / Tutor / Scheduler).
+
+If in doubt, prefer the smaller option. Agents are for judgment; they are not general-purpose runtime.
+
 ## Telegram Media
 
 - Voice/audio transcribed via Groq Whisper (`whisper-large-v3-turbo`). Set `GROQ_API_KEY` in env or via Settings UI.

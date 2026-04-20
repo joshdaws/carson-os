@@ -57,3 +57,75 @@
   custom tools ships — not bundled with this PR.
 - **Depends on:** Custom tool registry merged; re-enabling delegation in
   constitution-engine and staff routes; specialist agent provisioning UI.
+
+## v0.5 — Detached Claude adapter for durable Developer tasks
+- **What:** Add a `ClaudeCodeDetachedAdapter` that spawns `claude` CLI directly with `detached: true`, `stdio: ['ignore', logFd, logFd]`, `child.unref()`. Used only for `Developer` specialty tasks. Family agents stay on the existing SDK adapter.
+- **Why:** v0.4 ships with demo-grade durability — server restart kills in-flight Developer tasks (20 min of Claude work wasted, user pays tokens twice on retry). Detached adapter survives parent SIGKILL and lets the reconciler tail the JSONL log.
+- **Pros:** Real durability. Enables pause/resume/steer primitives below. Moves CarsonOS closer to gbrain-minions-class reliability without the Postgres rewrite.
+- **Cons:** Two adapter code paths to maintain. Session resume semantics get complex (`claude --resume <sessionId>` reloads state but can't replace system prompt). PID tracking + `ps -o lstart=` start-time verification + group-kill on teardown = real footgun surface.
+- **Context:** Deferred from v0.4 per eng review (2026-04-20). Codex pushed hard on the SIGKILL test; v0.4 accepted demo-grade but flagged this as the right v0.5 primitive. See design doc `~/.gstack/projects/joshdaws-carson-os/joshdaws-main-design-20260419-172055.md` Premise 15 + "v0.5 placeholder" sections.
+- **Depends on:** v0.4 shipped and one week of real-world interrupted-task rate data (to confirm this is worth building).
+
+## v0.5 — Pause / Steer / Replay as first-class task primitives
+- **What:** Three new MCP tools: `pause_task(runId)`, `send_task_message(runId, text)`, `replay_task(runId)`. Parent agent can stop a runaway Developer task, inject mid-flight guidance ("also verify mobile"), or replay with same inputs after a fix.
+- **Why:** gbrain minions has all three; benchmark + docs show this is where the "whoa" lives in a delegation primitive. Real use case: you're chatting with Carson, Bob is working on HomeschoolHappy, you remember "also check the tablet layout" — `send_task_message` instead of waiting for him to finish and starting over.
+- **Pros:** Huge UX win for long-running dev tasks. Matches how you'd actually work with a human developer. Uses checkpoint-friendly state you already get from Claude Code session persistence.
+- **Cons:** Replay-with-same-inputs is dangerous if external state (PRs, branches) already changed — need replay-safety rules. Pause mechanics require snapshotting mid-session state, only feasible with the detached adapter.
+- **Context:** Stolen wholesale from gbrain minions architecture study (2026-04-20). See full comparison in session notes.
+- **Depends on:** Detached Claude adapter (above) ships first.
+
+## v0.5 — `lock_until` stalled-worker rescue pattern
+- **What:** Add `lock_until INTEGER` column to tasks. Worker sets it to `now() + lease_seconds` when it picks up a task, bumps it every 30s. On boot, reconciler adopts any task with expired `lock_until` as an orphan. Replaces the current "mark in_progress → failed" boot sweep.
+- **Why:** Cleaner invariant. Same pattern minions uses. Also sets up CarsonOS for a future multi-worker Dispatcher if needed.
+- **Pros:** Doesn't require a worker to be dead to detect orphans (just stalled). Works if Dispatcher ever splits across processes.
+- **Cons:** Marginal benefit in single-Node CarsonOS (only one worker today). Adds a background heartbeat timer in every running task.
+- **Context:** From gbrain minions benchmarks study (2026-04-20) — their `handleStalled` rescued 10/10 jobs in their SIGKILL test vs 0/10 for OpenClaw.
+- **Depends on:** None in particular; can land standalone.
+
+## v0.5 — Folder-scan project auto-discovery
+- **What:** `discoverProjectsIn(path)` scans `~/projects/*` on boot, reads each folder's `package.json` + `git remote get-url origin` to auto-fill project metadata. User toggles enable/disable per project in Settings.
+- **Why:** Explicit registration is fine at v0.4 family scale (3-5 projects), but if you add a dozen personal side projects, typing each one in gets tedious. Convenience feature.
+- **Pros:** Less setup friction. Auto-detects when you clone a new repo into the standard location.
+- **Cons:** Surprises possible — a folder might be registered that you didn't mean to delegate against.
+- **Context:** Deferred from v0.4 per eng review (2026-04-20).
+- **Depends on:** v0.4 projects table shipped.
+
+## Future — Per-member token budget (defer until it's actually a problem)
+- **What:** If/when Claude Max usage limits start biting during real household use, add a per-member soft cap that CoS checks before approving a kid's delegation.
+- **Why:** Not a real problem today. Claude Max handles the backpressure naturally — if you hit limits, requests start failing and that's feedback enough.
+- **Pros:** Would bound cost if CarsonOS ever ran on pay-per-token instead of Claude Max.
+- **Cons:** Token counts aren't stable across models; any budget number picked today will be wrong later. Premature optimization.
+- **Context:** Explicitly deferred by user (2026-04-20): "Right now it's all Claude Max subscription, so I'm fine with it. Usage, anything we can do — worry about it when we cross that road." No action until real usage data says otherwise.
+- **Depends on:** Actual evidence of token exhaustion being a real family-impact problem.
+
+## v0.5 — Live task log tail UI
+- **What:** Extend `ui/src/pages/Tasks.tsx` to show live progress of a running Developer task. Tail the Claude Code JSONL log via WebSocket, render tool calls + token counts + progress events in real time.
+- **Why:** v0.4 ships with list + cancel only. For 20-min dev tasks, seeing what Bob is doing right now is valuable debugging + curiosity surface.
+- **Pros:** Great for trust building — watch your Developer work. Useful for catching runaway tasks early.
+- **Cons:** WebSocket log streaming adds UI state management complexity. Not on the critical path.
+- **Context:** Deferred from v0.4 per eng review (2026-04-20).
+- **Depends on:** v0.4 Tasks.tsx shipped.
+
+## Post-v0.4 — Music pack: audio + MIDI + theory tools as v0.3-registry SKILL.md bundles
+- **What:** A bundle of custom tools for music-interested family members. Implemented as `kind: script` SKILL.md packages in the v0.3 tool registry. Audio analysis (librosa), MIDI/MusicXML (music21), Hooktheory API, Open Music Theory v2 cached citations. Inspired by what Josh's brother Jeremiah built for his son Andrew ("Morning, Andrew" capability drop, 2026-04).
+- **Why:** Son will want music capabilities. Day-to-day music questions ("what key is this?", "is this too quiet for streaming?") need to happen in the conversation flow, not via delegation. These are deterministic, fast, local — classic routing-rule "code not judgment."
+- **Pros:** All libraries are free and open source (librosa/pyloudnorm/music21 = MIT/BSD, Hooktheory API free, OMT = CC BY-SA). Fast (<5 sec per tool). No new infrastructure required — uses the v0.3 custom tool registry already shipped. Grounds music conversation in real data instead of LLM hallucination.
+- **Cons:** Python subprocess from Node handler.ts adds a language boundary. Needs Python + librosa + music21 + pyloudnorm installed on the host. OMT content needs caching (CC BY-SA allows this) since there's no programmatic API.
+- **Context:** Brother's version at Andrew's household is built as a Mozart subagent. For CarsonOS, split the surface: tools on personal agents for conversational flow, Mozart specialist (see below) for long-form composition work. Routing-rule driven.
+- **Depends on:** v0.3 custom tool registry (shipped). No dependency on v0.4 delegation.
+
+## Post-v0.4 — Mozart music specialist (hired via v0.4 delegation flow)
+- **What:** Staff agent `specialty: "music"`, `model: claude-opus-4-7`, `staff_role: "custom"`. Operating instructions: composition-focused, music-theory-anchored, Hooktheory-grounded, OMT-citing. Delegated via `delegate_task` for long-form composition review, arrangement advice, multi-track EP analysis.
+- **Why:** Chat-speed music questions go to the personal agent's tools (above). Deep mentorship ("review my whole EP", "help me arrange Nostalgia for string quartet") is worth Opus max effort and a dedicated persona. Same split pattern as tools-vs-Developer.
+- **Pros:** Uses the v0.4 delegation flow verbatim — no new infra. Opus max for complex harmonic analysis. Natural household-staff framing (Mozart is explicitly a music mentor).
+- **Cons:** Asking son to decide "chat with my agent vs delegate to Mozart" adds mental overhead. Might want an automatic heuristic in the personal agent: "if this is more than ~5 min of work, offer to hand to Mozart."
+- **Context:** Complements the music-pack tools (above). Brother's version is all-subagent; CarsonOS benefits from the split.
+- **Depends on:** v0.4 delegation flow shipped. Music-pack tools (above) — Mozart wraps them in a specialist system prompt.
+
+## Future — Suno integration
+- **What:** Direct Suno generation from within CarsonOS. Let the music agent generate a demo and deliver the MP3 back in Telegram.
+- **Why:** Suno-as-a-tool closes the "compose → generate → iterate" loop without leaving the chat.
+- **Pros:** Huge creative unlock if it works.
+- **Cons:** **No official self-serve Suno API in 2026** — only enterprise tier + unreliable third-party gateways (Jeremiah's attempt blocked on gateway Google-login bug). Paid, non-trivial auth, gateway reliability is the open question.
+- **Context:** Deferred explicitly — keep the "generate in Suno app, log what worked in the prompt library" workflow until Suno opens a real API.
+- **Depends on:** Suno shipping a public self-serve API.
