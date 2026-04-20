@@ -61,7 +61,7 @@ export type TaskEventType =
 
 export type MessageRole = "user" | "assistant" | "system";
 
-export type Channel = "telegram" | "web" | "scheduled";
+export type Channel = "telegram" | "web" | "scheduled" | "signal";
 
 export type OnboardingPhase = "interview" | "review" | "staff_setup" | "telegram_config" | "complete";
 

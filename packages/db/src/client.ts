@@ -46,6 +46,7 @@ CREATE TABLE family_members (
   role TEXT NOT NULL,
   age INTEGER NOT NULL,
   telegram_user_id TEXT UNIQUE,
+  signal_number TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
   memory_dir TEXT,
@@ -63,6 +64,8 @@ CREATE TABLE staff_agents (
   soul_content TEXT,
   visibility TEXT NOT NULL DEFAULT 'family',
   telegram_bot_token TEXT,
+  signal_account TEXT,
+  signal_daemon_port INTEGER,
   model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
   status TEXT NOT NULL DEFAULT 'active',
   is_head_butler INTEGER NOT NULL DEFAULT 0,
@@ -239,6 +242,29 @@ CREATE TABLE tool_grants (
 CREATE INDEX tool_grants_agent_idx ON tool_grants(agent_id);
 CREATE UNIQUE INDEX tool_grants_unique ON tool_grants(agent_id, tool_name);
 
+CREATE TABLE scheduled_tasks (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  agent_id TEXT NOT NULL REFERENCES staff_agents(id),
+  member_id TEXT REFERENCES family_members(id),
+  name TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  schedule_type TEXT NOT NULL,
+  schedule_value TEXT NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'America/New_York',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at INTEGER,
+  next_run_at INTEGER,
+  last_status TEXT,
+  last_error TEXT,
+  run_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX scheduled_tasks_household_idx ON scheduled_tasks(household_id);
+CREATE INDEX scheduled_tasks_agent_idx ON scheduled_tasks(agent_id);
+CREATE INDEX scheduled_tasks_next_run_idx ON scheduled_tasks(next_run_at);
+
 CREATE TABLE instance_settings (
   id TEXT PRIMARY KEY,
   key TEXT NOT NULL UNIQUE,
@@ -292,7 +318,7 @@ CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_
   });
 
   transaction();
-  console.log("[db] Tables created (v4 schema — 15 tables, delegation support)");
+  console.log("[db] Tables created (v4 schema — 16 tables, delegation support)");
 }
 
 /** Upgrade existing v3 DB to v4 schema */
@@ -319,8 +345,10 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     (teCols.has("actor") && !teCols.has("agent_id")) ||
     !tableExists("delegation_edges") || !tableExists("profile_interview_state") ||
     !tableExists("tool_grants") || !tableExists("personality_interview_state") ||
+    !tableExists("scheduled_tasks") ||
+    !staffCols.has("signal_account") || !staffCols.has("signal_daemon_port") ||
     !memberCols.has("profile_content") || !memberCols.has("profile_updated_at") ||
-    !memberCols.has("memory_dir");
+    !memberCols.has("memory_dir") || !memberCols.has("signal_number");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -535,8 +563,24 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // staff_agents: add Signal transport columns
+    if (!staffCols.has("signal_account")) {
+      sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN signal_account TEXT").run();
+      upgraded = true;
+    }
+    if (!staffCols.has("signal_daemon_port")) {
+      sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN signal_daemon_port INTEGER").run();
+      upgraded = true;
+    }
+
+    // family_members: add Signal number
+    if (!memberCols.has("signal_number")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN signal_number TEXT").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded (v10 — custom tool registry)");
+      console.log("[db] Schema upgraded (v10 — custom tool registry + Signal transport)");
     }
   });
 

@@ -19,15 +19,17 @@ import {
 } from "@carsonos/db";
 import type { PersonalityInterviewEngine } from "../services/personality-interview.js";
 import type { MultiRelayManager } from "../services/multi-relay-manager.js";
+import type { SignalRelayManager } from "../services/signal-relay-manager.js";
 
 export interface StaffRouteDeps {
   db: Db;
   personalityInterviewEngine: PersonalityInterviewEngine;
   multiRelay?: MultiRelayManager;
+  signalRelay?: SignalRelayManager;
 }
 
 export function createStaffRoutes(deps: StaffRouteDeps): Router {
-  const { db, personalityInterviewEngine, multiRelay } = deps;
+  const { db, personalityInterviewEngine, multiRelay, signalRelay } = deps;
   const router = Router();
 
   // GET / -- list all staff agents (scoped to household)
@@ -183,6 +185,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       });
     }
 
+    // If created with a Signal account, start the Signal relay immediately
+    if (req.body.signal_account && signalRelay) {
+      signalRelay.startAccount(agent.id).catch((err) => {
+        console.error(`[staff] Failed to start Signal relay for new agent:`, err);
+      });
+    }
+
     res.status(201).json({ agent });
   });
 
@@ -234,6 +243,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     if (telegramBotToken && multiRelay) {
       multiRelay.startBot(req.params.id).catch((err) => {
         console.error(`[staff] Failed to start bot after token update:`, err);
+      });
+    }
+
+    // If Signal account was added or changed, start/restart the Signal relay
+    if (req.body.signal_account && signalRelay) {
+      signalRelay.startAccount(req.params.id).catch((err) => {
+        console.error(`[staff] Failed to start Signal relay after account update:`, err);
       });
     }
 
