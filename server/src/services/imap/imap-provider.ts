@@ -135,15 +135,15 @@ export class ImapProvider {
 
     await withTimeout(client.connect(), TIMEOUT_MS);
     try {
-      const lock = await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS);
+      const lock = (await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS)) as { release: () => void };
       try {
         const query: SearchObject = unreadOnly ? { seen: false } : { all: true };
-        const uids = await withTimeout(client.search(query, { uid: true }), TIMEOUT_MS);
+        const uids = (await withTimeout(client.search(query, { uid: true }), TIMEOUT_MS)) as number[] | false;
 
         if (!uids || uids.length === 0) return [];
 
         // Take the last `max` UIDs (highest = most recently received)
-        const recent = (uids as number[]).slice(-max);
+        const recent = uids.slice(-max);
         return await fetchEnvelopes(client, recent, mailbox);
       } finally {
         lock.release();
@@ -164,12 +164,20 @@ export class ImapProvider {
 
     await withTimeout(client.connect(), TIMEOUT_MS);
     try {
-      const lock = await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS);
+      const lock = (await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS)) as { release: () => void };
       try {
-        const msg = await withTimeout(
+        const msg = (await withTimeout(
           client.fetchOne(uid, { envelope: true, source: true, uid: true }, { uid: true }),
           TIMEOUT_MS,
-        );
+        )) as {
+          envelope?: {
+            from?: Array<{ name?: string; address?: string }>;
+            to?: Array<{ name?: string; address?: string }>;
+            subject?: string;
+            date?: Date | string;
+          };
+          source?: Buffer;
+        } | undefined;
 
         if (!msg) {
           throw new Error(`Message not found: ${messageId}`);
@@ -214,14 +222,14 @@ export class ImapProvider {
 
     await withTimeout(client.connect(), TIMEOUT_MS);
     try {
-      const lock = await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS);
+      const lock = (await withTimeout(client.getMailboxLock(mailbox), TIMEOUT_MS)) as { release: () => void };
       try {
         const searchObj = parseSearchQuery(query);
-        const uids = await withTimeout(client.search(searchObj, { uid: true }), TIMEOUT_MS);
+        const uids = (await withTimeout(client.search(searchObj, { uid: true }), TIMEOUT_MS)) as number[] | false;
 
         if (!uids || uids.length === 0) return [];
 
-        const recent = (uids as number[]).slice(-max);
+        const recent = uids.slice(-max);
         return await fetchEnvelopes(client, recent, mailbox);
       } finally {
         lock.release();

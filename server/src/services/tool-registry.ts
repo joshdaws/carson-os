@@ -119,34 +119,34 @@ const CUSTOM_TOOL_MGMT_GRANTS = [
 
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
-    "search_memory", "save_memory", "delete_memory", "update_instructions",
+    "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
     ...CUSTOM_TOOL_MGMT_GRANTS,
   ],
   personal: [
-    "search_memory", "save_memory", "delete_memory", "update_instructions",
+    "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
   ],
   tutor: [
-    "search_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "save_memory", "update_instructions",
     "list_calendar_events",
     "drive_search",
   ],
   coach: [
-    "search_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "save_memory", "update_instructions",
     "list_calendar_events",
   ],
   scheduler: [
-    "search_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "save_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_search",
   ],
   custom: [
-    "search_memory", "update_instructions",
+    "search_memory", "read_memory", "update_instructions",
   ],
 };
 

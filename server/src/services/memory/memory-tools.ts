@@ -141,6 +141,26 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
       required: ["id", "collection"],
     },
   },
+  {
+    name: "read_memory",
+    description:
+      "Read the full content of a specific memory entry. Use after search_memory when the snippet preview isn't enough — for example, when the user asks for a URL, quote, or detail that lives inside the body of a memory rather than its title.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to read (from a prior search_memory result).",
+        },
+        collection: {
+          type: "string",
+          description:
+            "Which collection the memory lives in. Matches the collection name from search_memory results (e.g. 'josh', 'household').",
+        },
+      },
+      required: ["id", "collection"],
+    },
+  },
 ];
 
 // ── Tool context ───────────────────────────────────────────────────
@@ -193,6 +213,9 @@ export function buildToolExecutor(
           break;
         case "delete_memory":
           result = await handleDeleteMemory(ctx, input);
+          break;
+        case "read_memory":
+          result = await handleReadMemory(ctx, input);
           break;
         default:
           result = { content: `Unknown tool: ${name}`, is_error: true };
@@ -338,5 +361,33 @@ async function handleDeleteMemory(
 
   await ctx.memoryProvider.delete(collection, id);
   return { content: `Memory "${id}" deleted from ${collection}.` };
+}
+
+async function handleReadMemory(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const id = input.id as string;
+  const collection = input.collection as string;
+
+  if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
+    return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
+  }
+
+  const entry = await ctx.memoryProvider.read(collection, id);
+  if (!entry) {
+    return { content: `Memory "${id}" not found in collection "${collection}".`, is_error: true };
+  }
+
+  const fmLines = Object.entries(entry.frontmatter)
+    .map(([k, v]) => {
+      if (Array.isArray(v)) return `${k}: ${v.join(", ")}`;
+      return `${k}: ${String(v)}`;
+    })
+    .join("\n");
+
+  return {
+    content: `[${collection}] ${entry.title} (id: ${entry.id})\n\n--- frontmatter ---\n${fmLines}\n\n--- content ---\n${entry.content}`,
+  };
 }
 

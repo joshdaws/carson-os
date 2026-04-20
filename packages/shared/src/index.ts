@@ -219,6 +219,7 @@ export interface MemorySearchResult {
 
 export interface MemoryProvider {
   search(query: string, collection: string, limit?: number): Promise<MemorySearchResult>;
+  read(collection: string, id: string): Promise<{ id: string; title: string; content: string; frontmatter: Record<string, unknown>; filePath: string } | null>;
   save(collection: string, entry: {
     type: MemoryType;
     title: string;
