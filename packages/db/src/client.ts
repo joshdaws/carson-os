@@ -133,6 +133,15 @@ CREATE TABLE tasks (
   delegation_depth INTEGER NOT NULL DEFAULT 0,
   result TEXT,
   report TEXT,
+  project_id TEXT REFERENCES projects(id),
+  workspace_kind TEXT,
+  workspace_path TEXT,
+  workspace_branch TEXT,
+  timeout_sec INTEGER,
+  approval_expires_at INTEGER,
+  notify_payload TEXT,
+  notified_at INTEGER,
+  notify_agent_id TEXT REFERENCES staff_agents(id),
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   completed_at INTEGER
@@ -141,6 +150,8 @@ CREATE INDEX tasks_household_idx ON tasks(household_id);
 CREATE INDEX tasks_agent_idx ON tasks(agent_id);
 CREATE INDEX tasks_status_idx ON tasks(status);
 CREATE INDEX tasks_parent_idx ON tasks(parent_task_id);
+CREATE INDEX tasks_project_idx ON tasks(project_id);
+CREATE INDEX tasks_pending_notify_idx ON tasks(notified_at);
 
 CREATE TABLE task_events (
   id TEXT PRIMARY KEY,
@@ -305,6 +316,35 @@ CREATE TABLE tool_secrets (
 );
 CREATE INDEX tool_secrets_household_idx ON tool_secrets(household_id);
 CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_id, key_name);
+
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  repo_url TEXT,
+  default_branch TEXT NOT NULL DEFAULT 'main',
+  test_cmd TEXT,
+  dev_cmd TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  metadata TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX projects_household_idx ON projects(household_id);
+CREATE UNIQUE INDEX projects_household_name_unique ON projects(household_id, name);
+
+CREATE TABLE delegation_notifications (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  sent_at INTEGER,
+  delivered_message_id TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE UNIQUE INDEX delegation_notifications_task_kind_unique ON delegation_notifications(task_id, kind);
+CREATE INDEX delegation_notifications_task_idx ON delegation_notifications(task_id);
   `;
 
   const transaction = sqlite.transaction(() => {
@@ -319,10 +359,10 @@ CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_
   });
 
   transaction();
-  console.log("[db] Tables created (v4 schema — 16 tables, delegation support)");
+  console.log("[db] Tables created (v11 schema — 20 tables, v0.4 delegation)");
 }
 
-/** Upgrade existing v3 DB to v4 schema */
+/** Additive upgrade path: applies new columns + tables to an existing DB. Current target: v11. */
 function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigrationHook) {
   const cols = (table: string) => {
     const rows = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -350,7 +390,11 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     !staffCols.has("signal_account") || !staffCols.has("signal_daemon_port") ||
     !memberCols.has("profile_content") || !memberCols.has("profile_updated_at") ||
     !memberCols.has("memory_dir") || !memberCols.has("signal_number") ||
-    !memberCols.has("signal_uuid");
+    !memberCols.has("signal_uuid") ||
+    // v0.4 delegation
+    !taskCols.has("project_id") || !taskCols.has("notify_payload") ||
+    !taskCols.has("notify_agent_id") ||
+    !tableExists("projects") || !tableExists("delegation_notifications");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -588,8 +632,89 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // v0.4 delegation: projects table
+    if (!tableExists("projects")) {
+      sqlite.prepare(`CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id),
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        repo_url TEXT,
+        default_branch TEXT NOT NULL DEFAULT 'main',
+        test_cmd TEXT,
+        dev_cmd TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        metadata TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX projects_household_idx ON projects(household_id)").run();
+      sqlite.prepare("CREATE UNIQUE INDEX projects_household_name_unique ON projects(household_id, name)").run();
+      upgraded = true;
+    }
+
+    // v0.4 delegation: new columns on tasks for workspace + two-phase notifier
+    const taskColsV04 = cols("tasks");
+    if (!taskColsV04.has("project_id")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id)").run();
+      sqlite.prepare("CREATE INDEX IF NOT EXISTS tasks_project_idx ON tasks(project_id)").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("workspace_kind")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN workspace_kind TEXT").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("workspace_path")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN workspace_path TEXT").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("workspace_branch")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN workspace_branch TEXT").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("timeout_sec")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN timeout_sec INTEGER").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("approval_expires_at")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN approval_expires_at INTEGER").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("notify_payload")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN notify_payload TEXT").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("notified_at")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN notified_at INTEGER").run();
+      sqlite.prepare("CREATE INDEX IF NOT EXISTS tasks_pending_notify_idx ON tasks(notified_at)").run();
+      upgraded = true;
+    }
+    if (!taskColsV04.has("notify_agent_id")) {
+      // Backfill: existing delegated tasks (parent_task_id IS NOT NULL) route completion
+      // to agent_id by default. Fresh tasks from v0.4 onward set this explicitly when
+      // CoS delegates on behalf of a kid. See design doc Premise 6 + kid-routing flow.
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN notify_agent_id TEXT REFERENCES staff_agents(id)").run();
+      upgraded = true;
+    }
+
+    // v0.4 delegation: notification audit + dedup
+    if (!tableExists("delegation_notifications")) {
+      sqlite.prepare(`CREATE TABLE delegation_notifications (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        sent_at INTEGER,
+        delivered_message_id TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE UNIQUE INDEX delegation_notifications_task_kind_unique ON delegation_notifications(task_id, kind)").run();
+      sqlite.prepare("CREATE INDEX delegation_notifications_task_idx ON delegation_notifications(task_id)").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded (v10 — custom tool registry + Signal transport)");
+      console.log("[db] Schema upgraded (v11 — v0.4 delegation: projects, tasks workspace/notifier, delegation_notifications)");
     }
   });
 

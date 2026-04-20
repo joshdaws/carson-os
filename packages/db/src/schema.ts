@@ -167,6 +167,17 @@ export const tasks = sqliteTable(
     delegationDepth: integer("delegation_depth").notNull().default(0), // tracks delegation nesting
     result: text("result"),
     report: text("report"),
+    // v0.4 delegation: workspace + project binding
+    projectId: text("project_id"), // FK projects.id. NULL for tool-scoped or non-delegated tasks.
+    workspaceKind: text("workspace_kind"), // 'worktree' | 'tool_sandbox' | NULL
+    workspacePath: text("workspace_path"), // absolute path (worktree or sandbox dir)
+    workspaceBranch: text("workspace_branch"), // for workspace_kind='worktree' only
+    timeoutSec: integer("timeout_sec"), // NULL = no automatic timeout (Developer default)
+    approvalExpiresAt: integer("approval_expires_at", { mode: "timestamp" }), // approval auto-cancels after
+    // v0.4 delegation: two-phase exactly-once notifier
+    notifyPayload: text("notify_payload", { mode: "json" }), // composed before send; flip-invariant with notified_at
+    notifiedAt: integer("notified_at", { mode: "timestamp" }), // set only on successful delivery
+    notifyAgentId: text("notify_agent_id").references(() => staffAgents.id), // completion routes here (kid's personal agent, not CoS)
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     completedAt: integer("completed_at", { mode: "timestamp" }),
@@ -176,6 +187,9 @@ export const tasks = sqliteTable(
     index("tasks_agent_idx").on(t.agentId),
     index("tasks_status_idx").on(t.status),
     index("tasks_parent_idx").on(t.parentTaskId),
+    index("tasks_project_idx").on(t.projectId),
+    // Reconciler scans for terminal tasks whose notification wasn't confirmed delivered
+    index("tasks_pending_notify_idx").on(t.notifiedAt),
   ]
 );
 
@@ -470,6 +484,71 @@ export const customTools = sqliteTable(
     index("custom_tools_household_idx").on(t.householdId),
     index("custom_tools_status_idx").on(t.status),
     uniqueIndex("custom_tools_household_name_unique").on(t.householdId, t.name),
+  ]
+);
+
+// ── 17b. projects ───────────────────────────────────────────────────
+
+/**
+ * Registered projects that Developers can work in. Explicit registration
+ * via Settings UI (folder-scan discovery deferred to v0.5). CarsonOS itself
+ * registers as a project so the `core` specialty uses the same mechanism as
+ * external project maintenance.
+ */
+export const projects = sqliteTable(
+  "projects",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    name: text("name").notNull(),
+    path: text("path").notNull(), // absolute fs path
+    repoUrl: text("repo_url"),
+    defaultBranch: text("default_branch").notNull().default("main"),
+    testCmd: text("test_cmd"), // e.g. 'pnpm test' — empty → verification reports "skipped"
+    devCmd: text("dev_cmd"), // e.g. 'pnpm dev'
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    metadata: text("metadata", { mode: "json" }), // { language?, framework?, notes? }
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("projects_household_idx").on(t.householdId),
+    uniqueIndex("projects_household_name_unique").on(t.householdId, t.name),
+  ]
+);
+
+// ── 17c. delegationNotifications ────────────────────────────────────
+
+/**
+ * Outbound notification audit trail + server-side dedup for Telegram sends.
+ *
+ * The flip-invariant on `tasks.notified_at` is the exactly-once gate;
+ * this table is the audit log + dedup tracker keyed on (task_id, kind) so
+ * a Telegram accept-but-drop followed by a reconciler retry becomes a no-op
+ * instead of a duplicate message. Never consulted by the task FSM itself.
+ */
+export const delegationNotifications = sqliteTable(
+  "delegation_notifications",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id),
+    kind: text("kind").notNull(), // 'completion' | 'failure' | 'approval_request' | 'cancellation'
+    payload: text("payload", { mode: "json" }).notNull(),
+    sentAt: integer("sent_at", { mode: "timestamp" }), // null until delivered to Telegram
+    deliveredMessageId: text("delivered_message_id"), // Telegram message id for dedup
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    uniqueIndex("delegation_notifications_task_kind_unique").on(t.taskId, t.kind),
+    index("delegation_notifications_task_idx").on(t.taskId),
   ]
 );
 
