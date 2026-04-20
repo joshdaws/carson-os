@@ -19,15 +19,17 @@ import {
 } from "@carsonos/db";
 import type { PersonalityInterviewEngine } from "../services/personality-interview.js";
 import type { MultiRelayManager } from "../services/multi-relay-manager.js";
+import type { SignalRelayManager } from "../services/signal-relay-manager.js";
 
 export interface StaffRouteDeps {
   db: Db;
   personalityInterviewEngine: PersonalityInterviewEngine;
   multiRelay?: MultiRelayManager;
+  signalRelay?: SignalRelayManager;
 }
 
 export function createStaffRoutes(deps: StaffRouteDeps): Router {
-  const { db, personalityInterviewEngine, multiRelay } = deps;
+  const { db, personalityInterviewEngine, multiRelay, signalRelay } = deps;
   const router = Router();
 
   // GET / -- list all staff agents (scoped to household)
@@ -169,6 +171,8 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         soulContent: soulContent ?? null,
         visibility: visibility ?? "family",
         telegramBotToken: telegramBotToken ?? null,
+        signalAccount: req.body.signal_account ?? null,
+        signalDaemonPort: req.body.signal_daemon_port ?? null,
         model: model ?? "claude-sonnet-4-6",
         trustLevel: trustLevel ?? "restricted",
         isHeadButler: isHeadButler ?? false,
@@ -180,6 +184,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     if (telegramBotToken && multiRelay) {
       multiRelay.startBot(agent.id).catch((err) => {
         console.error(`[staff] Failed to start bot for new agent:`, err);
+      });
+    }
+
+    // If created with a Signal account, start the Signal relay immediately
+    if (req.body.signal_account && signalRelay) {
+      signalRelay.startAccount(agent.id).catch((err) => {
+        console.error(`[staff] Failed to start Signal relay for new agent:`, err);
       });
     }
 
@@ -212,6 +223,9 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       autonomyLevel,
     } = req.body;
 
+    const signalAccount = req.body.signal_account;
+    const signalDaemonPort = req.body.signal_daemon_port;
+
     const [updated] = await db
       .update(staffAgents)
       .set({
@@ -222,6 +236,8 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         ...(soulContent !== undefined && { soulContent }),
         ...(visibility !== undefined && { visibility }),
         ...(telegramBotToken !== undefined && { telegramBotToken }),
+        ...(signalAccount !== undefined && { signalAccount }),
+        ...(signalDaemonPort !== undefined && { signalDaemonPort }),
         ...(model !== undefined && { model }),
         ...(status !== undefined && { status }),
         ...(autonomyLevel !== undefined && { autonomyLevel }),
@@ -234,6 +250,13 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     if (telegramBotToken && multiRelay) {
       multiRelay.startBot(req.params.id).catch((err) => {
         console.error(`[staff] Failed to start bot after token update:`, err);
+      });
+    }
+
+    // If Signal account was added or changed, start/restart the Signal relay
+    if (signalAccount && signalRelay) {
+      signalRelay.startAccount(req.params.id).catch((err) => {
+        console.error(`[staff] Failed to start Signal relay after account update:`, err);
       });
     }
 
