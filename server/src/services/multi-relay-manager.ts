@@ -360,6 +360,54 @@ export class MultiRelayManager {
       });
     }
 
+    // v0.4: inline-button handler for hire / delegation approval cards.
+    // callback_data format: "<action>:<taskId>" where action is
+    // "approve" | "reject". Grammy only emits callback_query:data when
+    // the payload carries data (filters out non-data callbacks).
+    bot.on("callback_query:data", async (ctx) => {
+      try {
+        const raw = ctx.callbackQuery.data;
+        const [action, taskId] = raw.split(":", 2);
+        if (!taskId || (action !== "approve" && action !== "reject")) {
+          await ctx.answerCallbackQuery({ text: "Unknown action" }).catch(() => {});
+          return;
+        }
+        const approvedBy = String(ctx.from?.id ?? "unknown");
+
+        const result =
+          action === "approve"
+            ? await this.orchestrator.handleHireApproval(taskId, approvedBy)
+            : await this.orchestrator.handleHireRejection(taskId, approvedBy);
+
+        if (!result.ok) {
+          await ctx.answerCallbackQuery({ text: result.error.slice(0, 200) }).catch(() => {});
+          return;
+        }
+
+        if (result.alreadyResolved) {
+          await ctx.answerCallbackQuery({ text: "Already handled" }).catch(() => {});
+          return;
+        }
+
+        await ctx
+          .answerCallbackQuery({ text: action === "approve" ? "Approved" : "Rejected" })
+          .catch(() => {});
+
+        // Strip the buttons and stamp the card so the user can see what they chose.
+        try {
+          const original = ctx.callbackQuery.message?.text ?? "";
+          const stamp = action === "approve" ? "✅ Approved" : "❌ Rejected";
+          await ctx.editMessageText(`${stamp}\n\n${original}`, { reply_markup: undefined });
+        } catch {
+          // Telegram refuses edits after ~48h or on certain modifications —
+          // not load-bearing for correctness, swallow.
+        }
+      } catch (err) {
+        console.error(`[multi-relay:${agent.name}] callback_query error:`, err);
+        try { await ctx.answerCallbackQuery({ text: "Error handling action" }); } catch { /* swallow */ }
+      }
+    });
+
     // Clear any stale webhook, then start with runner
     try {
       await bot.api.deleteWebhook({ drop_pending_updates: false });
@@ -789,9 +837,20 @@ export class MultiRelayManager {
 
   /**
    * Send a message to a Telegram user via a specific agent's bot.
-   * Used by the scheduler for delivering scheduled task results.
+   * v0.4: accepts optional `replyMarkup` (inline buttons) and returns the
+   * message id of the sent message — the notifier stores it in
+   * delegation_notifications for server-side dedup so a retry after a
+   * silent Telegram success becomes a no-op.
+   *
+   * When `replyMarkup` is present, we truncate to a single message (inline
+   * keyboards can't span chunks) instead of splitting the payload.
    */
-  async sendMessage(agentId: string, telegramUserId: string, text: string): Promise<void> {
+  async sendMessage(
+    agentId: string,
+    telegramUserId: string,
+    text: string,
+    options: { replyMarkup?: unknown } = {},
+  ): Promise<{ messageId?: string }> {
     const managed = this.bots.get(agentId);
     if (!managed?.running) {
       throw new Error(`Bot for agent ${agentId} is not running`);
@@ -799,18 +858,44 @@ export class MultiRelayManager {
 
     const { markdownToTelegramHtml, chunkMessage } = await import("./telegram-format.js");
     const html = markdownToTelegramHtml(text);
-    const chunks = chunkMessage(html);
 
+    if (options.replyMarkup) {
+      // Inline keyboard path — single message only.
+      const truncated =
+        html.length > MAX_MESSAGE_LENGTH ? html.slice(0, MAX_MESSAGE_LENGTH - 20) + "…" : html;
+      try {
+        const sent = await managed.bot.api.sendMessage(telegramUserId, truncated, {
+          parse_mode: "HTML",
+          reply_markup: options.replyMarkup as never,
+        });
+        return { messageId: String(sent.message_id) };
+      } catch {
+        const plain = text.length > MAX_MESSAGE_LENGTH - 20 ? text.slice(0, MAX_MESSAGE_LENGTH - 20) : text;
+        const sent = await managed.bot.api.sendMessage(telegramUserId, plain, {
+          reply_markup: options.replyMarkup as never,
+        });
+        return { messageId: String(sent.message_id) };
+      }
+    }
+
+    // Chunk path — no markup, text can span multiple messages.
+    const chunks = chunkMessage(html);
+    let lastMessageId: string | undefined;
     for (const chunk of chunks) {
       if (!chunk.trim()) continue;
       try {
-        await managed.bot.api.sendMessage(telegramUserId, chunk, { parse_mode: "HTML" });
+        const sent = await managed.bot.api.sendMessage(telegramUserId, chunk, { parse_mode: "HTML" });
+        lastMessageId = String(sent.message_id);
       } catch {
-        // Fallback to plain text
-        await managed.bot.api.sendMessage(telegramUserId, text.slice(0, MAX_MESSAGE_LENGTH));
+        const sent = await managed.bot.api.sendMessage(
+          telegramUserId,
+          text.slice(0, MAX_MESSAGE_LENGTH),
+        );
+        lastMessageId = String(sent.message_id);
         break;
       }
     }
+    return { messageId: lastMessageId };
   }
 
   /**

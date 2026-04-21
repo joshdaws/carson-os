@@ -308,6 +308,7 @@ async function main() {
     taskEngine,
   );
   orchestrator.setOversight(oversight);
+  orchestrator.setNotifier(notifier);
   dispatcher.setDelegationContext(orchestrator, oversight);
   constitutionEngine.setDelegation(orchestrator, oversight);
   console.log("[engine] Delegation service ready (v0.4: MCP delegate_task + hire flow)");
