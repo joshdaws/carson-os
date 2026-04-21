@@ -35,6 +35,15 @@ export interface ReviewResult {
   reason: string;
 }
 
+export interface HireProposal {
+  householdId: string;
+  proposedByAgentId: string;
+  role: string; // 'Developer'
+  specialty: string; // 'tools' | 'project' | 'core'
+  reason: string; // why this hire is needed
+  proposedName?: string; // 'Bob', 'Alice', etc.
+}
+
 // -- Oversight -------------------------------------------------------
 
 export class CarsonOversight {
@@ -170,6 +179,37 @@ export class CarsonOversight {
           reason: "Supervised agent: all tasks require parental approval",
         };
     }
+  }
+
+  /**
+   * Review a Developer hire proposal.
+   *
+   * Hire proposals always escalate to the principal regardless of the proposing
+   * agent's autonomyLevel. Even an `autonomous` Chief of Staff cannot
+   * self-approve a new staff member — the household decides who joins it.
+   *
+   * Returns `{ approved: false }` as the always-answer, paired with an
+   * `oversight.escalated` broadcast tagged `kind: "hire"` so the Telegram
+   * relay can render the approval card.
+   */
+  async reviewHireProposal(proposal: HireProposal): Promise<ReviewResult> {
+    this.broadcast({
+      type: "oversight.escalated",
+      data: {
+        kind: "hire",
+        householdId: proposal.householdId,
+        proposedByAgentId: proposal.proposedByAgentId,
+        role: proposal.role,
+        specialty: proposal.specialty,
+        reason: proposal.reason,
+        proposedName: proposal.proposedName,
+      },
+    });
+
+    return {
+      approved: false,
+      reason: "Hire proposals always require principal approval",
+    };
   }
 
   // -- Private helpers -----------------------------------------------
