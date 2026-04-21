@@ -11,6 +11,7 @@ import { SettingsPage } from "./pages/Settings";
 import { SchedulesPage } from "./pages/Schedules";
 import { OnboardingPage } from "./pages/Onboarding";
 import ToolsPage from "./pages/Tools";
+import { ProjectsPage } from "./pages/Projects";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -80,11 +81,12 @@ export function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/household" element={<HouseholdPage />} />
           <Route path="/constitution" element={<ConstitutionPage />} />
-          {/* <Route path="/tasks" element={<TasksPage />} /> — hidden until delegation MVP */}
+          <Route path="/tasks" element={<TasksPage />} />
           <Route path="/staff/:staffId" element={<StaffDetailPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
           <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

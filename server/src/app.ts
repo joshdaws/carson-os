@@ -40,6 +40,7 @@ import { createActivityRoutes } from "./routes/activity.js";
 import { createSettingsRoutes } from "./routes/settings.js";
 import { createProfileRoutes } from "./routes/profiles.js";
 import { createScheduledTaskRoutes } from "./routes/scheduled-tasks.js";
+import { createProjectRoutes } from "./routes/projects.js";
 
 const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -111,6 +112,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/activity", createActivityRoutes(db));
   app.use("/api/settings", createSettingsRoutes(db));
   app.use("/api/scheduled-tasks", createScheduledTaskRoutes(db));
+  app.use("/api/projects", createProjectRoutes(db));
   app.use("/api/tools", createToolRoutes({ db, toolRegistry }));
   app.use(
     "/api/members",

@@ -16,6 +16,7 @@ import {
   WifiOff,
   Menu,
   X,
+  FolderGit2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -178,8 +179,10 @@ export function Layout() {
           System
         </div>
         <NavItem to="/conversations" icon={MessageSquare} label="Conversations" />
+        <NavItem to="/tasks" icon={ListTodo} label="Tasks" />
         <NavItem to="/schedules" icon={Clock} label="Schedules" />
         <NavItem to="/tools" icon={Wrench} label="Tools" />
+        <NavItem to="/projects" icon={FolderGit2} label="Projects" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
 
