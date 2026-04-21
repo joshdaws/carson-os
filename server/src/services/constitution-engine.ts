@@ -233,6 +233,8 @@ export class ConstitutionEngine {
   private imapProvider: ImapProvider | null;
   private hardEvaluatorsEnabled: boolean;
   private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
+  private delegationService: import("./delegation-service.js").DelegationService | null = null;
+  private oversight: import("./carson-oversight.js").CarsonOversight | null = null;
 
   constructor(config: EngineConfig) {
     this.db = config.db;
@@ -250,6 +252,15 @@ export class ConstitutionEngine {
   /** Set the multi-relay manager (called after construction because of circular dependency). */
   setMultiRelay(relay: import("./multi-relay-manager.js").MultiRelayManager): void {
     this.multiRelay = relay;
+  }
+
+  /** Late-bind the v0.4 delegation service + oversight (boot order: constitution → tasks → oversight → dispatcher → service). */
+  setDelegation(
+    service: import("./delegation-service.js").DelegationService,
+    oversight: import("./carson-oversight.js").CarsonOversight,
+  ): void {
+    this.delegationService = service;
+    this.oversight = oversight;
   }
 
   /** Invalidate the clause cache for a household (call after clause edits). */
@@ -401,8 +412,11 @@ export class ConstitutionEngine {
       agentId,
     );
 
-    // Delegation is not active in v0.1 — will be enabled in a future version.
-    // When re-enabled, filter delegation targets by status === "active".
+    // v0.4: delegation happens via MCP tool calls (delegate_task, propose_hire,
+    // etc.). Target discovery is encoded in the tool descriptions themselves +
+    // list_agents; no separate prompt section needed. The field stays in
+    // compileSystemPrompt's interface for forward compatibility (e.g., future
+    // "Available specialists" auto-listing) but currently passes null.
     const delegationInstr: string | null = null;
 
     // -- 5. Load conversation history + session state -----------------
@@ -548,6 +562,10 @@ export class ConstitutionEngine {
         allMemberCollections,
         allowedCollections,
         multiRelay: this.multiRelay ?? undefined,
+        delegationService: this.delegationService ?? undefined,
+        oversight: this.oversight ?? undefined,
+        // callerTaskId is not set for normal agent turns — only the Dispatcher
+        // path (Lane E) sets it when running tool calls inside a child task.
       };
 
       const built = await this.toolRegistry.buildExecutor(executorCtx);

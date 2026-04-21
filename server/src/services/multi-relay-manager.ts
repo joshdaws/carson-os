@@ -19,7 +19,7 @@ import type { Db } from "@carsonos/db";
 import { staffAgents, familyMembers, staffAssignments } from "@carsonos/db";
 import { eq, and } from "drizzle-orm";
 import type { ConstitutionEngine } from "./constitution-engine.js";
-import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
+import type { DelegationService } from "./delegation-service.js";
 import type { Adapter } from "./subprocess-adapter.js";
 import { createTelegramStream } from "./telegram-streaming.js";
 import { markdownToTelegramHtml, stripThinkingBlocks } from "./telegram-format.js";
@@ -30,7 +30,7 @@ interface MultiRelayConfig {
   db: Db;
   adapter: Adapter;
   engine: ConstitutionEngine;
-  orchestrator: DelegationOrchestrator;
+  orchestrator: DelegationService;
 }
 
 interface ManagedBot {
@@ -102,7 +102,7 @@ export class MultiRelayManager {
   private db: Db;
   private adapter: Adapter;
   private engine: ConstitutionEngine;
-  private orchestrator: DelegationOrchestrator;
+  private orchestrator: DelegationService;
   private bots = new Map<string, ManagedBot>();
   private rateLimiter = new SharedRateLimiter();
   private debounceBuffers = new Map<string, DebounceBuffer>();
@@ -618,25 +618,9 @@ export class MultiRelayManager {
       return;
     }
 
-    // 2. Delegation orchestrator
-    const conversationId = await this.getConversationId(
-      agentId, member.id, member.householdId,
-    );
-
-    const delegationResult = await this.orchestrator.handleAgentResponse(
-      agentId, member.id, member.householdId, conversationId, engineResult.response,
-    );
-
-    if (delegationResult.warnings?.length) {
-      for (const warning of delegationResult.warnings) {
-        console.warn(`[multi-relay:${agentName}] Delegation warning: ${warning}`);
-      }
-    }
-
-    // 3. Send final formatted response
-    const finalText = delegationResult.delegated
-      ? (delegationResult.userMessage || "Working on that for you. I'll have an answer shortly.")
-      : (delegationResult.userMessage || engineResult.response);
+    // 2. Send the agent's response. v0.4 delegation happens via MCP tool
+    // calls during the agent's turn — no post-response XML parsing step.
+    const finalText = engineResult.response;
 
     if (streamMsgId) {
       // Streaming already formatted HTML in-place — nothing more to do.

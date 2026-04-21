@@ -50,7 +50,7 @@ import {
   conversations,
 } from "@carsonos/db";
 import type { ConstitutionEngine } from "./constitution-engine.js";
-import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
+import type { DelegationService } from "./delegation-service.js";
 import { createSignalStream, markdownToSignalText, chunkSignalMessage } from "./signal-streaming.js";
 import { stripThinkingBlocks } from "./telegram-format.js";
 
@@ -59,7 +59,7 @@ import { stripThinkingBlocks } from "./telegram-format.js";
 export interface SignalRelayConfig {
   db: Db;
   engine: ConstitutionEngine;
-  orchestrator: DelegationOrchestrator;
+  orchestrator: DelegationService;
 }
 
 /** A staff agent row augmented with Signal-specific columns. */
@@ -221,7 +221,7 @@ class RateLimiter {
 export class SignalRelayManager {
   private db: Db;
   private engine: ConstitutionEngine;
-  private orchestrator: DelegationOrchestrator;
+  private orchestrator: DelegationService;
 
   private accounts = new Map<string, ManagedAccount>();
   private rateLimiter = new RateLimiter();
@@ -724,32 +724,10 @@ export class SignalRelayManager {
       return;
     }
 
-    // Run through delegation orchestrator
-    const conversationId = await this.getOrCreateConversationId(
-      agentId,
-      member.id,
-      member.householdId,
-    );
-
-    const delegationResult = await this.orchestrator.handleAgentResponse(
-      agentId,
-      member.id,
-      member.householdId,
-      conversationId,
-      engineResult.response,
-    );
-
-    if (delegationResult.warnings?.length) {
-      for (const w of delegationResult.warnings) {
-        console.warn(`[signal-relay:${managed.agentName}] Delegation warning: ${w}`);
-      }
-    }
-
-    // If delegated, the engine response already went out via stream.finish().
-    // Send the delegation acknowledgement if the orchestrator produced one.
-    if (delegationResult.delegated && delegationResult.userMessage) {
-      await this.sendFormatted(daemonPort, senderNumber, delegationResult.userMessage);
-    }
+    // v0.4: delegation happens during the agent's turn via MCP tool calls
+    // (delegate_task etc.), not as a post-processing XML-parse step. The
+    // engine response is already streamed to the user above; nothing more
+    // to do here.
   }
 
   // ── Sending ─────────────────────────────────────────────────────────

@@ -40,6 +40,11 @@ import {
   executeScriptTool,
 } from "./custom-tools/index.js";
 import type { CustomRegistration } from "./custom-tools/index.js";
+import {
+  DELEGATION_TOOLS,
+  DELEGATION_TOOL_NAMES,
+  handleDelegationTool,
+} from "./delegation/delegation-tools.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -89,6 +94,13 @@ export interface ToolExecutionContext {
   allowedCollections?: string[];
   /** Multi-relay manager for bot control (pause/resume agents) */
   multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
+  /** v0.4 delegation: service that creates + dispatches child tasks via MCP tool calls. */
+  delegationService?: import("./delegation-service.js").DelegationService;
+  /** v0.4 delegation: oversight for hire proposal escalation. */
+  oversight?: import("./carson-oversight.js").CarsonOversight;
+  /** v0.4 delegation: the caller's current task row id, when this executor is
+   * running inside a task (Dispatcher path). undefined for normal agent turns. */
+  callerTaskId?: string;
 }
 
 // ── Trust level → Claude Code built-in tools ────────────────────────
@@ -117,6 +129,14 @@ const CUSTOM_TOOL_MGMT_GRANTS = [
   "redact_recent_user_message",
 ];
 
+// v0.4 delegation tools — granted to agents who can initiate delegation.
+// Head butler (CoS) gets the full set including register_project. Personal
+// agents get the shorter set; the hire flow routes through CoS anyway.
+const DELEGATION_GRANTS_FULL = [
+  "delegate_task", "propose_hire", "cancel_task", "list_active_tasks", "register_project",
+];
+const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active_tasks"];
+
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
     "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
@@ -124,12 +144,14 @@ const DEFAULT_GRANTS: Record<string, string[]> = {
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
     ...CUSTOM_TOOL_MGMT_GRANTS,
+    ...DELEGATION_GRANTS_FULL,
   ],
   personal: [
     "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
+    ...DELEGATION_GRANTS_PERSONAL,
   ],
   tutor: [
     "search_memory", "read_memory", "save_memory", "update_instructions",
@@ -236,6 +258,18 @@ export class ToolRegistry {
       this.tools.set(def.name, {
         definition: def,
         category: "redaction",
+        tier: "builtin",
+      });
+    }
+
+    // v0.4 delegation tools — system tier, role-gated via DEFAULT_GRANTS so
+    // only head_butler + personal see them unless explicitly granted. Kept
+    // in "system" tier because the registry already special-cases routing
+    // via DELEGATION_TOOL_NAMES in buildExecutor().
+    for (const def of DELEGATION_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "delegation",
         tier: "builtin",
       });
     }
@@ -625,6 +659,30 @@ export class ToolRegistry {
       // Agent guide loader
       if (name === "get_agent_guide") {
         const result = await handleAgentGuideTool(name, input);
+        calls.push({ name, input, result });
+        return result;
+      }
+
+      // v0.4 delegation tools (delegate_task, propose_hire, cancel_task,
+      // list_active_tasks, register_project) — routed to the delegation service.
+      if (DELEGATION_TOOL_NAMES.has(name)) {
+        if (!ctx.delegationService || !ctx.oversight) {
+          const result: ToolResult = {
+            content: `Delegation tool '${name}' called but delegationService/oversight not wired into context.`,
+            is_error: true,
+          };
+          calls.push({ name, input, result });
+          return result;
+        }
+        const result = await handleDelegationTool(name, input, {
+          db: ctx.db,
+          agentId: ctx.agentId,
+          householdId: ctx.householdId,
+          memberId: ctx.memberId,
+          callerTaskId: ctx.callerTaskId,
+          delegationService: ctx.delegationService,
+          oversight: ctx.oversight,
+        });
         calls.push({ name, input, result });
         return result;
       }

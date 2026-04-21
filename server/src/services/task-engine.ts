@@ -39,6 +39,18 @@ export interface CreateTaskParams {
   description?: string;
   requiresApproval?: boolean;
   delegationDepth?: number;
+  /** v0.4 delegation: which project (if any) this task runs against. */
+  projectId?: string;
+  /** v0.4 delegation: 'worktree' | 'tool_sandbox' | undefined (not yet provisioned). */
+  workspaceKind?: "worktree" | "tool_sandbox";
+  workspacePath?: string;
+  workspaceBranch?: string;
+  /** v0.4 delegation: NULL = no wall-clock timeout (Developer default). */
+  timeoutSec?: number | null;
+  /** v0.4 delegation: who receives the completion message. Defaults to `agentId` when null. */
+  notifyAgentId?: string;
+  /** v0.4 delegation: principal approval auto-cancels after this epoch. */
+  approvalExpiresAt?: Date;
 }
 
 interface TaskFilters {
@@ -88,6 +100,13 @@ export class TaskEngine {
         requiresApproval,
         delegationDepth,
         status: "pending",
+        projectId: params.projectId ?? null,
+        workspaceKind: params.workspaceKind ?? null,
+        workspacePath: params.workspacePath ?? null,
+        workspaceBranch: params.workspaceBranch ?? null,
+        timeoutSec: params.timeoutSec ?? null,
+        notifyAgentId: params.notifyAgentId ?? null,
+        approvalExpiresAt: params.approvalExpiresAt ?? null,
       })
       .returning();
 

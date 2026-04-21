@@ -34,7 +34,7 @@ import { InterviewEngine } from "./services/interview.js";
 import { ProfileInterviewEngine } from "./services/profile-interview.js";
 import { PersonalityInterviewEngine } from "./services/personality-interview.js";
 import { Dispatcher } from "./services/dispatcher.js";
-import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
+import { DelegationService } from "./services/delegation-service.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { SignalRelayManager } from "./services/signal-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
@@ -259,13 +259,15 @@ async function main() {
   await dispatcher.recoverStuckTasks();
   console.log("[engine] Dispatcher ready (stuck tasks recovered)");
 
-  // 6c. Delegation orchestrator (coordinates delegation lifecycle)
-  const orchestrator = new DelegationOrchestrator(
+  // 6c. Delegation service (coordinates delegation lifecycle; v0.4)
+  const orchestrator = new DelegationService(
     { db, adapter, broadcast: eventBus.publish },
     dispatcher,
     taskEngine,
   );
-  console.log("[engine] Delegation orchestrator ready");
+  orchestrator.setOversight(oversight);
+  constitutionEngine.setDelegation(orchestrator, oversight);
+  console.log("[engine] Delegation service ready (v0.4: MCP delegate_task + hire flow)");
 
   // 7. Telegram multi-relay (created before app so staff routes can trigger bot starts)
   const multiRelay = new MultiRelayManager({
@@ -309,7 +311,7 @@ async function main() {
   eventBus.on("project.completed", (event) => {
     if (!event.data) return;
     const { parentTaskId } = event.data as { parentTaskId: string };
-    orchestrator.handleProjectCompleted(parentTaskId).catch((err) => {
+    orchestrator.handleProjectCompleted(parentTaskId).catch((err: unknown) => {
       console.error("[events] Failed to handle project completion:", err);
     });
   });
