@@ -1,17 +1,37 @@
 /**
  * Task Dispatcher -- execution orchestrator for internal agent tasks.
  *
- * Manages the lifecycle of tasks assigned to internal specialist agents
- * (tutor, coach, scheduler, etc.). Handles per-project isolation,
- * same-project queuing, cross-project parallelism, progress parsing,
- * result extraction, and project completion detection.
+ * v0.1 surface (preserved): tutor/coach/scheduler-style tasks using the
+ * <progress>/<result> XML markers, no tools, same-project queuing.
+ *
+ * v0.4 addition: Developer tasks (custom specialty + `tools`/`project`/`core`).
+ * These run with:
+ *   - a provisioned workspace (tool sandbox or git worktree)
+ *   - cwd + maxTurns=200 passed to the adapter
+ *   - MCP tools (delegate_task, create_*_tool, etc.) with callerTaskId set
+ *     so delegate_task depth-2 enforcement works
+ *   - Claude Code builtin tools per trust level (full trust → Bash/Read/...)
+ *   - on terminal state: notifier.prepare + notifier.deliver for two-phase
+ *     exactly-once Telegram delivery
+ *
+ * Boot reconciliation (recoverStuckTasks extended): in addition to the existing
+ * "mark stuck in_progress → failed" path, we now also drive Phase-2 notifier
+ * replay for any terminal task with notify_payload set + notified_at null.
+ * 100ms stagger between sends avoids Telegram rate-limit bursts.
  */
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { tasks, taskEvents, staffAgents } from "@carsonos/db";
+import { tasks, taskEvents, staffAgents, projects } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
-import type { BroadcastFn } from "./event-bus.js";
+import type { BroadcastFn, AppEvent } from "./event-bus.js";
+import { WorkspaceProvider, slugify, type ProvisionedWorkspace } from "./delegation/workspace.js";
+import { DelegationNotifier, type NotifyPayload } from "./delegation/notifier.js";
+import { composeSummaryCard, renderSummaryCardText, type DeveloperSpecialty } from "./delegation/summary-card.js";
+import { templateForSpecialty } from "./delegation/specialty-templates/index.js";
+import type { ToolRegistry } from "./tool-registry.js";
+import type { DelegationService } from "./delegation-service.js";
+import type { CarsonOversight } from "./carson-oversight.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -19,6 +39,10 @@ interface DispatcherConfig {
   db: Db;
   adapter: Adapter;
   broadcast: BroadcastFn;
+  /** v0.4: optional. Required for Developer tasks; non-Developer tasks still run. */
+  workspace?: WorkspaceProvider;
+  notifier?: DelegationNotifier;
+  toolRegistry?: ToolRegistry;
 }
 
 interface RunningSlot {
@@ -43,6 +67,14 @@ export class Dispatcher {
   private db: Db;
   private adapter: Adapter;
   private broadcast: BroadcastFn;
+  private workspace: WorkspaceProvider | null;
+  private notifier: DelegationNotifier | null;
+  private toolRegistry: ToolRegistry | null;
+  private delegationService: DelegationService | null = null;
+  private oversight: CarsonOversight | null = null;
+
+  /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
+  private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
 
   /** Tracks running agents. Key = `${agentId}:${parentTaskId || 'standalone'}` */
   private running = new Map<string, RunningSlot>();
@@ -51,6 +83,19 @@ export class Dispatcher {
     this.db = config.db;
     this.adapter = config.adapter;
     this.broadcast = config.broadcast;
+    this.workspace = config.workspace ?? null;
+    this.notifier = config.notifier ?? null;
+    this.toolRegistry = config.toolRegistry ?? null;
+  }
+
+  /** Late binding for v0.4 delegation context (oversight + service are created
+   * after Dispatcher construction; setup via server/index.ts after boot). */
+  setDelegationContext(
+    delegationService: DelegationService,
+    oversight: CarsonOversight,
+  ): void {
+    this.delegationService = delegationService;
+    this.oversight = oversight;
   }
 
   // -- Public API -----------------------------------------------------
@@ -67,19 +112,23 @@ export class Dispatcher {
       return;
     }
 
-    // Load the agent and verify it's internal
     const agent = await this.loadAgent(task.agentId);
     if (!agent) {
       await this.failTask(taskId, task.agentId, "Agent not found");
       return;
     }
 
-    if (agent.visibility !== "internal") {
-      await this.failTask(taskId, agent.id, `Agent "${agent.name}" is not an internal agent (visibility: ${agent.visibility})`);
+    // v0.4: accept internal agents (tutor/coach/scheduler) AND family-visible
+    // Developers (staffRole=custom with tools/project/core specialty). Family
+    // kid/parent personal agents are never dispatched — they run on Telegram
+    // turns, not tasks.
+    const isDeveloper = this.isDeveloperAgent(agent);
+    if (agent.visibility !== "internal" && !isDeveloper) {
+      await this.failTask(taskId, agent.id, `Agent "${agent.name}" is not dispatchable (visibility: ${agent.visibility})`);
       return;
     }
 
-    // Enforce delegation depth limit
+    // Enforce delegation depth limit (max 2 levels counting the principal).
     if (task.delegationDepth > 1) {
       await this.failTask(taskId, agent.id, `Delegation depth ${task.delegationDepth} exceeds maximum of 1`);
       return;
@@ -89,59 +138,102 @@ export class Dispatcher {
     const slot = this.running.get(slotKey);
 
     if (slot) {
-      // Agent is already running a task for this project -- queue
       slot.queue.push(taskId);
       return;
     }
 
-    // No running task for this project -- execute
-    await this.executeTask(taskId, agent, slotKey);
+    if (isDeveloper) {
+      await this.executeDeveloperTask(taskId, agent, slotKey);
+    } else {
+      await this.executeTask(taskId, agent, slotKey);
+    }
+  }
+
+  private isDeveloperAgent(agent: { staffRole: string; specialty: string | null }): boolean {
+    return (
+      agent.staffRole === "custom" &&
+      (agent.specialty === "tools" ||
+        agent.specialty === "project" ||
+        agent.specialty === "core")
+    );
   }
 
   /**
-   * Recover tasks that were in_progress when the server stopped.
-   * Marks them failed and re-queues them as new pending tasks.
+   * Recover tasks that were in_progress when the server stopped, AND drive
+   * Phase-2 notifier replay for terminal tasks whose notification didn't
+   * land (design premise 14: the flip-invariant on tasks.notified_at is
+   * the exactly-once gate; prepared-but-undelivered rows are replayed on
+   * boot with a 100ms stagger to avoid Telegram rate-limit bursts).
    */
   async recoverStuckTasks(): Promise<void> {
+    // --- 1. Stuck in_progress → failed (existing behavior) -----------
     const stuck = await this.db
       .select()
       .from(tasks)
       .where(eq(tasks.status, "in_progress"));
 
-    if (stuck.length === 0) return;
-
-    console.log(`[dispatcher] Recovering ${stuck.length} stuck task(s)`);
+    if (stuck.length > 0) {
+      console.log(`[dispatcher] Recovering ${stuck.length} stuck task(s)`);
+    }
 
     for (const task of stuck) {
-      // Mark as failed
+      const isDeveloper = task.workspaceKind != null;
+
       await this.db
         .update(tasks)
         .set({
           status: "failed",
-          result: "Server restart - task interrupted",
+          result: "host restart during run",
           updatedAt: new Date(),
         })
         .where(eq(tasks.id, task.id));
 
-      await this.logEvent(
-        task.id,
-        "failed",
-        task.agentId,
-        "Server restart - task interrupted",
-        { recovered: true },
-      );
+      await this.logEvent(task.id, "failed", task.agentId, "host restart during run", { recovered: true });
 
       this.broadcast({
         type: "task.failed",
         data: {
           taskId: task.id,
           agentId: task.agentId,
-          error: "Server restart - task interrupted",
+          error: "host restart during run",
           recovered: true,
         },
       });
 
-      // Re-queue: create a new pending task with the same params
+      // For Developer tasks, compose a failure notification so the parent
+      // agent gets a "server restarted — task didn't finish" message. For
+      // non-Developer tasks, preserve the v0.1 auto-re-queue.
+      if (isDeveloper && this.notifier) {
+        const specialty =
+          task.workspaceKind === "tool_sandbox" ? "tools" : "project";
+        const card = composeSummaryCard({
+          kind: "failure",
+          task: {
+            id: task.id,
+            title: task.title,
+            workspaceKind: task.workspaceKind,
+            workspaceBranch: task.workspaceBranch ?? null,
+            createdAt: task.createdAt,
+            completedAt: new Date(),
+          },
+          specialty,
+          reason: "host restart during run",
+        });
+        await this.notifier.prepare(task.id, {
+          terminalStatus: "failed",
+          payload: {
+            kind: "failure",
+            text: renderSummaryCardText(card),
+            householdId: task.householdId,
+            memberId: task.requestedBy ?? task.agentId,
+            agentId: task.notifyAgentId ?? task.agentId,
+            summaryCard: card,
+          },
+        });
+        continue;
+      }
+
+      // v0.1 non-Developer re-queue
       const [requeued] = await this.db
         .insert(tasks)
         .values({
@@ -152,7 +244,7 @@ export class Dispatcher {
           assignedToMembers: task.assignedToMembers as string[] | null,
           title: task.title,
           description: task.description,
-          requiresApproval: false, // skip approval on recovery
+          requiresApproval: false,
           delegationDepth: task.delegationDepth,
           status: "pending",
         })
@@ -168,13 +260,431 @@ export class Dispatcher {
 
       this.broadcast({
         type: "task.requeued",
-        data: {
-          taskId: requeued.id,
-          originalTaskId: task.id,
-          agentId: task.agentId,
-        },
+        data: { taskId: requeued.id, originalTaskId: task.id, agentId: task.agentId },
       });
     }
+
+    // --- 2. Phase-2 notifier replay ----------------------------------
+    if (!this.notifier) return;
+
+    const pending = await this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(isNotNull(tasks.notifyPayload), isNull(tasks.notifiedAt)));
+
+    if (pending.length === 0) return;
+
+    console.log(`[dispatcher] Replaying ${pending.length} pending notification(s)`);
+    for (let i = 0; i < pending.length; i++) {
+      const { id } = pending[i];
+      try {
+        await this.notifier.deliver(id);
+      } catch (err) {
+        console.error(`[dispatcher] notifier replay for ${id} threw:`, err);
+      }
+      // Stagger to avoid Telegram rate-limit bursts on large queues.
+      if (i < pending.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+
+  /**
+   * Subscribe to the task.cancelled broadcast so we can tear down the
+   * workspace without the caller needing to know about it. Boot code in
+   * index.ts wires eventBus.on("task.cancelled", (e) => dispatcher.handleCancelBroadcast(e)).
+   */
+  async handleCancelBroadcast(event: AppEvent): Promise<void> {
+    const data = event.data as { taskId?: string } | undefined;
+    const taskId = data?.taskId;
+    if (!taskId) return;
+    const workspace = this.workspaceByTaskId.get(taskId);
+    if (!workspace || !this.workspace) return;
+    try {
+      await this.workspace.teardown(workspace);
+    } catch (err) {
+      console.error(`[dispatcher] teardown on cancel failed for ${taskId}:`, err);
+    }
+    this.workspaceByTaskId.delete(taskId);
+  }
+
+  // -- v0.4 Developer task execution ---------------------------------
+
+  /**
+   * Run a Developer task end-to-end:
+   *   1. Resolve project (for project/core specialties).
+   *   2. Provision workspace (git worktree or tool sandbox).
+   *   3. Persist workspace_kind/path/branch on the task row.
+   *   4. Build MCP tool executor (with callerTaskId=taskId for depth-2).
+   *   5. adapter.execute with cwd + maxTurns=200 + full trust builtins.
+   *   6. Compose SummaryCard + deliver notification via the two-phase notifier.
+   *   7. Tool sandbox: teardown on terminal. Worktree: leave for PR poller /
+   *      cancel broadcast (review iterations reuse the worktree).
+   */
+  private async executeDeveloperTask(
+    taskId: string,
+    agent: {
+      id: string;
+      name: string;
+      staffRole: string;
+      specialty: string | null;
+      roleContent: string;
+      soulContent: string | null;
+      operatingInstructions: string | null;
+      trustLevel: string;
+      model: string;
+      householdId: string;
+    },
+    slotKey: string,
+  ): Promise<void> {
+    const task = await this.loadTask(taskId);
+    if (!task) {
+      this.running.delete(slotKey);
+      return;
+    }
+
+    const specialty = (agent.specialty ?? "tools") as DeveloperSpecialty;
+    this.running.set(slotKey, { taskId, queue: this.running.get(slotKey)?.queue ?? [] });
+
+    // -- 1. Resolve project (for project/core) -----------------------
+    let project: {
+      id: string;
+      name: string;
+      path: string;
+      defaultBranch: string;
+      testCmd: string | null;
+      repoUrl: string | null;
+    } | null = null;
+    if ((specialty === "project" || specialty === "core") && task.projectId) {
+      const [row] = await this.db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, task.projectId))
+        .limit(1);
+      if (row) project = row;
+    }
+    if ((specialty === "project" || specialty === "core") && !project) {
+      await this.failDeveloperTask(
+        task,
+        agent,
+        specialty,
+        `${specialty} specialty requires a registered project (task.projectId=${task.projectId ?? "null"})`,
+      );
+      return;
+    }
+
+    // -- 2. Provision workspace --------------------------------------
+    if (!this.workspace) {
+      await this.failDeveloperTask(
+        task,
+        agent,
+        specialty,
+        "Dispatcher is missing a WorkspaceProvider (boot wiring incomplete)",
+      );
+      return;
+    }
+
+    let workspace: ProvisionedWorkspace;
+    try {
+      if (specialty === "tools") {
+        workspace = await this.workspace.provision({
+          kind: "tool_sandbox",
+          runId: taskId,
+        });
+      } else {
+        workspace = await this.workspace.provision({
+          kind: "worktree",
+          projectName: project!.name,
+          projectPath: project!.path,
+          defaultBranch: project!.defaultBranch,
+          runId: taskId,
+          slug: slugify(task.title),
+        });
+      }
+    } catch (err) {
+      await this.failDeveloperTask(
+        task,
+        agent,
+        specialty,
+        `workspace provision failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    this.workspaceByTaskId.set(taskId, workspace);
+
+    // -- 3. Persist workspace metadata + transition to in_progress ---
+    await this.db
+      .update(tasks)
+      .set({
+        status: "in_progress",
+        workspaceKind: workspace.kind,
+        workspacePath: workspace.path,
+        workspaceBranch: workspace.branch ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, taskId));
+
+    await this.logEvent(taskId, "started", agent.id, `Developer task started (${specialty})`, {
+      workspaceKind: workspace.kind,
+      workspacePath: workspace.path,
+      projectId: project?.id ?? null,
+    });
+    this.broadcast({ type: "task.started", data: { taskId, agentId: agent.id, specialty } });
+
+    // -- 4. Build tool executor with callerTaskId --------------------
+    let toolsParam: ReturnType<typeof Array.of> | undefined;
+    let executorParam: ((name: string, input: Record<string, unknown>) => Promise<{
+      content: string;
+      is_error?: boolean;
+    }>) | undefined;
+    let builtins: string[] | undefined;
+
+    if (this.toolRegistry) {
+      builtins = await this.toolRegistry.getAgentBuiltins(agent.id).catch(() => []);
+      const ctx = {
+        db: this.db,
+        memoryProvider: null, // Developers don't use family memory
+        agentId: agent.id,
+        memberId: task.requestedBy ?? agent.id, // best-effort; Developers rarely hit memory tools
+        memberName: agent.name,
+        householdId: agent.householdId,
+        memberCollection: "household",
+        householdCollection: "household",
+        isChiefOfStaff: false,
+        delegationService: this.delegationService ?? undefined,
+        oversight: this.oversight ?? undefined,
+        callerTaskId: taskId,
+      };
+      const built = await this.toolRegistry.buildExecutor(ctx);
+      if (built) {
+        toolsParam = built.tools as unknown as ReturnType<typeof Array.of>;
+        executorParam = built.executor as typeof executorParam;
+      }
+    }
+
+    // -- 5. System prompt + execute ----------------------------------
+    const systemPrompt = this.buildDeveloperSystemPrompt(agent, task, specialty, project);
+
+    const startedAt = new Date();
+    const userMsg = task.description
+      ? `${task.title}\n\n${task.description}`
+      : task.title;
+
+    let adapterResult: { content: string } | null = null;
+    let adapterError: string | null = null;
+    try {
+      adapterResult = await this.adapter.execute({
+        systemPrompt,
+        messages: [{ role: "user", content: userMsg }],
+        tools: toolsParam as never,
+        toolExecutor: executorParam as never,
+        builtinTools: builtins,
+        model: agent.model,
+        cwd: workspace.path,
+        // No turn cap for Developers per design premise 9a. 200 is the SDK
+        // ceiling so we pass it explicitly rather than relying on the
+        // env-driven 50-default.
+        maxTurns: 200,
+      });
+    } catch (err) {
+      adapterError = err instanceof Error ? err.message : String(err);
+    }
+
+    const terminalStatus: "completed" | "failed" | "cancelled" =
+      adapterError ? "failed" : "completed";
+    const summaryReason = adapterError ?? undefined;
+
+    // -- 6. Compose + deliver notification ---------------------------
+    const card = composeSummaryCard({
+      kind: terminalStatus === "completed" ? "completion" : "failure",
+      task: {
+        id: taskId,
+        title: task.title,
+        workspaceKind: workspace.kind,
+        workspaceBranch: workspace.branch ?? null,
+        createdAt: startedAt,
+        completedAt: new Date(),
+      },
+      specialty,
+      artifacts: {},
+      reason: summaryReason,
+    });
+
+    const text = renderSummaryCardText(card);
+    const payload: NotifyPayload = {
+      kind: terminalStatus === "completed" ? "completion" : "failure",
+      text,
+      householdId: agent.householdId,
+      memberId: task.requestedBy ?? agent.id,
+      // Route completion to the parent agent (CoS or personal) that kicked
+      // this off. notify_agent_id was set by delegation-service when the task
+      // was created; fall back to agent.id (self-delivery) if absent.
+      agentId: task.notifyAgentId ?? agent.id,
+      summaryCard: card,
+    };
+
+    // Persist the final status + notification payload atomically (Phase 1).
+    if (this.notifier) {
+      await this.notifier.prepare(taskId, { terminalStatus, payload });
+    } else {
+      // No notifier wired — fall back to plain status update.
+      await this.db
+        .update(tasks)
+        .set({
+          status: terminalStatus,
+          result: adapterError ? `Error: ${adapterError}` : (adapterResult?.content ?? null),
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId));
+    }
+
+    await this.logEvent(
+      taskId,
+      terminalStatus === "completed" ? "completed" : "failed",
+      agent.id,
+      terminalStatus === "completed" ? "Developer task completed" : `Developer task failed: ${adapterError}`,
+      { durationSec: card.durationSec, specialty },
+    );
+
+    this.broadcast({
+      type: `task.${terminalStatus === "completed" ? "completed" : "failed"}`,
+      data: { taskId, agentId: agent.id, specialty },
+    });
+
+    // Phase 2: deliver the Telegram notification. On failure, the reconciler
+    // retries at next boot; we never rollback the flip.
+    if (this.notifier) {
+      this.notifier
+        .deliver(taskId)
+        .catch((err) => console.error(`[dispatcher] notifier.deliver(${taskId}) threw:`, err));
+    }
+
+    // -- 7. Workspace teardown policy --------------------------------
+    // Tool sandbox: always tear down on terminal (nothing valuable after build).
+    // Worktree: keep open for PR review iteration. Cancel path tears down via
+    // broadcast listener. v0.5 adds a gh pr status poller for merge/close cleanup.
+    if (workspace.kind === "tool_sandbox") {
+      try {
+        await this.workspace.teardown(workspace);
+      } catch (err) {
+        console.error(`[dispatcher] sandbox teardown failed for ${taskId}:`, err);
+      }
+      this.workspaceByTaskId.delete(taskId);
+    }
+
+    // -- 8. Drain the queue for this slot ----------------------------
+    await this.drainDeveloperQueue(slotKey, agent);
+  }
+
+  private async drainDeveloperQueue(
+    slotKey: string,
+    agent: Parameters<Dispatcher["executeDeveloperTask"]>[1],
+  ): Promise<void> {
+    const slot = this.running.get(slotKey);
+    if (!slot) return;
+    const nextTaskId = slot.queue.shift();
+    if (!nextTaskId) {
+      this.running.delete(slotKey);
+      return;
+    }
+    await this.executeDeveloperTask(nextTaskId, agent, slotKey);
+  }
+
+  private buildDeveloperSystemPrompt(
+    agent: {
+      name: string;
+      roleContent: string;
+      soulContent: string | null;
+      operatingInstructions: string | null;
+    },
+    task: { title: string; description: string | null },
+    specialty: DeveloperSpecialty,
+    project: {
+      name: string;
+      path: string;
+      defaultBranch: string;
+      testCmd: string | null;
+      repoUrl: string | null;
+    } | null,
+  ): string {
+    const parts: string[] = [];
+    parts.push(`# You are ${agent.name}\n`);
+    parts.push(agent.roleContent || `A Developer with the ${specialty} specialty.`);
+    parts.push("");
+
+    // Specialty operating contract — loaded from Lane H templates. The agent's
+    // own operating_instructions (persisted at hire time) already contains this,
+    // but re-injecting as a system prompt section keeps it load-bearing even if
+    // operating_instructions ever drifts.
+    parts.push("# Operating Contract\n");
+    parts.push(agent.operatingInstructions ?? templateForSpecialty(specialty));
+    parts.push("");
+
+    if (project) {
+      parts.push("# Project Context\n");
+      parts.push(`- Name: ${project.name}`);
+      parts.push(`- Path: ${project.path}`);
+      parts.push(`- Default branch: ${project.defaultBranch}`);
+      if (project.testCmd) parts.push(`- Test command: ${project.testCmd}`);
+      if (project.repoUrl) parts.push(`- Repo: ${project.repoUrl}`);
+      parts.push("");
+    }
+
+    parts.push("# Task\n");
+    parts.push(task.title);
+    if (task.description) {
+      parts.push("");
+      parts.push(task.description);
+    }
+    parts.push("");
+    parts.push(
+      "Work the problem. Use the provided tools. When you're done (or blocked), say so plainly — no XML markers required; the system will detect completion from your final response.",
+    );
+
+    return parts.join("\n");
+  }
+
+  private async failDeveloperTask(
+    task: { id: string; title: string; createdAt: Date; notifyAgentId: string | null; requestedBy: string | null },
+    agent: { id: string; householdId: string; specialty: string | null },
+    specialty: DeveloperSpecialty,
+    reason: string,
+  ): Promise<void> {
+    const card = composeSummaryCard({
+      kind: "failure",
+      task: {
+        id: task.id,
+        title: task.title,
+        workspaceKind: null,
+        workspaceBranch: null,
+        createdAt: task.createdAt,
+        completedAt: new Date(),
+      },
+      specialty,
+      reason,
+    });
+    const text = renderSummaryCardText(card);
+
+    if (this.notifier) {
+      await this.notifier.prepare(task.id, {
+        terminalStatus: "failed",
+        payload: {
+          kind: "failure",
+          text,
+          householdId: agent.householdId,
+          memberId: task.requestedBy ?? agent.id,
+          agentId: task.notifyAgentId ?? agent.id,
+          summaryCard: card,
+        },
+      });
+      this.notifier.deliver(task.id).catch(() => {});
+    } else {
+      await this.failTask(task.id, agent.id, reason);
+    }
+
+    await this.logEvent(task.id, "failed", agent.id, reason, { specialty, reason });
   }
 
   // -- Core execution -------------------------------------------------

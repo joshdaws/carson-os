@@ -35,6 +35,14 @@ import { ProfileInterviewEngine } from "./services/profile-interview.js";
 import { PersonalityInterviewEngine } from "./services/personality-interview.js";
 import { Dispatcher } from "./services/dispatcher.js";
 import { DelegationService } from "./services/delegation-service.js";
+import { WorkspaceProvider } from "./services/delegation/workspace.js";
+import {
+  DelegationNotifier,
+  type TelegramSendFn,
+  type TelegramSendResult,
+} from "./services/delegation/notifier.js";
+import { familyMembers } from "@carsonos/db";
+import { eq } from "drizzle-orm";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { SignalRelayManager } from "./services/signal-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
@@ -249,15 +257,49 @@ async function main() {
   });
   console.log("[engine] Personality interview engine ready");
 
-  // 6b. Dispatcher (on-demand spawn for internal agent tasks)
+  // 6b-1. Workspace provider (v0.4: per-task git worktree + tool sandbox)
+  const workspace = new WorkspaceProvider();
+
+  // 6b-2. Telegram send fn for the notifier. multiRelay doesn't exist yet
+  // (boot order: dispatcher → delegation-service → multiRelay), so the send
+  // closure resolves the reference lazily. Until multiRelay is bound, sends
+  // fail loud so the reconciler retries on next boot — never drops a payload.
+  let multiRelayRef: MultiRelayManager | null = null;
+  const notifierSend: TelegramSendFn = async (args): Promise<TelegramSendResult> => {
+    if (!multiRelayRef) return { ok: false, error: "multiRelay not ready yet" };
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, args.memberId))
+      .limit(1);
+    if (!member?.telegramUserId) {
+      return { ok: false, error: `no telegram user id for member ${args.memberId}` };
+    }
+    try {
+      await multiRelayRef.sendMessage(args.agentId, member.telegramUserId, args.text);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  };
+  const notifier = new DelegationNotifier(db, notifierSend);
+
+  // 6b-3. Dispatcher with v0.4 deps wired
   const dispatcher = new Dispatcher({
     db,
     adapter,
     broadcast: eventBus.publish,
+    workspace,
+    notifier,
+    toolRegistry,
   });
-  // Recover any tasks stuck in in_progress from a previous crash
+  // Recover any tasks stuck in in_progress from a previous crash + replay
+  // any pending notifications (Phase-2 of the two-phase exactly-once flow).
   await dispatcher.recoverStuckTasks();
-  console.log("[engine] Dispatcher ready (stuck tasks recovered)");
+  console.log("[engine] Dispatcher ready (stuck tasks recovered, notifications replayed)");
 
   // 6c. Delegation service (coordinates delegation lifecycle; v0.4)
   const orchestrator = new DelegationService(
@@ -266,6 +308,7 @@ async function main() {
     taskEngine,
   );
   orchestrator.setOversight(oversight);
+  dispatcher.setDelegationContext(orchestrator, oversight);
   constitutionEngine.setDelegation(orchestrator, oversight);
   console.log("[engine] Delegation service ready (v0.4: MCP delegate_task + hire flow)");
 
@@ -276,6 +319,7 @@ async function main() {
     engine: constitutionEngine,
     orchestrator,
   });
+  multiRelayRef = multiRelay; // bind the notifier's Telegram send target
 
   // Wire multiRelay into the constitution engine (for agent pause/resume tools)
   constitutionEngine.setMultiRelay(multiRelay);
@@ -320,6 +364,13 @@ async function main() {
     if (!event.data) return;
     multiRelay.eventBus.emit("delegation.result", event.data);
     signalRelay.eventBus.emit("delegation.result", event.data);
+  });
+
+  // v0.4: when a task is cancelled, tear down its workspace if one was provisioned.
+  eventBus.on("task.cancelled", (event) => {
+    dispatcher.handleCancelBroadcast(event).catch((err: unknown) => {
+      console.error("[events] handleCancelBroadcast failed:", err);
+    });
   });
 
   // Start per-agent bots (agents with telegramBotToken set)
