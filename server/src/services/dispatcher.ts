@@ -118,12 +118,13 @@ export class Dispatcher {
       return;
     }
 
-    // v0.4: accept internal agents (tutor/coach/scheduler) AND family-visible
-    // Developers (staffRole=custom with tools/project/core specialty). Family
-    // kid/parent personal agents are never dispatched — they run on Telegram
-    // turns, not tasks.
-    const isDeveloper = this.isDeveloperAgent(agent);
-    if (agent.visibility !== "internal" && !isDeveloper) {
+    // Accept: internal agents (tutor/coach/scheduler legacy path) and any
+    // hired specialist (staffRole=custom with a specialty). Developer-kind
+    // specialists (tools/project/core) get workspace provisioning; other
+    // specialists (research/music/etc.) run without a workspace.
+    const isHired = this.isHiredSpecialist(agent);
+    const isDeveloper = isHired && this.isDeveloperAgent(agent);
+    if (agent.visibility !== "internal" && !isHired) {
       await this.failTask(taskId, agent.id, `Agent "${agent.name}" is not dispatchable (visibility: ${agent.visibility})`);
       return;
     }
@@ -144,9 +145,15 @@ export class Dispatcher {
 
     if (isDeveloper) {
       await this.executeDeveloperTask(taskId, agent, slotKey);
+    } else if (isHired) {
+      await this.executeSpecialistTask(taskId, agent, slotKey);
     } else {
       await this.executeTask(taskId, agent, slotKey);
     }
+  }
+
+  private isHiredSpecialist(agent: { staffRole: string; specialty: string | null }): boolean {
+    return agent.staffRole === "custom" && !!agent.specialty;
   }
 
   private isDeveloperAgent(agent: { staffRole: string; specialty: string | null }): boolean {
@@ -213,6 +220,7 @@ export class Dispatcher {
             title: task.title,
             workspaceKind: task.workspaceKind,
             workspaceBranch: task.workspaceBranch ?? null,
+            workspacePath: task.workspacePath ?? undefined,
             createdAt: task.createdAt,
             completedAt: new Date(),
           },
@@ -264,7 +272,24 @@ export class Dispatcher {
       });
     }
 
-    // --- 2. Phase-2 notifier replay ----------------------------------
+    // Phase-2 notifier replay is NOT run here. It has to happen after the
+    // multiRelay is constructed + its notifier send target is bound,
+    // otherwise every deliver attempt silently fails with "multiRelay not
+    // ready yet" and the reconciler re-hits the same window on every boot.
+    // Call replayPendingNotifications() explicitly after multiRelay is up.
+  }
+
+  /**
+   * Drive Phase-2 delivery for every terminal task whose notification was
+   * prepared (Phase 1) but never successfully delivered. Call this AFTER
+   * the multiRelay reference is bound in index.ts, so the notifier's send
+   * closure can actually reach Telegram.
+   *
+   * Design premise 14: the flip-invariant on tasks.notified_at is the
+   * exactly-once gate; prepared-but-undelivered rows are replayed on boot
+   * with a 100ms stagger to avoid Telegram rate-limit bursts.
+   */
+  async replayPendingNotifications(): Promise<void> {
     if (!this.notifier) return;
 
     const pending = await this.db
@@ -503,6 +528,7 @@ export class Dispatcher {
         title: task.title,
         workspaceKind: workspace.kind,
         workspaceBranch: workspace.branch ?? null,
+        workspacePath: workspace.path,
         createdAt: startedAt,
         completedAt: new Date(),
       },
@@ -562,17 +588,20 @@ export class Dispatcher {
     }
 
     // -- 7. Workspace teardown policy --------------------------------
-    // Tool sandbox: always tear down on terminal (nothing valuable after build).
-    // Worktree: keep open for PR review iteration. Cancel path tears down via
-    // broadcast listener. v0.5 adds a gh pr status poller for merge/close cleanup.
-    if (workspace.kind === "tool_sandbox") {
-      try {
-        await this.workspace.teardown(workspace);
-      } catch (err) {
-        console.error(`[dispatcher] sandbox teardown failed for ${taskId}:`, err);
-      }
-      this.workspaceByTaskId.delete(taskId);
-    }
+    // Do NOT tear down on success — both workspace kinds need to persist:
+    //
+    //   tool_sandbox: user has to inspect the built SKILL.md + handler.ts
+    //     before deciding to install or discard. Losing the files on
+    //     completion defeats the entire tool-build review UX.
+    //   worktree: PR review iterations reuse the same branch + dir. Teardown
+    //     waits for PR merge/close (v0.5 poller) or explicit cancel.
+    //
+    // Teardown runs only on:
+    //   - task.cancelled broadcast → handleCancelBroadcast calls teardown
+    //   - v0.5: PR merged/closed for project/core specialties
+    //   - v0.5: explicit /api/tools/install or /api/tools/discard for tools
+    //
+    // The workspaceByTaskId entry stays so cancel can still find it.
 
     // -- 8. Drain the queue for this slot ----------------------------
     await this.drainDeveloperQueue(slotKey, agent);
@@ -614,12 +643,18 @@ export class Dispatcher {
     parts.push(agent.roleContent || `A Developer with the ${specialty} specialty.`);
     parts.push("");
 
-    // Specialty operating contract — loaded from Lane H templates. The agent's
-    // own operating_instructions (persisted at hire time) already contains this,
-    // but re-injecting as a system prompt section keeps it load-bearing even if
-    // operating_instructions ever drifts.
+    // Specialty operating contract — loaded at hire time into the agent's
+    // operating_instructions. templateForSpecialty returns null for non-
+    // Developer specialties (research/music/etc.); those agents always have
+    // their operating_instructions populated via composeGenericSpecialistInstructions
+    // or customInstructions at hire time, so the fallback here is only for
+    // pre-v0.4 rows that legitimately don't have one.
     parts.push("# Operating Contract\n");
-    parts.push(agent.operatingInstructions ?? templateForSpecialty(specialty));
+    parts.push(
+      agent.operatingInstructions ??
+        templateForSpecialty(specialty) ??
+        `You are ${agent.name}, a ${specialty} specialist. Use your granted tools; keep responses self-contained.`,
+    );
     parts.push("");
 
     if (project) {
@@ -685,6 +720,228 @@ export class Dispatcher {
     }
 
     await this.logEvent(task.id, "failed", agent.id, reason, { specialty, reason });
+  }
+
+  // -- Non-Developer specialist execution ----------------------------
+
+  /**
+   * Run a task for a non-Developer hired specialist (researcher, music
+   * specialist, etc). No workspace, no cwd, no extra builtins beyond what
+   * the agent's trust_level already grants. Just a query() with MCP tools,
+   * then wrap the response in a completion card.
+   *
+   * The agent's `operating_instructions` (set at hire time from
+   * customInstructions or the generic template) carries their "how I work"
+   * contract — this method only adds the task-specific "# Task" section
+   * to the system prompt.
+   */
+  private async executeSpecialistTask(
+    taskId: string,
+    agent: {
+      id: string;
+      name: string;
+      staffRole: string;
+      specialty: string | null;
+      roleContent: string;
+      soulContent: string | null;
+      operatingInstructions: string | null;
+      trustLevel: string;
+      model: string;
+      householdId: string;
+    },
+    slotKey: string,
+  ): Promise<void> {
+    const task = await this.loadTask(taskId);
+    if (!task) {
+      this.running.delete(slotKey);
+      return;
+    }
+    const specialty = agent.specialty ?? "general";
+    this.running.set(slotKey, { taskId, queue: this.running.get(slotKey)?.queue ?? [] });
+
+    await this.db
+      .update(tasks)
+      .set({ status: "in_progress", updatedAt: new Date() })
+      .where(eq(tasks.id, taskId));
+
+    await this.logEvent(taskId, "started", agent.id, `Specialist task started (${specialty})`, {
+      specialty,
+    });
+    this.broadcast({ type: "task.started", data: { taskId, agentId: agent.id, specialty } });
+
+    // MCP tools with callerTaskId set (so this specialist's delegate_task
+    // calls — if they ever get granted — hit the depth-2 gate cleanly).
+    let toolsParam: ReturnType<typeof Array.of> | undefined;
+    let executorParam:
+      | ((name: string, input: Record<string, unknown>) => Promise<{
+          content: string;
+          is_error?: boolean;
+        }>)
+      | undefined;
+    let builtins: string[] | undefined;
+    if (this.toolRegistry) {
+      builtins = await this.toolRegistry.getAgentBuiltins(agent.id).catch(() => []);
+      const ctx = {
+        db: this.db,
+        memoryProvider: null,
+        agentId: agent.id,
+        memberId: task.requestedBy ?? agent.id,
+        memberName: agent.name,
+        householdId: agent.householdId,
+        memberCollection: "household",
+        householdCollection: "household",
+        isChiefOfStaff: false,
+        delegationService: this.delegationService ?? undefined,
+        oversight: this.oversight ?? undefined,
+        callerTaskId: taskId,
+      };
+      const built = await this.toolRegistry.buildExecutor(ctx);
+      if (built) {
+        toolsParam = built.tools as unknown as ReturnType<typeof Array.of>;
+        executorParam = built.executor as typeof executorParam;
+      }
+    }
+
+    const systemPrompt = this.buildSpecialistSystemPrompt(agent, task, specialty);
+    const startedAt = new Date();
+    const userMsg = task.description ? `${task.title}\n\n${task.description}` : task.title;
+
+    let adapterResult: { content: string } | null = null;
+    let adapterError: string | null = null;
+    try {
+      adapterResult = await this.adapter.execute({
+        systemPrompt,
+        messages: [{ role: "user", content: userMsg }],
+        tools: toolsParam as never,
+        toolExecutor: executorParam as never,
+        builtinTools: builtins,
+        model: agent.model,
+        // No cwd (no workspace). No maxTurns override — the env-driven 50
+        // default is appropriate for conversation-driven specialists.
+      });
+    } catch (err) {
+      adapterError = err instanceof Error ? err.message : String(err);
+    }
+
+    const terminalStatus: "completed" | "failed" = adapterError ? "failed" : "completed";
+
+    const card = composeSummaryCard({
+      kind: terminalStatus === "completed" ? "completion" : "failure",
+      task: {
+        id: taskId,
+        title: task.title,
+        workspaceKind: null,
+        workspaceBranch: null,
+        workspacePath: undefined,
+        createdAt: startedAt,
+        completedAt: new Date(),
+      },
+      specialty,
+      reason: adapterError ?? undefined,
+    });
+
+    // Specialists return a report — include it in the delivered text. Long
+    // reports will exceed Telegram's 4096-char single-message cap and chunk
+    // into multiple bubbles; that's fine, the user gets the full response
+    // inline instead of having to ask for it.
+    const cardText = renderSummaryCardText(card);
+    const text =
+      terminalStatus === "completed" && adapterResult?.content
+        ? `${cardText}\n\n${adapterResult.content}`
+        : cardText;
+
+    const payload: NotifyPayload = {
+      kind: terminalStatus === "completed" ? "completion" : "failure",
+      text,
+      householdId: agent.householdId,
+      memberId: task.requestedBy ?? agent.id,
+      agentId: task.notifyAgentId ?? agent.id,
+      summaryCard: card,
+    };
+
+    if (this.notifier) {
+      await this.notifier.prepare(taskId, { terminalStatus, payload });
+    }
+    // Also persist the specialist's response as task.result so status checks
+    // can read it even after notification delivery.
+    await this.db
+      .update(tasks)
+      .set({
+        status: terminalStatus,
+        result: adapterResult?.content ?? (adapterError ? `Error: ${adapterError}` : null),
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, taskId));
+
+    await this.logEvent(
+      taskId,
+      terminalStatus === "completed" ? "completed" : "failed",
+      agent.id,
+      terminalStatus === "completed" ? "Specialist task completed" : `Specialist task failed: ${adapterError}`,
+      { durationSec: card.durationSec, specialty },
+    );
+    this.broadcast({
+      type: `task.${terminalStatus === "completed" ? "completed" : "failed"}`,
+      data: { taskId, agentId: agent.id, specialty },
+    });
+
+    if (this.notifier) {
+      this.notifier
+        .deliver(taskId)
+        .catch((err) => console.error(`[dispatcher] notifier.deliver(${taskId}) threw:`, err));
+    }
+
+    await this.drainSpecialistQueue(slotKey, agent);
+  }
+
+  private async drainSpecialistQueue(
+    slotKey: string,
+    agent: Parameters<Dispatcher["executeSpecialistTask"]>[1],
+  ): Promise<void> {
+    const slot = this.running.get(slotKey);
+    if (!slot) return;
+    const nextTaskId = slot.queue.shift();
+    if (!nextTaskId) {
+      this.running.delete(slotKey);
+      return;
+    }
+    await this.executeSpecialistTask(nextTaskId, agent, slotKey);
+  }
+
+  private buildSpecialistSystemPrompt(
+    agent: {
+      name: string;
+      roleContent: string;
+      soulContent: string | null;
+      operatingInstructions: string | null;
+    },
+    task: { title: string; description: string | null },
+    specialty: string,
+  ): string {
+    const parts: string[] = [];
+    parts.push(`# You are ${agent.name}\n`);
+    if (agent.roleContent) {
+      parts.push(agent.roleContent);
+      parts.push("");
+    }
+    parts.push("# Operating Contract\n");
+    parts.push(
+      agent.operatingInstructions ??
+        `You are a ${specialty} specialist. Use your granted tools; keep responses self-contained.`,
+    );
+    parts.push("");
+    parts.push("# Task\n");
+    parts.push(task.title);
+    if (task.description) {
+      parts.push("");
+      parts.push(task.description);
+    }
+    parts.push("");
+    parts.push(
+      "Work the problem using your granted tools. When you're done, give a clear, self-contained response — the principal sees what you return, not your scratch work.",
+    );
+    return parts.join("\n");
   }
 
   // -- Core execution -------------------------------------------------

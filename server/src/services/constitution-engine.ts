@@ -21,6 +21,7 @@ import {
   conversations,
   messages,
   policyEvents,
+  delegationEdges,
 } from "@carsonos/db";
 import type {
   Channel,
@@ -125,7 +126,22 @@ interface CachedConstitution {
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_HISTORY_MESSAGES = 50;
-const SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours — session expires, falls back to text replay
+
+function formatGap(ms: number): string {
+  const totalMin = Math.round(ms / 60000);
+  if (totalMin < 60) return `${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h < 24) return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  const d = Math.floor(h / 24);
+  const rh = h % 24;
+  return rh === 0 ? `${d}d` : `${d}d ${rh}h`;
+}
+// 2h of inactivity and we start fresh — both the Claude Agent SDK session
+// AND the conversation row. A short break keeps the thread; an extended
+// pause ends it. Extend if the window feels too aggressive in practice.
+const SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const CONVERSATION_IDLE_TIMEOUT_MS = SESSION_TIMEOUT_MS;
 
 const FRIENDLY_BLOCK_MESSAGE =
   "I'm not able to help with that. If you think this is a mistake, ask a parent to review the family rules.";
@@ -412,12 +428,18 @@ export class ConstitutionEngine {
       agentId,
     );
 
-    // v0.4: delegation happens via MCP tool calls (delegate_task, propose_hire,
-    // etc.). Target discovery is encoded in the tool descriptions themselves +
-    // list_agents; no separate prompt section needed. The field stays in
-    // compileSystemPrompt's interface for forward compatibility (e.g., future
-    // "Available specialists" auto-listing) but currently passes null.
-    const delegationInstr: string | null = null;
+    // v0.4: enumerate hired specialists in the agent's system prompt so they
+    // actually route work to them. Without this, Carson sees `delegate_task`
+    // in the tool list but has no idea who's available to delegate TO — and
+    // defaults to doing the work himself.
+    //
+    // Pulls from delegation_edges (who can this agent delegate to?) and joins
+    // on staff_agents for the specialty/role labels. Short-circuits to null
+    // when there are no outbound edges (nothing to list).
+    const delegationInstr: string | null = await this.composeDelegationInstructions(
+      agentId,
+      householdId,
+    );
 
     // -- 5. Load conversation history + session state -----------------
     const conversationId = await this.getOrCreateConversation(
@@ -783,6 +805,63 @@ export class ConstitutionEngine {
 
   // -- Private: clause loading ---------------------------------------
 
+  /** Build the "Available specialists" prompt section from delegation_edges.
+   *  Returns null when the agent has no outbound edges (nothing to list).
+   *
+   *  The point of this is to make Carson actually use the specialists he
+   *  hired. `delegate_task` is in his toolbox but the tool description
+   *  alone ("hand a long-running task to a hired Developer specialist")
+   *  doesn't tell him who's on staff or what they do. Without this section
+   *  he defaults to answering research questions himself instead of routing
+   *  to Remy. */
+  private async composeDelegationInstructions(
+    fromAgentId: string,
+    householdId: string,
+  ): Promise<string | null> {
+    const edges = await this.db
+      .select({
+        toId: staffAgents.id,
+        name: staffAgents.name,
+        role: staffAgents.staffRole,
+        specialty: staffAgents.specialty,
+        roleContent: staffAgents.roleContent,
+      })
+      .from(delegationEdges)
+      .innerJoin(staffAgents, eq(staffAgents.id, delegationEdges.toAgentId))
+      .where(
+        and(
+          eq(delegationEdges.fromAgentId, fromAgentId),
+          eq(staffAgents.householdId, householdId),
+          eq(staffAgents.status, "active"),
+        ),
+      );
+
+    if (edges.length === 0) return null;
+
+    const lines: string[] = [];
+    lines.push(
+      "You have the following specialists on staff. Delegate to them when the user's request fits their expertise — don't do the work yourself if a specialist is a better fit.",
+    );
+    lines.push("");
+    for (const edge of edges) {
+      const spec = edge.specialty ? `, specialty \`${edge.specialty}\`` : "";
+      const blurb = (edge.roleContent ?? "").split("\n")[0].trim().slice(0, 200);
+      lines.push(
+        `- **${edge.name}** (${edge.role || "specialist"}${spec})${blurb ? " — " + blurb : ""}`,
+      );
+    }
+    lines.push("");
+    lines.push(
+      "How to delegate: call `delegate_task({to: \"<name>\", goal: \"<what to accomplish>\", context: \"<background if useful>\"})`. The specialist runs async; you'll get a runId and a completion ping when they're done. Before you reply to the user, announce who you're delegating to + a ballpark time estimate + the kill affordance (\"tell me to kill <name>'s task if you change your mind\").",
+    );
+    lines.push("");
+    lines.push(
+      "Bias: when in doubt about who should handle something, delegate. The specialist was hired for a reason; using them is why they're on staff.",
+    );
+
+    return lines.join("\n");
+  }
+
   private async loadClauses(householdId: string): Promise<CachedConstitution> {
     const existing = this.cache.get(householdId);
     if (existing && Date.now() - existing.timestamp < CACHE_TTL_MS) {
@@ -899,13 +978,36 @@ export class ConstitutionEngine {
       .select({
         role: messages.role,
         content: messages.content,
+        createdAt: messages.createdAt,
       })
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
       .orderBy(messages.createdAt)
       .limit(MAX_HISTORY_MESSAGES);
 
-    return rows;
+    // Inject a time-gap marker when consecutive messages are >30 min apart.
+    // Without this the agent sees a flattened timeline and can't tell "I'm
+    // mid-thread" from "this is a fresh session hours later." Carson was
+    // re-quoting stale Hooktheory options to a 7am "what were we talking
+    // about?" because the 8h gap was invisible to the LLM.
+    const GAP_THRESHOLD_MS = 30 * 60 * 1000;
+    const out: Array<{ role: string; content: string }> = [];
+    let prev: Date | null = null;
+    for (const r of rows) {
+      const current = r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt);
+      if (prev) {
+        const gapMs = current.getTime() - prev.getTime();
+        if (gapMs > GAP_THRESHOLD_MS) {
+          const marker = `[time note: ${formatGap(gapMs)} since the previous message. Treat this as a continuation only if the user's new message references earlier context; otherwise orient to what they're asking now.]\n\n`;
+          out.push({ role: r.role, content: marker + r.content });
+          prev = current;
+          continue;
+        }
+      }
+      out.push({ role: r.role, content: r.content });
+      prev = current;
+    }
+    return out;
   }
 
   private async getOrCreateConversation(
@@ -914,9 +1016,6 @@ export class ConstitutionEngine {
     householdId: string,
     channel: string,
   ): Promise<string> {
-    // Look for an existing conversation from today
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
     const existing = await this.db
       .select()
       .from(conversations)
@@ -931,9 +1030,21 @@ export class ConstitutionEngine {
       .orderBy(desc(conversations.startedAt))
       .limit(1);
 
-    // Reuse if started today (but never reuse for scheduled tasks — they're stateless)
-    if (existing.length > 0 && existing[0].startedAt.startsWith(today) && channel !== "scheduled") {
-      return existing[0].id;
+    // Reuse if the last message was within the inactivity window (4h by
+    // default). Using `lastMessageAt` rather than a UTC-day check means
+    // "start a fresh thread after a full gap" actually works — a 20-min
+    // lunch break keeps the thread, going to bed ends it.
+    //
+    // Scheduled-task channels are stateless: always a new conversation row
+    // so each run is isolated from the last.
+    if (existing.length > 0 && channel !== "scheduled") {
+      const last = existing[0].lastMessageAt
+        ? new Date(existing[0].lastMessageAt)
+        : new Date(existing[0].startedAt);
+      const idleMs = Date.now() - last.getTime();
+      if (idleMs < CONVERSATION_IDLE_TIMEOUT_MS) {
+        return existing[0].id;
+      }
     }
 
     // Create new conversation

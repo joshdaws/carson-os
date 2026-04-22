@@ -194,6 +194,41 @@ function compileChatPrompt(params: CompilePromptParams): string {
 
   const sections: string[] = [];
 
+  // 0. Current-time grounding — without this the LLM has no idea what time
+  // it is or how long the conversation has been idle. Matters for honoring
+  // "[time note: Nh since previous message]" markers in history + answering
+  // "what time is it" naturally. Triple-stated (abbrev + long + IANA) so
+  // the LLM can't misread "EDT" as "Central" or similar.
+  const now = new Date();
+  const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const clock = now.toLocaleString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const tzShort = new Intl.DateTimeFormat("en-US", {
+    timeZoneName: "short",
+  }).formatToParts(now).find((p) => p.type === "timeZoneName")?.value ?? "";
+  const tzLong = new Intl.DateTimeFormat("en-US", {
+    timeZoneName: "long",
+  }).formatToParts(now).find((p) => p.type === "timeZoneName")?.value ?? "";
+  sections.push(
+    [
+      "# Current Time",
+      "",
+      `${clock} ${tzShort}`,
+      `Time zone: **${tzLong}** (${tzShort}, IANA \`${tzName}\`)`,
+      "",
+      "When the user asks what time it is or how long ago something happened,",
+      "answer using this exact time and zone. Do not paraphrase the zone",
+      "(e.g. if it says Eastern, do not say Central).",
+    ].join("\n"),
+  );
+
   // 1. Family Constitution — THE FRAME (always first)
   if (constitutionDocument) {
     sections.push(`# Family Constitution\n\n${constitutionDocument}`);

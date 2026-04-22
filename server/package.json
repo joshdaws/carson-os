@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --ignore '../ui/node_modules/**' --ignore 'node_modules/**' src/index.ts",
+    "dev": "tsx watch --ignore '../ui/node_modules/**' --ignore 'node_modules/**' --ignore '**/carsonos-custom-tools/**' --ignore '**/carsonos-install-*/**' --ignore '/private/var/folders/**' --ignore '/var/folders/**' --ignore '/tmp/**' --ignore '**/handler.*.mjs' src/index.ts",
     "dev:nowatch": "tsx src/index.ts",
     "start": "cross-env NODE_ENV=production tsx src/index.ts",
     "build": "tsc",

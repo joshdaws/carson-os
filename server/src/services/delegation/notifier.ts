@@ -24,9 +24,9 @@
  * than one distinguishable one.
  */
 
-import { and, eq, isNull, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNull, isNotNull } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { tasks, delegationNotifications } from "@carsonos/db";
+import { tasks, delegationNotifications, conversations, messages } from "@carsonos/db";
 
 import type { SummaryCard } from "./summary-card.js";
 
@@ -190,7 +190,52 @@ export class DelegationNotifier {
     }
 
     await this.flip(taskId);
+
+    // Thread the delivered notification into the sending agent's conversation
+    // with the recipient member as an assistant message. This is what closes
+    // the loop between "Dev finished and the notifier sent the result to
+    // Josh" and "Carson has a record of what was said on his behalf." Without
+    // this, Carson has no context on his next turn and has to re-fetch the
+    // task result or re-do the work. Best-effort: failures here don't fail
+    // the notification (it's already delivered).
+    await this.threadIntoConversation(payload).catch((err) =>
+      console.warn(`[notifier] threadIntoConversation(${taskId}) failed:`, err),
+    );
+
     return { delivered: true, messageId: result.messageId };
+  }
+
+  /**
+   * Persist the delivered text as an assistant-role message in the
+   * (agentId, memberId) conversation so the sending agent's history reflects
+   * what got sent on their behalf. No-op if no conversation exists yet.
+   */
+  private async threadIntoConversation(payload: NotifyPayload): Promise<void> {
+    const [conversation] = await this.db
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.agentId, payload.agentId),
+          eq(conversations.memberId, payload.memberId),
+        ),
+      )
+      .orderBy(desc(conversations.lastMessageAt))
+      .limit(1);
+
+    if (!conversation) return;
+
+    const now = new Date();
+    await this.db.insert(messages).values({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: payload.text,
+      metadata: { source: "notifier", kind: payload.kind },
+    });
+    await this.db
+      .update(conversations)
+      .set({ lastMessageAt: now.toISOString() })
+      .where(eq(conversations.id, conversation.id));
   }
 
   /**

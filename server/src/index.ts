@@ -41,7 +41,7 @@ import {
   type TelegramSendFn,
   type TelegramSendResult,
 } from "./services/delegation/notifier.js";
-import { familyMembers } from "@carsonos/db";
+import { familyMembers, tasks as tasksTable } from "@carsonos/db";
 import { eq } from "drizzle-orm";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { SignalRelayManager } from "./services/signal-relay-manager.js";
@@ -205,6 +205,12 @@ async function main() {
 
   console.log(`[tools] Registry ready (${toolRegistry.listAll().length} tools registered)`);
 
+  // Seed any newly-added role defaults to existing agents (protects v0.4+
+  // DEFAULT_GRANTS changes from the "agents with explicit grants silently
+  // miss new role defaults" bug). Per-agent marker in instance_settings so
+  // user revocations survive future release cycles.
+  await toolRegistry.seedMissingDefaults();
+
   // 3. Constitution engine
   const constitutionEngine = new ConstitutionEngine({
     db,
@@ -276,8 +282,13 @@ async function main() {
       return { ok: false, error: `no telegram user id for member ${args.memberId}` };
     }
     try {
-      await multiRelayRef.sendMessage(args.agentId, member.telegramUserId, args.text);
-      return { ok: true };
+      const { messageId } = await multiRelayRef.sendMessage(
+        args.agentId,
+        member.telegramUserId,
+        args.text,
+        { replyMarkup: args.replyMarkup },
+      );
+      return { ok: true, messageId };
     } catch (err) {
       return {
         ok: false,
@@ -296,10 +307,12 @@ async function main() {
     notifier,
     toolRegistry,
   });
-  // Recover any tasks stuck in in_progress from a previous crash + replay
-  // any pending notifications (Phase-2 of the two-phase exactly-once flow).
+  // Recover any tasks stuck in in_progress from a previous crash. Phase-2
+  // notifier replay happens AFTER multiRelay is bound (below); running it
+  // here would silently fail because notifierSend can't reach multiRelayRef
+  // yet.
   await dispatcher.recoverStuckTasks();
-  console.log("[engine] Dispatcher ready (stuck tasks recovered, notifications replayed)");
+  console.log("[engine] Dispatcher ready (stuck tasks recovered)");
 
   // 6c. Delegation service (coordinates delegation lifecycle; v0.4)
   const orchestrator = new DelegationService(
@@ -321,6 +334,10 @@ async function main() {
     orchestrator,
   });
   multiRelayRef = multiRelay; // bind the notifier's Telegram send target
+  // Phase-2 notifier replay must wait until AFTER multiRelay.startAll() has
+  // actually started the agent bots — `sendMessage` throws "Bot for agent X
+  // is not running" if the bot isn't started yet. Deferred until after the
+  // startAll() call below.
 
   // Wire multiRelay into the constitution engine (for agent pause/resume tools)
   constitutionEngine.setMultiRelay(multiRelay);
@@ -374,10 +391,61 @@ async function main() {
     });
   });
 
+  // v0.4: when a hire is approved, tell the principal via Carson's bot so
+  // they get visible feedback (the inline-button edit only stamps the card;
+  // the user still needs a chat message saying "Dev is on staff, what's next").
+  // Without this, the user taps Approve and hears nothing until they prompt
+  // Carson again — the dead-air problem we hit during the first real test.
+  eventBus.on("hire.approved", (event) => {
+    void (async () => {
+      const data = event.data as
+        | {
+            taskId: string;
+            householdId: string;
+            developerAgentId: string;
+            specialty: string;
+            name: string;
+          }
+        | undefined;
+      if (!data) return;
+      try {
+        const [task] = await db
+          .select({ agentId: tasksTable.agentId, requestedBy: tasksTable.requestedBy })
+          .from(tasksTable)
+          .where(eq(tasksTable.id, data.taskId))
+          .limit(1);
+        if (!task?.agentId || !task.requestedBy) return;
+
+        const [member] = await db
+          .select()
+          .from(familyMembers)
+          .where(eq(familyMembers.id, task.requestedBy))
+          .limit(1);
+        if (!member?.telegramUserId) return;
+
+        const text =
+          `✅ **${data.name}** is on staff — ${data.specialty} specialist, full trust, ` +
+          `claude-opus-4-7.\n\nTell me what you want them to work on and I'll delegate it.`;
+        await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+      } catch (err) {
+        console.error("[events] hire.approved follow-up failed:", err);
+      }
+    })();
+  });
+
   // Start per-agent bots (agents with telegramBotToken set)
   await multiRelay.startAll();
   // Start per-agent Signal accounts (agents with signal_account + signal_daemon_port set)
   await signalRelay.startAll();
+
+  // Bots are up now — drive Phase-2 notifier replay for any terminal tasks
+  // whose completion/failure payloads were prepared but never delivered
+  // (e.g., if the server restarted mid-task or Telegram was flaky at the
+  // time). Fire-and-forget so the rest of boot doesn't block on the
+  // Telegram round-trips.
+  dispatcher.replayPendingNotifications().catch((err: unknown) => {
+    console.error("[engine] Phase-2 notification replay failed:", err);
+  });
 
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
