@@ -41,6 +41,9 @@ import {
   Download,
   FileQuestion,
   ArrowRight,
+  Eye,
+  EyeOff,
+  Plus,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -1443,6 +1446,43 @@ export default function ToolsPage() {
     },
   });
 
+  const [secretForm, setSecretForm] = useState({ keyName: "", value: "" });
+  const [secretFormError, setSecretFormError] = useState<string | null>(null);
+  const [showSecretValue, setShowSecretValue] = useState(false);
+  const createSecretMutation = useMutation<
+    { ok: true; replaced: boolean; id: string; key_name: string },
+    Error,
+    { key_name: string; value: string }
+  >({
+    mutationFn: (body) =>
+      api.post(`/tools/secrets`, { household_id: householdId, ...body }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tools", "secrets"] });
+      setSecretForm({ keyName: "", value: "" });
+      setSecretFormError(null);
+      setShowSecretValue(false);
+    },
+    onError: (err) => {
+      setSecretFormError(err.message);
+    },
+  });
+
+  function submitSecret() {
+    const keyName = secretForm.keyName.trim().toLowerCase();
+    const value = secretForm.value;
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(keyName)) {
+      setSecretFormError(
+        "Key must be lowercase snake_case, start with a letter (e.g. 'hooktheory_password')",
+      );
+      return;
+    }
+    if (!value) {
+      setSecretFormError("Value cannot be empty");
+      return;
+    }
+    createSecretMutation.mutate({ key_name: keyName, value });
+  }
+
   const allTools = toolsData?.customTools ?? [];
 
   // Counts for filter tabs
@@ -1603,9 +1643,95 @@ export default function ToolsPage() {
         />
         <CardContent className="p-4">
           <p className="text-xs mb-3" style={{ color: "#7a7060" }}>
-            Encrypted with AES-256-GCM. Values are never returned by the API. Agents
-            create secrets through conversation using <code>store_secret</code>.
+            Encrypted with AES-256-GCM. Values are never returned by the API.
+            Add secrets here (safer) or let an agent create them via{" "}
+            <code>store_secret</code> during conversation.
           </p>
+
+          {/* Add secret form */}
+          <div
+            className="mb-4 p-3 rounded border"
+            style={{ borderColor: "#e6dfd0", background: "#faf8f4" }}
+          >
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: "#7a7060" }}>
+                  Key name
+                </label>
+                <input
+                  type="text"
+                  placeholder="hooktheory_password"
+                  value={secretForm.keyName}
+                  onChange={(e) =>
+                    setSecretForm({ ...secretForm, keyName: e.target.value })
+                  }
+                  className="w-full px-2 py-1.5 text-xs font-mono rounded border"
+                  style={{ borderColor: "#ddd5c8", background: "#fff" }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: "#7a7060" }}>
+                  Value
+                </label>
+                <div className="relative">
+                  <input
+                    type={showSecretValue ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={secretForm.value}
+                    onChange={(e) =>
+                      setSecretForm({ ...secretForm, value: e.target.value })
+                    }
+                    className="w-full px-2 py-1.5 pr-8 text-xs font-mono rounded border"
+                    style={{ borderColor: "#ddd5c8", background: "#fff" }}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitSecret();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecretValue((s) => !s)}
+                    className="absolute right-1 top-1 p-1 rounded hover:bg-[#eee5d4]"
+                    aria-label={showSecretValue ? "Hide value" : "Show value"}
+                  >
+                    {showSecretValue ? (
+                      <EyeOff className="h-3 w-3" style={{ color: "#7a7060" }} />
+                    ) : (
+                      <Eye className="h-3 w-3" style={{ color: "#7a7060" }} />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                onClick={submitSecret}
+                disabled={createSecretMutation.isPending || !secretForm.keyName || !secretForm.value}
+                style={{ background: "#8b6f4e", color: "#fff" }}
+              >
+                {createSecretMutation.isPending ? (
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                ) : (
+                  <>
+                    <Plus className="h-3 w-3 mr-1" /> Add
+                  </>
+                )}
+              </Button>
+            </div>
+            {secretFormError && (
+              <p className="text-xs mt-2" style={{ color: "#a82020" }}>
+                {secretFormError}
+              </p>
+            )}
+            {createSecretMutation.isSuccess && !secretFormError && (
+              <p className="text-xs mt-2" style={{ color: "#3a6f3a" }}>
+                Saved. Reference it in tool code via <code>ctx.getSecret(key_name)</code>.
+              </p>
+            )}
+          </div>
+
           {!secretsData || secretsData.secrets.length === 0 ? (
             <p className="text-xs italic py-2" style={{ color: "#a09080" }}>
               No secrets stored.

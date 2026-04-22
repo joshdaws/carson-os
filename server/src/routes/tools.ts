@@ -21,6 +21,7 @@ import {
   cleanupStaging,
   InstallError,
 } from "../services/custom-tools/index.js";
+import { encryptSecret } from "../services/custom-tools/secrets.js";
 
 export interface ToolRouteDeps {
   db: Db;
@@ -565,6 +566,63 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
       .where(eq(toolSecrets.householdId, String(householdId)))
       .all();
     res.json({ secrets: rows });
+  });
+
+  // POST /secrets — create or replace a secret by key_name.
+  // Body: { household_id, key_name, value }. Value is encrypted at rest with
+  // AES-256-GCM via encryptSecret. The plaintext value is never logged and
+  // never returned. Safe to call from the admin UI (password-masked form)
+  // so users don't have to paste credentials into agent chat.
+  router.post("/secrets", async (req, res) => {
+    const { household_id: householdId, key_name: rawKeyName, value } = (req.body ?? {}) as {
+      household_id?: string;
+      key_name?: string;
+      value?: string;
+    };
+    if (!householdId || !rawKeyName || typeof value !== "string" || value.length === 0) {
+      res.status(400).json({ error: "household_id, key_name, and non-empty value are required" });
+      return;
+    }
+    // Match the validation rules used by the store_secret MCP tool: snake_case,
+    // no spaces, reasonable length. Makes programmatic lookups predictable.
+    const keyName = rawKeyName.trim();
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(keyName)) {
+      res.status(400).json({
+        error: "key_name must be lowercase snake_case, start with a letter, ≤64 chars (e.g. 'hooktheory_password')",
+      });
+      return;
+    }
+
+    let encryptedValue: string;
+    try {
+      encryptedValue = encryptSecret(value, toolRegistry.getDataDir());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `encryption failed: ${msg}` });
+      return;
+    }
+
+    // Upsert by (household_id, key_name) unique index.
+    const now = new Date();
+    const existing = db
+      .select()
+      .from(toolSecrets)
+      .where(and(eq(toolSecrets.householdId, householdId), eq(toolSecrets.keyName, keyName)))
+      .get();
+    if (existing) {
+      db.update(toolSecrets)
+        .set({ encryptedValue, updatedAt: now })
+        .where(eq(toolSecrets.id, existing.id))
+        .run();
+      res.json({ ok: true, replaced: true, id: existing.id, key_name: keyName });
+      return;
+    }
+    const inserted = db
+      .insert(toolSecrets)
+      .values({ householdId, keyName, encryptedValue })
+      .returning({ id: toolSecrets.id })
+      .get();
+    res.json({ ok: true, replaced: false, id: inserted?.id, key_name: keyName });
   });
 
   // DELETE /secrets/:id — remove a secret
