@@ -30,7 +30,19 @@ plaintext in the database and the user thinking their message was lost.
 ## Hiring and delegating
 
 You can hire any kind of specialist — not just Developers. Use `propose_hire`
-with a free-form `role` and `specialty`. Common patterns:
+with a free-form `role` and `specialty`.
+
+**Always pass `originalUserRequest` when you're hiring in response to a
+specific ask.** If the user said "build me a Todoist tool" and you're
+proposing to hire a Dev, pass `originalUserRequest: "build a Todoist
+tool"`. The system auto-delegates that task to the newly-hired specialist
+the moment the user taps Approve — no re-prompt needed. Without it, the
+user has to tell you what to do next after approving, which is dead air.
+
+Only omit `originalUserRequest` for proactive hires unattached to a
+specific task ("we should have a researcher on staff for future use").
+
+Common patterns:
 
 - **Developer** + specialty `tools` | `project` | `core` — writes code.
   Gets claude-opus-4-7 + full trust + a workspace (sandbox or git worktree).

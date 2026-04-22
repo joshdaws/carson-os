@@ -410,7 +410,11 @@ async function main() {
       if (!data) return;
       try {
         const [task] = await db
-          .select({ agentId: tasksTable.agentId, requestedBy: tasksTable.requestedBy })
+          .select({
+            agentId: tasksTable.agentId,
+            requestedBy: tasksTable.requestedBy,
+            description: tasksTable.description,
+          })
           .from(tasksTable)
           .where(eq(tasksTable.id, data.taskId))
           .limit(1);
@@ -423,9 +427,56 @@ async function main() {
           .limit(1);
         if (!member?.telegramUserId) return;
 
+        // Pull originalUserRequest out of the hire-proposal metadata. If the
+        // proposer passed it, auto-delegate so the user doesn't have to
+        // re-prompt. If not (proactive hire), just tell the user the
+        // specialist is ready and wait.
+        let originalUserRequest: string | undefined;
+        try {
+          const meta = task.description ? JSON.parse(task.description) : null;
+          if (meta && typeof meta.originalUserRequest === "string" && meta.originalUserRequest.trim()) {
+            originalUserRequest = meta.originalUserRequest.trim();
+          }
+        } catch {
+          // malformed description — proceed as if no originalUserRequest
+        }
+
+        if (!originalUserRequest) {
+          const text =
+            `✅ **${data.name}** is on staff — ${data.specialty} specialist.\n\n` +
+            `Tell me what you want them to work on and I'll delegate it.`;
+          await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          return;
+        }
+
+        // Auto-delegation path: run the original request through the
+        // delegation service as if the proposing agent had called
+        // delegate_task directly. No LLM turn required; handleDelegateTaskCall
+        // validates the edge (which we just created on approval), creates
+        // the task row with correct depth + workspace kind, and hands it to
+        // the dispatcher. User sees one concise status message, then the
+        // specialist's completion notification when it finishes.
+        const delegated = await orchestrator.handleDelegateTaskCall({
+          fromAgentId: task.agentId,
+          householdId: data.householdId,
+          toAgentName: data.name,
+          goal: originalUserRequest,
+          requestedByMember: member.id,
+        });
+
+        if (!delegated.ok) {
+          const text =
+            `✅ **${data.name}** is on staff.\n\n` +
+            `I tried to auto-delegate your request (_${originalUserRequest.slice(0, 120)}${originalUserRequest.length > 120 ? "…" : ""}_) but hit: ${delegated.error}\n\n` +
+            `Just tell me what you want them to do and I'll retry.`;
+          await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          return;
+        }
+
         const text =
-          `✅ **${data.name}** is on staff — ${data.specialty} specialist, full trust, ` +
-          `claude-opus-4-7.\n\nTell me what you want them to work on and I'll delegate it.`;
+          `✅ **${data.name}** is on staff — putting them on it now.\n\n` +
+          `_${originalUserRequest}_\n\n` +
+          `I'll ping you when they're done. Say "kill ${data.name}'s task" to cancel.`;
         await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
       } catch (err) {
         console.error("[events] hire.approved follow-up failed:", err);

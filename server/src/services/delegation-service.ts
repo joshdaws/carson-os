@@ -98,6 +98,9 @@ export interface HireProposalInput {
   model?: string;
   /** Optional trust-level override. Defaults: Developer → full, others → standard. */
   trustLevel?: "full" | "standard" | "restricted";
+  /** Optional. User's original request, used to auto-delegate on approval so
+   *  the user doesn't have to re-prompt. Absent for proactive hires. */
+  originalUserRequest?: string;
 }
 
 export interface HireProposalResult {
@@ -352,6 +355,10 @@ export class DelegationService {
         specialty: input.specialty,
         reason: input.reason,
         proposedName: input.proposedName,
+        customInstructions: input.customInstructions,
+        model: input.model,
+        trustLevel: input.trustLevel,
+        originalUserRequest: input.originalUserRequest,
       }),
       requiresApproval: true,
       delegationDepth: 0,

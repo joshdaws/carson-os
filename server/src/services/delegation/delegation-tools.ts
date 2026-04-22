@@ -74,7 +74,7 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "propose_hire",
     description:
-      "Propose hiring a new specialist agent. Always escalates to the principal via a Telegram approval card. On approval, the specialist is added to staff with the role-appropriate operating instructions, model, and trust level.\n\nThe `role` and `specialty` are free-form so you can bring in any kind of specialist — Developer, Researcher, Music specialist, Tutor, Coach, etc. Three specialties get first-class workspace provisioning: `tools` (sandbox), `project` (git worktree), `core` (carson-os worktree). Any other specialty runs as a conversation-driven agent with MCP tools + trust-level builtins (no workspace).\n\nDefaults by role: `Developer` → claude-opus-4-7 + full trust, anything else → claude-sonnet-4-6 + standard trust. Both autonomous. Override via the `model`/`trustLevel` args.",
+      "Propose hiring a new specialist agent. Always escalates to the principal via a Telegram approval card. On approval, the specialist is added to staff AND — if `originalUserRequest` is set — the hire flow automatically delegates that task to the newly-hired specialist without requiring the user to re-prompt. Use `originalUserRequest` whenever you're hiring in response to a specific ask (\"build me a Todoist tool\", \"research Netflix culture\"); omit it only for proactive hires without a tied task.\n\nThe `role` and `specialty` are free-form so you can bring in any kind of specialist — Developer, Researcher, Music specialist, Tutor, Coach, etc. Three specialties get first-class workspace provisioning: `tools` (sandbox), `project` (git worktree), `core` (carson-os worktree). Any other specialty runs as a conversation-driven agent with MCP tools + trust-level builtins (no workspace).\n\nDefaults by role: `Developer` → claude-opus-4-7 + full trust, anything else → claude-sonnet-4-6 + standard trust. Both autonomous. Override via the `model`/`trustLevel` args.",
     input_schema: {
       type: "object",
       properties: {
@@ -107,6 +107,10 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
           type: "string",
           enum: ["full", "standard", "restricted"],
           description: "Optional trust level override. Defaults: Developer=full, others=standard. Controls Claude Code builtin tools (Bash/Read/Write/etc).",
+        },
+        originalUserRequest: {
+          type: "string",
+          description: "The user's original ask in their own words — what they want the new specialist to DO. If set, the system auto-delegates this to the specialist immediately on approval; the user doesn't have to re-prompt. Example: if the user said 'build me a Todoist tool', pass 'build me a Todoist tool' (or a clean-up of it). Omit only for proactive hires not tied to a specific task.",
         },
       },
       required: ["role", "specialty", "reason"],
@@ -213,6 +217,7 @@ async function handleProposeHire(
   const customInstructions = stringArg(input.customInstructions) ?? undefined;
   const model = stringArg(input.model) ?? undefined;
   const trustLevel = stringArg(input.trustLevel) ?? undefined;
+  const originalUserRequest = stringArg(input.originalUserRequest) ?? undefined;
 
   if (!role) return toolError("propose_hire requires `role` (e.g., 'Developer', 'Researcher', 'Music specialist')");
   if (!specialty) return toolError("propose_hire requires `specialty` (kebab-case; e.g., 'tools', 'research', 'music')");
@@ -235,6 +240,7 @@ async function handleProposeHire(
     customInstructions,
     model,
     trustLevel: trustLevel as "full" | "standard" | "restricted" | undefined,
+    originalUserRequest,
   });
 
   if (!result.ok) return toolError(result.error);
