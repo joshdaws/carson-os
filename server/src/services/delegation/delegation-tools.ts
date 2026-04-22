@@ -33,7 +33,7 @@
 import type { ToolDefinition, ToolResult } from "@carsonos/shared";
 import type { Db } from "@carsonos/db";
 import { projects, tasks, staffAgents } from "@carsonos/db";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, gt, gte, or } from "drizzle-orm";
 
 import type { DelegationService } from "../delegation-service.js";
 import type { CarsonOversight } from "../carson-oversight.js";
@@ -74,14 +74,40 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "propose_hire",
     description:
-      "Propose hiring a new Developer. Always escalates to the principal via a Telegram approval card. On approval, the Developer is added to staff with the specialty's operating instructions.",
+      "Propose hiring a new specialist agent. Always escalates to the principal via a Telegram approval card. On approval, the specialist is added to staff with the role-appropriate operating instructions, model, and trust level.\n\nThe `role` and `specialty` are free-form so you can bring in any kind of specialist — Developer, Researcher, Music specialist, Tutor, Coach, etc. Three specialties get first-class workspace provisioning: `tools` (sandbox), `project` (git worktree), `core` (carson-os worktree). Any other specialty runs as a conversation-driven agent with MCP tools + trust-level builtins (no workspace).\n\nDefaults by role: `Developer` → claude-opus-4-7 + full trust, anything else → claude-sonnet-4-6 + standard trust. Both autonomous. Override via the `model`/`trustLevel` args.",
     input_schema: {
       type: "object",
       properties: {
-        role: { type: "string", enum: ["Developer"], description: "Only 'Developer' is supported in v0.4." },
-        specialty: { type: "string", enum: ["tools", "project", "core"], description: "What this Developer focuses on." },
-        reason: { type: "string", description: "Why this hire is needed. Shown to the principal on the approval card." },
-        proposedName: { type: "string", description: "Suggested name ('Bob', 'Alice', etc.). The principal can override." },
+        role: {
+          type: "string",
+          description: "Free-form role name (e.g., 'Developer', 'Researcher', 'Music specialist', 'Tutor').",
+        },
+        specialty: {
+          type: "string",
+          description:
+            "Kebab-case specialty identifier. Reserved Developer specialties: 'tools', 'project', 'core' (these provision a workspace). Anything else (e.g., 'research', 'music', 'study-coach') runs without a workspace.",
+        },
+        reason: {
+          type: "string",
+          description: "Why this hire is needed. Shown to the principal on the approval card. Also used to generate operating instructions when customInstructions is absent.",
+        },
+        proposedName: {
+          type: "string",
+          description: "Suggested agent name (e.g., 'Bob', 'Lex', 'Mozart'). The principal can override.",
+        },
+        customInstructions: {
+          type: "string",
+          description: "Optional. When set, replaces the default specialty template for this specialist's operating instructions. Use for specialists outside the Developer flow — describe what they do and how they should behave.",
+        },
+        model: {
+          type: "string",
+          description: "Optional model override (e.g., 'claude-opus-4-7', 'claude-sonnet-4-6'). Defaults: Developer=opus, others=sonnet.",
+        },
+        trustLevel: {
+          type: "string",
+          enum: ["full", "standard", "restricted"],
+          description: "Optional trust level override. Defaults: Developer=full, others=standard. Controls Claude Code builtin tools (Bash/Read/Write/etc).",
+        },
       },
       required: ["role", "specialty", "reason"],
     },
@@ -101,7 +127,7 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "list_active_tasks",
     description:
-      "List delegated tasks that are currently in progress, queued, or awaiting approval for the household. Use to answer 'what's Bob working on?' or to resolve a specialist name to a runId before cancelling.",
+      "List delegated tasks for the household — any that are currently in progress or queued, PLUS any that terminated within the last 60 minutes so you can answer 'any update on X?' after the task has already completed or failed. Includes the outcome (completed/failed/cancelled) and reason for recently-terminal tasks. Use this to resolve a specialist name to a runId before cancelling, or to give an honest status report.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -180,24 +206,35 @@ async function handleProposeHire(
   input: Record<string, unknown>,
   ctx: DelegationToolContext,
 ): Promise<ToolResult> {
-  const role = stringArg(input.role) ?? "Developer";
+  const role = stringArg(input.role);
   const specialty = stringArg(input.specialty);
   const reason = stringArg(input.reason);
   const proposedName = stringArg(input.proposedName) ?? undefined;
+  const customInstructions = stringArg(input.customInstructions) ?? undefined;
+  const model = stringArg(input.model) ?? undefined;
+  const trustLevel = stringArg(input.trustLevel) ?? undefined;
 
-  if (!specialty || !["tools", "project", "core"].includes(specialty)) {
-    return toolError("propose_hire requires specialty: 'tools' | 'project' | 'core'");
+  if (!role) return toolError("propose_hire requires `role` (e.g., 'Developer', 'Researcher', 'Music specialist')");
+  if (!specialty) return toolError("propose_hire requires `specialty` (kebab-case; e.g., 'tools', 'research', 'music')");
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(specialty)) {
+    return toolError(`specialty must be lowercase kebab-case, got '${specialty}'`);
   }
   if (!reason) return toolError("propose_hire requires `reason` for the principal's approval card");
+  if (trustLevel && !["full", "standard", "restricted"].includes(trustLevel)) {
+    return toolError(`trustLevel must be one of 'full' | 'standard' | 'restricted', got '${trustLevel}'`);
+  }
 
   const result = await ctx.delegationService.handleHireProposal({
     householdId: ctx.householdId,
     proposedByAgentId: ctx.agentId,
     proposedByMemberId: ctx.memberId,
     role,
-    specialty: specialty as "tools" | "project" | "core",
+    specialty,
     reason,
     proposedName,
+    customInstructions,
+    model,
+    trustLevel: trustLevel as "full" | "standard" | "restricted" | undefined,
   });
 
   if (!result.ok) return toolError(result.error);
@@ -235,25 +272,37 @@ async function handleCancelTask(
 async function handleListActiveTasks(
   ctx: DelegationToolContext,
 ): Promise<ToolResult> {
+  const RECENT_TERMINAL_WINDOW_MS = 60 * 60 * 1000; // 60 min
+  const recentCutoff = new Date(Date.now() - RECENT_TERMINAL_WINDOW_MS);
+
   const rows = await ctx.db
     .select({
       id: tasks.id,
       agentId: tasks.agentId,
       title: tasks.title,
       status: tasks.status,
+      result: tasks.result,
       createdAt: tasks.createdAt,
+      updatedAt: tasks.updatedAt,
+      completedAt: tasks.completedAt,
     })
     .from(tasks)
     .where(
       and(
         eq(tasks.householdId, ctx.householdId),
-        inArray(tasks.status, ["pending", "approved", "in_progress"]),
-        isNotNull(tasks.parentTaskId),
+        gt(tasks.delegationDepth, 0),
+        or(
+          inArray(tasks.status, ["pending", "approved", "in_progress"]),
+          and(
+            inArray(tasks.status, ["completed", "failed", "cancelled"]),
+            gte(tasks.updatedAt, recentCutoff),
+          ),
+        ),
       ),
     );
 
   if (rows.length === 0) {
-    return toolOk("No active delegated tasks.", { tasks: [] });
+    return toolOk("No active or recently-terminated delegated tasks.", { tasks: [] });
   }
 
   // Resolve specialist names for the caller's convenience
@@ -267,23 +316,60 @@ async function handleListActiveTasks(
   const nameById = new Map(agents.map((a) => [a.id, a.name] as const));
 
   const now = Date.now();
-  const active = rows.map((r) => ({
-    runId: r.id,
-    specialistName: nameById.get(r.agentId) ?? "(unknown)",
-    goal: r.title,
-    status: r.status,
-    startedAt: r.createdAt.toISOString(),
-    durationSec: Math.floor((now - r.createdAt.getTime()) / 1000),
-  }));
+  const activeStatuses = new Set(["pending", "approved", "in_progress"]);
 
-  const summary = active
-    .map(
-      (t) =>
-        `${t.specialistName}: ${t.goal} (${t.status}, ${formatDurationSec(t.durationSec)}) — runId ${t.runId}`,
-    )
+  const enriched = rows.map((r) => {
+    const isActive = activeStatuses.has(r.status);
+    const endTime = r.completedAt?.getTime() ?? r.updatedAt.getTime();
+    return {
+      runId: r.id,
+      specialistName: nameById.get(r.agentId) ?? "(unknown)",
+      goal: r.title,
+      status: r.status,
+      isActive,
+      startedAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+      durationSec: Math.floor(
+        ((isActive ? now : endTime) - r.createdAt.getTime()) / 1000,
+      ),
+      // For terminal tasks, surface the outcome + short reason/result preview
+      // so the caller can summarize without a second tool call.
+      outcome: isActive
+        ? undefined
+        : {
+            status: r.status,
+            // task.result may be a reason string (failure/cancel) or the
+            // specialist's response body (research completion). Trim for the
+            // status summary; full contents stay in task.result.
+            preview: r.result
+              ? r.result.replace(/\s+/g, " ").slice(0, 300) + (r.result.length > 300 ? "…" : "")
+              : undefined,
+          },
+    };
+  });
+
+  // Active first (oldest first), then recently-terminal (most-recent first).
+  enriched.sort((a, b) => {
+    if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+    return a.isActive
+      ? a.startedAt.localeCompare(b.startedAt)
+      : b.updatedAt.localeCompare(a.updatedAt);
+  });
+
+  const summary = enriched
+    .map((t) => {
+      const dur = formatDurationSec(t.durationSec);
+      if (t.isActive) {
+        return `${t.specialistName}: ${t.goal} (${t.status}, ${dur}) — runId ${t.runId}`;
+      }
+      const outcomeEmoji =
+        t.status === "completed" ? "✅" : t.status === "failed" ? "❌" : "⏹";
+      const reasonBit = t.outcome?.preview ? ` — ${t.outcome.preview}` : "";
+      return `${outcomeEmoji} ${t.specialistName}: ${t.goal} (${t.status}, ${dur} ago)${reasonBit} — runId ${t.runId}`;
+    })
     .join("\n");
 
-  return toolOk(summary, { tasks: active });
+  return toolOk(summary, { tasks: enriched });
 }
 
 async function handleRegisterProject(

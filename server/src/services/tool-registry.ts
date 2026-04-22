@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { toolGrants, staffAgents } from "@carsonos/db";
+import { toolGrants, staffAgents, instanceSettings } from "@carsonos/db";
 import type {
   ToolDefinition,
   ToolExecutor,
@@ -193,6 +193,10 @@ export class ToolRegistry {
 
   setDataDir(dataDir: string): void {
     this.dataDir = dataDir;
+  }
+
+  getDataDir(): string | undefined {
+    return this.dataDir;
   }
 
   /** Register all built-in tools (memory, operating instructions). */
@@ -700,6 +704,17 @@ export class ToolRegistry {
 
       // Custom tool system tools (create_http_tool, store_secret, etc.)
       if (CUSTOM_TOOL_NAMES.has(name)) {
+        // Developer agents with specialty=tools are trusted to create active
+        // script tools without a review gate (v0.4 premise: tool-building
+        // Devs exist precisely so average users don't have to approve every
+        // tool). Chief of Staff keeps the legacy bypass too.
+        const [callerAgent] = await this.db
+          .select({ specialty: staffAgents.specialty, staffRole: staffAgents.staffRole })
+          .from(staffAgents)
+          .where(eq(staffAgents.id, ctx.agentId))
+          .limit(1);
+        const isToolsDeveloper =
+          callerAgent?.staffRole === "custom" && callerAgent?.specialty === "tools";
         const result = await handleCustomToolSystemTool(
           {
             db: ctx.db,
@@ -708,6 +723,7 @@ export class ToolRegistry {
             toolRegistry: this,
             dataDir: this.dataDir,
             isChiefOfStaff: ctx.isChiefOfStaff ?? false,
+            canCreateActiveTools: isToolsDeveloper,
             onToolChanged: async (event) => this.handleToolChange(ctx.householdId, event),
           },
           name,
@@ -759,6 +775,90 @@ export class ToolRegistry {
   }
 
   // ── Grant management ──────────────────────────────────────────────
+
+  /**
+   * Boot-time reconciliation: seed agents with any role-default tools they
+   * haven't seen yet. Protects future DEFAULT_GRANTS changes — e.g., v0.4
+   * adds delegation tools, v0.5 adds whatever next — from the silent bug
+   * where existing agents with explicit grants miss the new defaults.
+   *
+   * Per-agent marker in instance_settings (`grants_seeded:<agentId>` →
+   * JSON array of tool names already seeded for that agent). User
+   * revocations after seeding persist — a revoked tool stays in the seeded
+   * list, so the reconciler never re-adds it. Only genuinely new defaults
+   * get seeded.
+   *
+   * Head-butler-via-flag: if `is_head_butler=1` we use head_butler defaults
+   * regardless of staff_role (legacy head-butler rows often have role=
+   * "personal"). Matches the authoritative "this is the CoS" semantic.
+   */
+  async seedMissingDefaults(): Promise<void> {
+    const agents = await this.db
+      .select({
+        id: staffAgents.id,
+        staffRole: staffAgents.staffRole,
+        isHeadButler: staffAgents.isHeadButler,
+      })
+      .from(staffAgents);
+
+    for (const agent of agents) {
+      const effectiveRole = agent.isHeadButler ? "head_butler" : agent.staffRole;
+      const defaults = DEFAULT_GRANTS[effectiveRole] ?? DEFAULT_GRANTS.custom;
+      if (defaults.length === 0) continue;
+
+      const settingKey = `grants_seeded:${agent.id}`;
+      const [setting] = await this.db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.key, settingKey))
+        .limit(1);
+      const alreadySeeded: string[] = Array.isArray(setting?.value)
+        ? (setting!.value as string[])
+        : [];
+
+      // Only seed tools this agent has never seen before. User-revoked
+      // tools are in `alreadySeeded` so they don't get re-added.
+      const toSeed = defaults.filter(
+        (name) => !alreadySeeded.includes(name) && this.tools.has(name),
+      );
+      if (toSeed.length === 0) continue;
+
+      // Insert grants idempotently — agent may already have some of these via
+      // an earlier materializeDefaults pass; the unique index on
+      // (agentId, toolName) makes the conflict a no-op.
+      await this.db
+        .insert(toolGrants)
+        .values(
+          toSeed.map((toolName) => ({
+            agentId: agent.id,
+            toolName,
+            grantedBy: "system-seed",
+          })),
+        )
+        .onConflictDoNothing();
+
+      // Mark the FULL current defaults set as seeded, not just what we
+      // inserted. That way a revocation of toSeed[k] between v0.4 and v0.5
+      // doesn't get re-seeded at v0.5 — it stays in alreadySeeded forever.
+      const newSeeded = [...new Set([...alreadySeeded, ...defaults])];
+      if (setting) {
+        await this.db
+          .update(instanceSettings)
+          .set({ value: newSeeded })
+          .where(eq(instanceSettings.key, settingKey));
+      } else {
+        await this.db.insert(instanceSettings).values({
+          id: crypto.randomUUID(),
+          key: settingKey,
+          value: newSeeded,
+        });
+      }
+
+      console.log(
+        `[tools] Seeded ${toSeed.length} default grant(s) for ${effectiveRole} agent ${agent.id}: ${toSeed.join(", ")}`,
+      );
+    }
+  }
 
   /**
    * Materialize role defaults into tool_grants table.

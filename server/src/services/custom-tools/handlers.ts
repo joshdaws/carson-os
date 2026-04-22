@@ -10,7 +10,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
-import { customTools, toolSecrets } from "@carsonos/db";
+import { customTools, toolSecrets, delegationEdges } from "@carsonos/db";
 import type { ToolResult } from "@carsonos/shared";
 import type { ToolRegistry } from "../tool-registry.js";
 
@@ -43,6 +43,11 @@ export interface CustomToolHandlerContext {
   toolRegistry: ToolRegistry;
   dataDir?: string;
   isChiefOfStaff: boolean;
+  /** True for agents trusted to create `active` script tools without a
+   *  review gate. Set for: Chief of Staff (legacy) AND Developer agents
+   *  with specialty=tools (v0.4 — Dev's whole job is building tools; gating
+   *  every one defeats the point for average users). */
+  canCreateActiveTools?: boolean;
   /** Called when a tool is created/updated/disabled so the registry can refresh. */
   onToolChanged: (event: ToolChangeEvent) => Promise<void>;
 }
@@ -254,8 +259,13 @@ async function writeAndRegisterTool(
     const dir = toolDirPath(ctx.householdId, bundle, name);
     const relPath = toolRelPath(bundle, name);
 
-    // 2. Decide initial status before writes so we know what state to persist
-    const initialStatus = kind === "script" && !ctx.isChiefOfStaff ? "pending_approval" : "active";
+    // 2. Decide initial status before writes so we know what state to persist.
+    // Script tools default to pending_approval EXCEPT for trusted creators —
+    // Chief of Staff AND Developer-with-tools-specialty. Gating every tool a
+    // Dev builds would make this unusable for the target user (family member
+    // who just wants "can you make me a thing that does X").
+    const bypassApproval = ctx.isChiefOfStaff || ctx.canCreateActiveTools === true;
+    const initialStatus = kind === "script" && !bypassApproval ? "pending_approval" : "active";
 
     // 3. Insert DB row FIRST. Relies on the unique index on (household_id,
     // name) as the authoritative tiebreaker — if a racing insert snuck past
@@ -308,9 +318,30 @@ async function writeAndRegisterTool(
     // 6. Notify registry
     await ctx.onToolChanged({ type: "created", toolId: row.id });
 
-    // 7. Auto-grant to creator (only if active)
+    // 7. Auto-grant. Always to creator (existing behavior). Additionally, if
+    //    the creator is a hired specialist (staffRole=custom with a specialty),
+    //    auto-grant to every agent that has a delegation edge TO this creator
+    //    — i.e., the parent agents who can delegate to them. That's the
+    //    agents who trust the specialist to do the work and should trust
+    //    the tools the specialist builds in service of that work. For v0.4
+    //    with CoS→Dev, this means Carson gets publish_to_web the moment Dev
+    //    creates it, no extra step.
     if (initialStatus === "active") {
       await ctx.toolRegistry.grant(ctx.agentId, name, ctx.agentId);
+
+      if (ctx.canCreateActiveTools) {
+        const parents = await ctx.db
+          .select({ fromAgentId: delegationEdges.fromAgentId })
+          .from(delegationEdges)
+          .where(eq(delegationEdges.toAgentId, ctx.agentId));
+        for (const p of parents) {
+          try {
+            await ctx.toolRegistry.grant(p.fromAgentId, name, ctx.agentId);
+          } catch (err) {
+            console.warn(`[custom-tools] propagation grant failed ${p.fromAgentId}→${name}:`, err);
+          }
+        }
+      }
     }
 
     if (initialStatus === "pending_approval") {
@@ -468,7 +499,7 @@ async function handleUpdateCustomTool(
     let newApprovedHash = row.approvedContentHash;
 
     if (row.kind === "script" && newHash !== row.approvedContentHash) {
-      if (ctx.isChiefOfStaff) {
+      if (ctx.isChiefOfStaff || ctx.canCreateActiveTools) {
         newApprovedHash = newHash;
       } else {
         newStatus = "pending_approval";

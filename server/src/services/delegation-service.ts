@@ -28,6 +28,7 @@ import {
   conversations,
   messages,
   familyMembers,
+  toolGrants,
 } from "@carsonos/db";
 
 import type { Adapter } from "./subprocess-adapter.js";
@@ -38,7 +39,8 @@ import { TaskEngine } from "./task-engine.js";
 import type { CarsonOversight } from "./carson-oversight.js";
 import {
   templateForSpecialty,
-  type DeveloperSpecialty,
+  isDeveloperSpecialty,
+  composeGenericSpecialistInstructions,
 } from "./delegation/specialty-templates/index.js";
 import type { DelegationNotifier, NotifyPayload } from "./delegation/notifier.js";
 
@@ -83,10 +85,19 @@ export interface HireProposalInput {
   householdId: string;
   proposedByAgentId: string;
   proposedByMemberId: string;
+  /** Free-form role name (Developer, Researcher, Music specialist, Tutor, ...). */
   role: string;
-  specialty: "tools" | "project" | "core";
+  /** Kebab-case specialty. Reserved: 'tools' | 'project' | 'core' (Developer,
+   *  workspace-provisioned). Anything else runs as a plain specialist agent. */
+  specialty: string;
   reason: string;
   proposedName?: string;
+  /** Optional. Overrides the specialty template for operating_instructions. */
+  customInstructions?: string;
+  /** Optional model override. Defaults: Developer → opus, others → sonnet. */
+  model?: string;
+  /** Optional trust-level override. Defaults: Developer → full, others → standard. */
+  trustLevel?: "full" | "standard" | "restricted";
 }
 
 export interface HireProposalResult {
@@ -366,9 +377,11 @@ export class DelegationService {
     // If the notifier isn't wired yet (boot order edge case) or Telegram
     // is offline, the reconciler's Phase-2 replay will retry on next boot.
     if (this.notifier) {
-      const proposedName = input.proposedName ?? defaultDeveloperName(input.specialty);
+      const proposedName =
+        input.proposedName ?? defaultNameForSpecialty(input.role, input.specialty);
       const cardText = composeHireCardText({
         proposedName,
+        role: input.role,
         specialty: input.specialty,
         reason: input.reason,
       });
@@ -445,9 +458,12 @@ export class DelegationService {
     let proposal: {
       kind?: string;
       role?: string;
-      specialty?: DeveloperSpecialty;
+      specialty?: string;
       reason?: string;
       proposedName?: string;
+      customInstructions?: string;
+      model?: string;
+      trustLevel?: "full" | "standard" | "restricted";
     };
     try {
       proposal = task.description ? JSON.parse(task.description) : {};
@@ -455,10 +471,36 @@ export class DelegationService {
       proposal = {};
     }
 
-    const specialty = (proposal.specialty ?? "tools") as DeveloperSpecialty;
-    const name = proposal.proposedName?.trim() || defaultDeveloperName(specialty);
+    const role = proposal.role?.trim() || "Specialist";
+    const specialty = proposal.specialty?.trim() || "general";
+    const name = proposal.proposedName?.trim() || defaultNameForSpecialty(role, specialty);
+    const reason = proposal.reason?.trim() || "";
 
-    // Materialize the Developer staff_agents row.
+    // Model + trust defaults by role. Developers need Opus + full trust to
+    // actually write code; other specialists default to Sonnet + standard
+    // (read-only builtins + web search). The proposer can override via the
+    // model/trustLevel args on propose_hire.
+    const isDevRole = isDeveloperSpecialty(specialty);
+    const model = proposal.model?.trim() || (isDevRole ? "claude-opus-4-7" : "claude-sonnet-4-6");
+    const trustLevel = proposal.trustLevel ?? (isDevRole ? "full" : "standard");
+
+    // Operating instructions precedence:
+    //   1. proposer's customInstructions (overrides everything)
+    //   2. curated Developer template (tools/project/core)
+    //   3. generic specialist instructions composed from role + reason
+    let operatingInstructions: string;
+    if (proposal.customInstructions?.trim()) {
+      operatingInstructions = proposal.customInstructions.trim();
+    } else {
+      const devTemplate = templateForSpecialty(specialty);
+      operatingInstructions =
+        devTemplate ?? composeGenericSpecialistInstructions({ role, specialty, reason, name });
+    }
+
+    const roleContent = isDevRole
+      ? `A Developer specializing in ${specialty}. ${reason}`.trim()
+      : `${role} — ${reason}`.trim();
+
     const [developer] = await this.db
       .insert(staffAgents)
       .values({
@@ -466,15 +508,15 @@ export class DelegationService {
         name,
         staffRole: "custom",
         specialty,
-        roleContent: `A Developer specializing in ${specialty}. ${proposal.reason ?? ""}`.trim(),
+        roleContent,
         soulContent: null,
         visibility: "internal",
-        model: "claude-opus-4-7",
+        model,
         status: "active",
         isHeadButler: false,
         autonomyLevel: "autonomous",
-        trustLevel: "full",
-        operatingInstructions: templateForSpecialty(specialty),
+        trustLevel,
+        operatingInstructions,
       })
       .returning();
 
@@ -487,6 +529,35 @@ export class DelegationService {
         toAgentId: developer.id,
       })
       .onConflictDoNothing();
+
+    // Developer-with-tools-specialty: grant the custom-tool creation tools
+    // so they can actually install what they build. Without these grants,
+    // Dev's output is just orphaned files in a sandbox. The product premise
+    // is that average users shouldn't have to approve every tool — Dev
+    // builds, installs as `active`, user uses. Canvas for other specialties
+    // (project/core) don't get these; they write code in a worktree instead.
+    if (specialty === "tools") {
+      const devToolGrants = [
+        "create_script_tool",
+        "create_http_tool",
+        "create_prompt_tool",
+        "store_secret",
+        "install_skill",
+        "list_custom_tools",
+        "update_custom_tool",
+        "disable_custom_tool",
+      ];
+      await this.db
+        .insert(toolGrants)
+        .values(
+          devToolGrants.map((toolName) => ({
+            agentId: developer.id,
+            toolName,
+            grantedBy: "system-hire",
+          })),
+        )
+        .onConflictDoNothing();
+    }
 
     // Mark the approval task completed + note the developer id for audit.
     await this.db
@@ -979,39 +1050,58 @@ export class DelegationService {
   }
 }
 
-/** Pick a default Developer name when the proposing agent didn't specify one.
- *  Bob for tools, Alice for project work, Claude-self for core — matches the
- *  design doc's named-Developer metaphor. */
-function defaultDeveloperName(specialty: DeveloperSpecialty): string {
-  switch (specialty) {
-    case "tools":
-      return "Bob";
-    case "project":
-      return "Alice";
-    case "core":
-      return "Claude-self";
+/** Pick a default specialist name when the proposing agent didn't specify one.
+ *  Developer role has canonical names per specialty. Other roles fall back to
+ *  "Specialist" — the proposer really should name non-Developer specialists. */
+function defaultNameForSpecialty(role: string, specialty: string): string {
+  if (isDeveloperSpecialty(specialty)) {
+    switch (specialty) {
+      case "tools":
+        return "Bob";
+      case "project":
+        return "Alice";
+      case "core":
+        return "Claude-self";
+    }
   }
+  // Friendly fallback — better than a UUID, but the proposer should provide
+  // proposedName for specialists where the family metaphor matters (Mozart
+  // for music, Lex for research, etc.).
+  return role.toLowerCase() === "developer" ? "Dev" : "Specialist";
 }
 
 /** Hire approval card text shown above the inline buttons. Kept terse — the
- *  buttons do the heavy lifting, the card just surfaces what's being decided. */
+ *  buttons do the heavy lifting, the card just surfaces what's being decided.
+ *  Uses markdown (not raw HTML) because the relay runs it through
+ *  markdownToTelegramHtml before sending with parse_mode: HTML. */
 function composeHireCardText(args: {
   proposedName: string;
-  specialty: DeveloperSpecialty;
+  role: string;
+  specialty: string;
   reason: string;
 }): string {
-  const specialtyDescription: Record<DeveloperSpecialty, string> = {
+  const developerDescriptions: Record<string, string> = {
     tools: "builds custom tools in sandboxed workspaces",
     project: "works in your registered projects, opens PRs via gh",
     core: "modifies CarsonOS itself, opens PRs for your review",
   };
+  const devRole = isDeveloperSpecialty(args.specialty);
+  const specialtyLine = devRole
+    ? `${args.specialty} — ${developerDescriptions[args.specialty]}`
+    : args.specialty;
+  const trustLine = devRole
+    ? "full (Bash, Read, Write, Edit, Skill)"
+    : "standard (Read, Glob, Grep, WebFetch, WebSearch)";
+  const modelLine = devRole ? "claude-opus-4-7" : "claude-sonnet-4-6";
+
   return [
-    `<b>Hire ${args.proposedName} the Developer?</b>`,
+    `**Hire ${args.proposedName} — ${args.role}?**`,
     "",
-    `<i>Specialty:</i> ${args.specialty} — ${specialtyDescription[args.specialty]}`,
-    `<i>Reason:</i> ${args.reason}`,
+    `_Specialty:_ ${specialtyLine}`,
+    `_Reason:_ ${args.reason}`,
     "",
-    `<i>Trust level:</i> full (Bash, Read, Write, Edit, Skill)`,
-    `<i>Approval auto-expires in 24h</i>`,
+    `_Model:_ ${modelLine}`,
+    `_Trust level:_ ${trustLine}`,
+    `_Approval auto-expires in 24h_`,
   ].join("\n");
 }

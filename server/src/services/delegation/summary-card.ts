@@ -28,7 +28,7 @@ export interface SummaryCardVerification {
 export interface SummaryCard {
   kind: SummaryCardKind;
   taskId: string;
-  specialty: DeveloperSpecialty;
+  specialty: string;
   /** The task title — what the Developer was asked to do. */
   goal: string;
   workspaceKind: WorkspaceKind | null;
@@ -36,6 +36,9 @@ export interface SummaryCard {
   branch?: string;
   /** For workspaceKind='worktree' on project/core specialties. */
   prUrl?: string;
+  /** Absolute filesystem path of the workspace — used in completion text so
+   *  the user knows where to review files. */
+  workspacePath?: string;
   /** Relative paths, trimmed to the first ~20 entries. */
   filesChanged?: string[];
   verification?: SummaryCardVerification;
@@ -53,10 +56,11 @@ export interface ComposeCardInput {
     title: string;
     workspaceKind: string | null;
     workspaceBranch: string | null;
+    workspacePath?: string | null;
     createdAt: Date;
     completedAt: Date | null;
   };
-  specialty: DeveloperSpecialty;
+  specialty: string;
   artifacts?: {
     prUrl?: string;
     filesChanged?: string[];
@@ -90,6 +94,7 @@ export function composeSummaryCard(input: ComposeCardInput): SummaryCard {
     goal: input.task.title,
     workspaceKind,
     branch: input.task.workspaceBranch ?? undefined,
+    workspacePath: input.task.workspacePath ?? undefined,
     prUrl: input.artifacts?.prUrl,
     filesChanged,
     verification: input.artifacts?.verification,
@@ -106,17 +111,26 @@ export function composeSummaryCard(input: ComposeCardInput): SummaryCard {
  */
 export function renderSummaryCardText(card: SummaryCard): string {
   const lines: string[] = [];
+  const goalSummary = summarizeGoal(card.goal);
 
   if (card.kind === "completion") {
-    lines.push(`✅ ${titleForSpecialty(card.specialty)} finished: ${card.goal}`);
+    lines.push(`✅ ${titleForSpecialty(card.specialty)} finished`);
+    lines.push(`_${goalSummary}_`);
   } else if (card.kind === "failure") {
-    lines.push(`❌ ${titleForSpecialty(card.specialty)} failed: ${card.goal}`);
+    lines.push(`❌ ${titleForSpecialty(card.specialty)} failed`);
+    lines.push(`_${goalSummary}_`);
   } else {
-    lines.push(`⏹ ${titleForSpecialty(card.specialty)} cancelled: ${card.goal}`);
+    lines.push(`⏹ ${titleForSpecialty(card.specialty)} cancelled`);
+    lines.push(`_${goalSummary}_`);
   }
 
   if (card.prUrl) lines.push(`PR: ${card.prUrl}`);
   if (card.branch) lines.push(`Branch: ${card.branch}`);
+  // For tool builds, tell the user where the files live — they need to
+  // review before installing.
+  if (card.kind === "completion" && card.workspaceKind === "tool_sandbox" && card.workspacePath) {
+    lines.push(`Review at: \`${card.workspacePath}\``);
+  }
 
   if (card.verification) {
     if (card.verification.result === "passed") {
@@ -146,12 +160,37 @@ export function renderSummaryCardText(card: SummaryCard): string {
   return lines.join("\n");
 }
 
-function titleForSpecialty(s: DeveloperSpecialty): string {
+function titleForSpecialty(s: string): string {
   switch (s) {
     case "tools": return "Tool build";
     case "project": return "Project work";
     case "core": return "Core update";
+    default: {
+      // Capitalize + append " task" for non-Developer specialties
+      const pretty = s
+        .split(/[-_\s]+/)
+        .filter(Boolean)
+        .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+      return `${pretty} task`;
+    }
   }
+}
+
+/** Truncate a verbose task prompt to a one-line summary. Cuts on the first
+ *  sentence boundary if present, else at ~80 chars. */
+function summarizeGoal(goal: string): string {
+  const single = goal.replace(/\s+/g, " ").trim();
+  // Prefer first sentence when it's reasonable length
+  const firstSentenceEnd = single.search(/[.!?](\s|$)/);
+  if (firstSentenceEnd > 10 && firstSentenceEnd <= 120) {
+    return single.slice(0, firstSentenceEnd + 1);
+  }
+  if (single.length <= 100) return single;
+  // Cut at a word boundary near 90 chars
+  const cut = single.slice(0, 90);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > 50 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
 function formatDuration(sec: number): string {
