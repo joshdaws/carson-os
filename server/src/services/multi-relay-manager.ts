@@ -96,6 +96,51 @@ export class SharedRateLimiter {
   }
 }
 
+// ── Transient-error detection ──────────────────────────────────────
+
+/**
+ * Network codes we retry on. Telegram API failures wrapped by grammy
+ * surface these in the error message chain — `ETIMEDOUT` (slow route),
+ * `ECONNRESET` (TCP drop), `EAI_AGAIN` (DNS flake), `ENETUNREACH`
+ * (offline), `ECONNREFUSED` (Telegram edge down). All resolve on their
+ * own given enough time.
+ *
+ * Explicitly NOT in this set: 401/403/"unauthorized" (auth failure — bot
+ * token is wrong, retrying won't help).
+ */
+const TRANSIENT_ERROR_MARKERS = [
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "ECONNREFUSED",
+  "socket hang up",
+  "fetch failed",
+];
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  const chain: string[] = [];
+  let cursor: unknown = err;
+  // Walk up to 5 levels of nested `cause` so grammy's wrapped node-fetch
+  // errors still match (HttpError → FetchError → node:net Error).
+  for (let i = 0; i < 5 && cursor; i++) {
+    if (cursor instanceof Error) {
+      chain.push(cursor.message);
+      cursor = (cursor as Error & { cause?: unknown }).cause;
+    } else {
+      chain.push(String(cursor));
+      break;
+    }
+  }
+  const joined = chain.join(" | ");
+  return TRANSIENT_ERROR_MARKERS.some((m) => joined.includes(m));
+}
+
 // ── Multi-Relay Manager ─────────────────────────────────────────────
 
 export class MultiRelayManager {
@@ -408,30 +453,58 @@ export class MultiRelayManager {
       }
     });
 
-    // Clear any stale webhook, then start with runner
-    try {
-      await bot.api.deleteWebhook({ drop_pending_updates: false });
+    // Clear any stale webhook, then start with runner. Transient network
+    // errors (ETIMEDOUT on deleteWebhook is the common one — WiFi/DNS blips)
+    // used to leave the bot in a zombie state forever: error caught, no
+    // retry, 0 bots running, user has to manually restart the dev server.
+    // Now we back off and retry a few times for transient errors only —
+    // auth errors (401/403/"unauthorized") fail immediately since retrying
+    // won't help.
+    const START_BOT_BACKOFFS_MS = [5_000, 15_000, 45_000];
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= START_BOT_BACKOFFS_MS.length; attempt++) {
+      try {
+        await bot.api.deleteWebhook({ drop_pending_updates: false });
 
-      const runner = run(bot, {
-        runner: {
-          // Short long-poll so runner.stop() returns within a few seconds
-          // during hot reloads. Telegram still pushes updates instantly when
-          // present — this only caps how long an idle poll blocks.
-          fetch: { timeout: POLL_TIMEOUT_S },
-          silent: true,
-        },
-        sink: { concurrency: 4 },
-      });
+        const runner = run(bot, {
+          runner: {
+            // Short long-poll so runner.stop() returns within a few seconds
+            // during hot reloads. Telegram still pushes updates instantly when
+            // present — this only caps how long an idle poll blocks.
+            fetch: { timeout: POLL_TIMEOUT_S },
+            silent: true,
+          },
+          sink: { concurrency: 4 },
+        });
 
-      managed.runner = runner;
-      managed.running = true;
-      this.bots.set(agentId, managed);
+        managed.runner = runner;
+        managed.running = true;
+        this.bots.set(agentId, managed);
 
-      console.log(`[multi-relay] Bot started for ${agent.name} (${agentId})`);
-    } catch (err) {
-      console.error(`[multi-relay] Failed to start bot for ${agent.name}:`, err);
-      // Don't set status to idle on start failure — it prevents recovery on restart
+        console.log(
+          `[multi-relay] Bot started for ${agent.name} (${agentId})` +
+            (attempt > 0 ? ` [recovered after ${attempt} retr${attempt === 1 ? "y" : "ies"}]` : ""),
+        );
+        return;
+      } catch (err) {
+        lastErr = err;
+        const transient = isTransientNetworkError(err);
+        const nextDelay = START_BOT_BACKOFFS_MS[attempt];
+        if (!transient || nextDelay === undefined) {
+          break;
+        }
+        console.warn(
+          `[multi-relay] Transient failure starting ${agent.name} (attempt ${attempt + 1}/${START_BOT_BACKOFFS_MS.length + 1}), retrying in ${nextDelay / 1000}s:`,
+          errMessage(err),
+        );
+        await new Promise((resolve) => setTimeout(resolve, nextDelay));
+      }
     }
+    console.error(
+      `[multi-relay] Failed to start bot for ${agent.name} after ${START_BOT_BACKOFFS_MS.length + 1} attempts:`,
+      lastErr,
+    );
+    // Don't set status to idle on start failure — it prevents recovery on restart.
   }
 
   async stopBot(agentId: string): Promise<void> {
