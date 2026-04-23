@@ -8,10 +8,10 @@ CarsonOS is a self-hosted AI staff platform for families. Each family member get
 
 ## What You Get
 
-- **Personal agents** — Each family member gets their own AI on Telegram with a distinct personality
+- **Personal agents** — Each family member gets their own AI on Telegram or Signal with a distinct personality
 - **Memory that sticks** — Agents remember facts, preferences, events, and commitments across conversations
 - **Voice, audio, and photos** — Send a voice message and the agent transcribes it. Send a photo and the agent actually sees it. Audio file attachments work too.
-- **Calendar & email** — Check schedules, create events, draft emails (never sends without your OK)
+- **Calendar & email** — Check schedules, create events, draft emails. Works with Google Calendar / Gmail (via `gws`) and CalDAV / IMAP (iCloud, Fastmail, any standards-compliant server). Drafts are never sent without your OK.
 - **A constitution** — Your family's rules and values, enforced across every agent
 - **Trust levels** — A parent's agent has full system access; a 6-year-old's is locked down
 - **Everything local** — SQLite database, markdown memory files, no cloud dependencies
@@ -24,6 +24,7 @@ CarsonOS is a self-hosted AI staff platform for families. Each family member get
 | **pnpm** | `npm install -g pnpm` | Package manager (monorepo) |
 | **Claude CLI** | `npm install -g @anthropic-ai/claude-code` | Agent runtime (uses your Claude subscription) |
 | **QMD** | `npm install -g @tobilu/qmd` | Local markdown search engine for memory |
+| **signal-cli** | [github.com/AsamK/signal-cli](https://github.com/AsamK/signal-cli/releases) | Signal transport (optional) |
 
 Optional:
 - **gws** — `npm install -g googleworkspace/cli` — Google Workspace CLI (Calendar, Gmail, Drive)
@@ -56,7 +57,7 @@ Then open [http://localhost:3300/onboarding](http://localhost:3300/onboarding) a
 
 1. **Family** — Name your household and add family members (name, age, role)
 2. **Agent** — Create your first agent and optionally connect a Telegram bot
-3. **Done** — Open Telegram and start chatting
+3. **Done** — Open Telegram (or Signal) and start chatting
 
 <!-- TODO: Add onboarding screenshot -->
 
@@ -107,6 +108,17 @@ GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.carsonos/google/your-name gws auth login
 ```
 
 Each family member authenticates separately with their own Google account.
+
+### Connecting Signal (optional)
+
+Signal transport uses `signal-cli` running as a local JSON-RPC daemon over HTTP/SSE:
+
+1. Install `signal-cli` and register your Signal number
+2. Start the daemon:
+   ```bash
+   signal-cli -a +1XXXXXXXXXX daemon --http localhost:8080
+   ```
+3. In the dashboard, go to Staff → your agent and enter the Signal number and daemon endpoint
 
 ## How It Works
 
@@ -175,9 +187,10 @@ Agents get tools based on their role and trust level:
 | `update_memory` | Update existing memory entries in-place |
 | `delete_memory` | Remove outdated memories |
 | `update_instructions` | Maintain operating instructions |
-| `list_calendar_events` | Check schedules (requires gws) |
-| `create_calendar_event` | Create events (requires gws) |
-| `gmail_*` | Read, draft, and manage email (requires gws) |
+| `list_calendar_events` | Check schedules (Google Calendar via gws, or any CalDAV server) |
+| `create_calendar_event` | Create events (Google Calendar via gws, or any CalDAV server) |
+| `gmail_*` | Read, draft, and manage email via Google (requires gws) |
+| `imap_*` | Read and search email via IMAP (iCloud, Fastmail, any standards-compliant server) |
 | `drive_*` | Search and list Drive files (requires gws) |
 | `create_http_tool` | Wrap any HTTPS API as a custom tool |
 | `create_prompt_tool` | Turn a recipe into an agent-invokable skill |
@@ -237,6 +250,9 @@ server/
       env-hydration.ts          <- Hydrate platform secrets from instance_settings → env
       memory/                   <- MemoryProvider, QMD provider, schema, tools
       google/                   <- Calendar, Gmail, Drive providers
+      caldav/                   <- CalDAV calendar provider (iCloud Calendar, Fastmail, etc.)
+      imap/                     <- IMAP email provider
+      signal/                   <- Signal transport (signal-cli SSE daemon)
 
 ui/
   src/

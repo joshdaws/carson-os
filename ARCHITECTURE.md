@@ -22,7 +22,9 @@ The head agent (Chief of Staff) manages the household. Other agents are personal
 
 ## The Pipeline
 
-When a family member sends a message on Telegram, here's what happens:
+Messages arrive on one of two transports — Telegram or Signal — and are normalized before entering the shared pipeline. Telegram supports rich media (voice, photos, documents); the Signal transport (via signal-cli SSE) handles text and basic attachments.
+
+When a family member sends a message, here's what happens:
 
 ```
 Telegram update (text | voice | audio | photo | document | sticker | video)
@@ -211,6 +213,24 @@ Tools: `list_calendar_events`, `create_calendar_event`, `get_calendar_event`, `g
 
 Gmail uses a draft-first workflow: compose/reply create drafts, the user reviews in Gmail, then either sends from Gmail or tells the agent "send it."
 
+### CalDAV Integration
+
+CalDAV is an open protocol for calendar access. The CalDAV provider is an alternative to `gws` for families using iCloud Calendar, Fastmail, or any standards-compliant server.
+
+It handles VEVENT parsing with full RFC 5545 compliance: iCal text escaping and decoding, line folding and unfolding, all-day vs. UTC vs. floating datetime formats, RECURRENCE-ID for exception instances, and `DTSTART;TZID=` parameter stripping for timezone-qualified properties. Credentials are stored as JSON files in `~/.carsonos/caldav/<member>/`.
+
+### IMAP Integration
+
+The IMAP provider gives agents mailbox access without requiring Google. It uses `imapflow` and supports a Gmail-style search query syntax parsed at the provider layer before being translated to IMAP search criteria:
+
+- `from:`, `to:`, `cc:`, `subject:`, `body:` — field-scoped filters
+- `is:unread`, `is:read`, `is:flagged`, `is:answered` — flag filters
+- `before:`, `after:` / `since:` — date range filters
+- Unrecognised tokens become full-text search terms
+- Empty query defaults to `ALL`
+
+Message IDs use the format `MAILBOX:UID` (e.g. `INBOX:12345`), using the last colon as separator so mailbox names containing colons or slashes are handled correctly. Credentials are stored as JSON files in `~/.carsonos/imap/<member>/`.
+
 ## Constitution Engine
 
 The constitution is the frame. It goes first in every system prompt.
@@ -248,7 +268,7 @@ The profile interview collects information that becomes the member's profile, in
 - **Sub-agents** — Specialist agents (tutor, developer) that the Chief of Staff delegates to (delegation infra exists, disabled in v0.1+)
 - **Tool-call notifications** — Italicized status text in stream during tool execution ("*Searching calendar...*")
 - **Web UI chat** — Chat with agents from the dashboard (currently Telegram only)
-- **Signal / WhatsApp / Slack** — Other messaging platforms
+- **WhatsApp / Slack** — Additional messaging platforms beyond Telegram and Signal
 - **Inbound video understanding** — Videos are size-guarded and acknowledged; frame extraction / vision pass not yet wired
 
 ## Inspiration
