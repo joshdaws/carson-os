@@ -483,6 +483,36 @@ export class DelegationService {
     const name = proposal.proposedName?.trim() || defaultNameForSpecialty(role, specialty);
     const reason = proposal.reason?.trim() || "";
 
+    // Collision check. Now that we've resolved the final name (either from
+    // proposedName or the specialty default), refuse if it's taken. Roll
+    // the task back to pending so the proposer can retry with a different
+    // name — we already flipped to approved above, so we need to undo it.
+    const [nameCollision] = await this.db
+      .select({ id: staffAgents.id, status: staffAgents.status })
+      .from(staffAgents)
+      .where(
+        and(
+          eq(staffAgents.householdId, task.householdId),
+          eq(staffAgents.name, name),
+          eq(staffAgents.status, "active"),
+        ),
+      )
+      .limit(1);
+    if (nameCollision) {
+      // Revert the race-gate UPDATE — leave the task pending so the user
+      // can handle the collision (retry with a different proposedName).
+      await this.db
+        .update(tasks)
+        .set({ status: "pending", approvedBy: null, updatedAt: new Date() })
+        .where(eq(tasks.id, approvalTaskId));
+      return {
+        ok: false,
+        error:
+          `An active staff agent named '${name}' already exists in this household. ` +
+          `Re-propose with a different proposedName (e.g., '${name}-2' or a distinct first name).`,
+      };
+    }
+
     // Model + trust defaults by role. Developers need Opus + full trust to
     // actually write code; other specialists default to Sonnet + standard
     // (read-only builtins + web search). The proposer can override via the
