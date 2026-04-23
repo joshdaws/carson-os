@@ -7,14 +7,23 @@
  */
 
 import { Router } from "express";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, or, desc, inArray, sql } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   staffAgents,
   staffAssignments,
   familyMembers,
   conversations,
+  messages,
+  tasks,
+  taskEvents,
+  policyEvents,
   delegationEdges,
+  delegationNotifications,
+  activityLog,
+  toolGrants,
+  scheduledTasks,
+  customTools,
   personalityInterviewState,
 } from "@carsonos/db";
 import type { PersonalityInterviewEngine } from "../services/personality-interview.js";
@@ -263,12 +272,19 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     res.json({ agent: updated });
   });
 
-  // DELETE /:id -- delete staff agent (block if Chief of Staff)
+  // DELETE /:id -- delete staff agent.
+  //
+  // FK cleanup: staff_agents.id is referenced by 10 tables, most NOT NULL, and
+  // the Drizzle better-sqlite3 driver enables PRAGMA foreign_keys=ON, so a
+  // naive DELETE fails. We block when state would be unsafe to discard (active
+  // tasks, live custom tools) and cascade the rest in a single transaction.
   router.delete("/:id", async (req, res) => {
+    const agentId = req.params.id;
+
     const existing = await db
       .select()
       .from(staffAgents)
-      .where(eq(staffAgents.id, req.params.id))
+      .where(eq(staffAgents.id, agentId))
       .get();
 
     if (!existing) {
@@ -281,13 +297,136 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       return;
     }
 
-    // Delete assignments first (FK constraint)
-    await db
-      .delete(staffAssignments)
-      .where(eq(staffAssignments.agentId, req.params.id));
+    // Block if this agent has active tasks. Deleting mid-run would leave a
+    // worktree/sandbox orphaned and a reconciler writing into a vanished
+    // agent row. Ask the user to cancel the task(s) first.
+    const activeTasks = await db
+      .select({ id: tasks.id, title: tasks.title, status: tasks.status })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.agentId, agentId),
+          inArray(tasks.status, ["pending", "approved", "in_progress"]),
+        ),
+      );
+    if (activeTasks.length > 0) {
+      res.status(409).json({
+        error: `agent has ${activeTasks.length} active task(s). Cancel them first: ${activeTasks
+          .map((t) => `"${t.title}" (${t.status})`)
+          .join(", ")}`,
+      });
+      return;
+    }
 
-    // Delete agent
-    await db.delete(staffAgents).where(eq(staffAgents.id, req.params.id));
+    // Block if this agent authored custom tools that are live. Hired Devs
+    // often build tools; losing those tools on delete is a surprise. Tell
+    // the user to delete or reassign the tools first.
+    const liveTools = await db
+      .select({ id: customTools.id, name: customTools.name, status: customTools.status })
+      .from(customTools)
+      .where(
+        and(
+          eq(customTools.createdByAgentId, agentId),
+          inArray(customTools.status, ["active", "pending_approval"]),
+        ),
+      );
+    if (liveTools.length > 0) {
+      res.status(409).json({
+        error: `agent authored ${liveTools.length} live custom tool(s). Delete them first in Tools: ${liveTools
+          .map((t) => t.name)
+          .join(", ")}`,
+      });
+      return;
+    }
+
+    // better-sqlite3 is synchronous; Drizzle's transaction wrapper rejects
+    // async callbacks. Run each Drizzle chain sync with .all()/.run()/.get().
+    try {
+      db.transaction((tx) => {
+        // Conversations + their messages. messages references conversations(id),
+        // so messages must go first.
+        const agentConvs = tx
+          .select({ id: conversations.id })
+          .from(conversations)
+          .where(eq(conversations.agentId, agentId))
+          .all();
+        const convIds = agentConvs.map((c) => c.id);
+        if (convIds.length > 0) {
+          tx.delete(messages).where(inArray(messages.conversationId, convIds)).run();
+          tx.delete(conversations).where(inArray(conversations.id, convIds)).run();
+        }
+
+        // Task graveyard: clear everything that references the agent's tasks
+        // before deleting the tasks themselves. tasks.id is referenced by
+        // task_events AND delegation_notifications — both NOT NULL, both need
+        // to go first or the parent delete trips SQLITE_CONSTRAINT_FOREIGNKEY.
+        // task_events.agent_id and policy_events.agent_id reference the agent
+        // directly too, so clear those independent of task-scoped deletes.
+        const agentTasks = tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(eq(tasks.agentId, agentId))
+          .all();
+        const taskIds = agentTasks.map((t) => t.id);
+        if (taskIds.length > 0) {
+          tx.delete(taskEvents).where(inArray(taskEvents.taskId, taskIds)).run();
+          tx
+            .delete(delegationNotifications)
+            .where(inArray(delegationNotifications.taskId, taskIds))
+            .run();
+        }
+        tx.delete(taskEvents).where(eq(taskEvents.agentId, agentId)).run();
+        tx.delete(policyEvents).where(eq(policyEvents.agentId, agentId)).run();
+        tx
+          .update(tasks)
+          .set({ notifyAgentId: null })
+          .where(eq(tasks.notifyAgentId, agentId))
+          .run();
+        if (taskIds.length > 0) {
+          tx.delete(tasks).where(inArray(tasks.id, taskIds)).run();
+        }
+
+        // activity_log.agent_id is nullable but FK-enforced. Null it out
+        // instead of deleting so the household's audit trail survives.
+        tx
+          .update(activityLog)
+          .set({ agentId: null })
+          .where(eq(activityLog.agentId, agentId))
+          .run();
+
+        // Per-agent registries: tool grants, scheduled jobs, delegation edges,
+        // assignments, personality-interview state. All scoped to this agent.
+        tx.delete(toolGrants).where(eq(toolGrants.agentId, agentId)).run();
+        tx.delete(scheduledTasks).where(eq(scheduledTasks.agentId, agentId)).run();
+        tx
+          .delete(delegationEdges)
+          .where(
+            or(
+              eq(delegationEdges.fromAgentId, agentId),
+              eq(delegationEdges.toAgentId, agentId),
+            ),
+          )
+          .run();
+        tx.delete(staffAssignments).where(eq(staffAssignments.agentId, agentId)).run();
+        tx
+          .delete(personalityInterviewState)
+          .where(eq(personalityInterviewState.agentId, agentId))
+          .run();
+
+        // Boot-time seed marker — otherwise seedMissingDefaults might skip a
+        // fresh re-hire because a stale `grants_seeded:<id>` row exists.
+        tx.run(
+          sql`DELETE FROM instance_settings WHERE key = ${`grants_seeded:${agentId}`}`,
+        );
+
+        tx.delete(staffAgents).where(eq(staffAgents.id, agentId)).run();
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[staff] DELETE /${agentId} failed:`, err);
+      res.status(500).json({ error: `failed to delete staff agent: ${msg}` });
+      return;
+    }
 
     res.json({ deleted: true });
   });
