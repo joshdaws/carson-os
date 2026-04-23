@@ -283,7 +283,7 @@ async function fetchEnvelopes(
 // ── Message ID helpers ─────────────────────────────────────────────
 
 /** Parse a message ID in format "<mailbox>:<uid>". */
-function parseMessageId(messageId: string): { mailbox: string; uid: number } {
+export function parseMessageId(messageId: string): { mailbox: string; uid: number } {
   const colonIdx = messageId.lastIndexOf(":");
   if (colonIdx < 0) {
     throw new Error(
@@ -299,7 +299,7 @@ function parseMessageId(messageId: string): { mailbox: string; uid: number } {
 }
 
 /** Format an array of address objects to a readable string. */
-function formatAddresses(
+export function formatAddresses(
   addrs?: Array<{ name?: string; address?: string }>,
 ): string {
   if (!addrs || addrs.length === 0) return "";
@@ -496,6 +496,8 @@ function stripHtml(html: string): string {
 /**
  * Parse a Gmail-style search query string into an imapflow SearchObject.
  *
+ * Exported for unit testing.
+ *
  * Supported operators:
  *   from:address     — sender matches
  *   to:address       — recipient matches
@@ -512,7 +514,7 @@ function stripHtml(html: string): string {
  *
  * Unrecognised tokens are combined into a full-text search.
  */
-function parseSearchQuery(query: string): SearchObject {
+export function parseSearchQuery(query: string): SearchObject {
   const tokens = tokenize(query);
   const obj: SearchObject = {};
   const textParts: string[] = [];
