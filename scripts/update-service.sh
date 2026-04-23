@@ -44,6 +44,12 @@ echo -e "  ${GREEN}✓${NC} $OLD_VERSION → $NEW_VERSION"
 echo "  Installing dependencies..."
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
+# Build UI + server. ui/dist/ is .gitignored, and the launchd/systemd plist
+# runs with NODE_ENV=production which tells app.ts to serve ui/dist/index.html
+# as static files. Skipping this step leaves a blank UI with ENOENT on /.
+echo "  Building UI + server..."
+pnpm build
+
 # Restart service if it's running
 RESTARTED=false
 if [[ "$(uname)" == "Darwin" ]] && launchctl list "$PLIST_NAME" &>/dev/null; then

@@ -176,6 +176,12 @@ echo ""
 # Ensure deps are installed
 echo "  Installing dependencies..."
 (cd "$PROJECT_DIR" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
+
+# Build UI + server before the service starts under NODE_ENV=production.
+# ui/dist/ is .gitignored, so a fresh clone ships without it — the server
+# would 404 every GET / until someone ran pnpm build manually.
+echo "  Building UI + server..."
+(cd "$PROJECT_DIR" && pnpm build)
 echo ""
 
 mkdir -p "$LOG_DIR"
