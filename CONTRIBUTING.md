@@ -18,7 +18,7 @@ The sandbox uses `.sandbox/` for its database and memory files, so you can devel
 - Node.js 20+
 - pnpm
 - Claude CLI (`npm install -g @anthropic-ai/claude-code`)
-- QMD (`npm install -g @anthropic-ai/qmd`)
+- QMD (`npm install -g @tobilu/qmd`)
 - gws (optional, for Google integration)
 
 ## Project Structure

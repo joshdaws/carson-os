@@ -4,6 +4,108 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.4] - 2026-04-19
+
+Closes the second of the two v0.3.1 follow-ups: the disabled "Check for updates" button on installed skills now actually works.
+
+### Added
+
+- **Upstream update check.** Click "Check for updates" in an installed skill's detail panel and CarsonOS re-fetches the source URL through the same pipeline `install_skill` uses, finds the matching tool by name, and compares the upstream content hash against the locally stored `approvedContentHash`. Returns either "Up to date", "Update available" with an Apply button, or "The upstream source no longer contains a tool named X" if it was renamed/removed upstream.
+- **Apply update.** When an update is available, click Apply and the new files atomically replace the local copy. Existing dir is moved to a `.bak` sibling, the upstream gets promoted into the canonical path, then the backup is removed. If anything fails, the backup is restored so a half-applied update never strands you. The DB row's `approvedContentHash`, `generation`, and `schemaVersion` all bump on success and the registry is reloaded so the new version is callable on the next message.
+- **Two new admin routes:** `GET /api/tools/custom/:id/check-update` and `POST /api/tools/custom/:id/apply-update`. Both clean up their staging tarball on every exit (success or failure).
+
+### Fixed
+
+- **`install_skill` accepts `https://skills.sh/...` URLs.** The parser only recognized bare `skills.sh/owner/repo`. Users copy URLs from the browser address bar with the protocol prefix; that now parses cleanly. One-line regex change.
+- **The minimal YAML parser handles continuation array items at the same indent.** Real-world example: `allowed-tools:` followed by `  - Read`, `  - Write`, etc. The pop-stack logic was using `<=` and over-popped the array frame after the first item, throwing "Unexpected '-' at line N" on every multi-element array. Common enough that humanizer's upstream SKILL.md (v2.1.1) hit it, which is why the update check kept reporting "upstream missing" before this fix.
+- **`prepareInstall` is resilient to one bad SKILL.md.** Previously, a single skill with YAML the parser couldn't handle would fail the whole install or update-check batch. Now bad skills are logged with a `[install] Skipping skill...` warning and the rest of the bundle proceeds.
+
+### For contributors
+
+- Exposed `prepareInstall`, `promoteTool`, `cleanupStaging`, `ResolvedSkillEntry`, `InstallResult`, and `InstallError` from the custom-tools barrel for reuse by the new update routes.
+- The atomic-swap pattern in apply-update (rename existing → promote → rmSync backup, with restore on failure) is the right shape for any future "replace files in place" workflow.
+
+## [0.3.3] - 2026-04-19
+
+### Fixed
+
+- **Skills installed via `install_skill` are now tagged correctly.** The handler used to write `source: "skill_install"` to the registry row and never set `source_url`. The schema documents the legal value as `"installed-skill"` and the Tools UI checks for that exact string + a non-empty `sourceUrl` before showing the Installed Skill card and the "Check for updates" button. Net effect: every skill installed via the proper flow looked indistinguishable from an agent-created tool. Now installs land as `source: "installed-skill"` with the full source URL persisted.
+
+### For contributors
+
+- Existing rows written before this fix retain their old source value. To backfill, run `UPDATE custom_tools SET source='installed-skill', source_url='<url>' WHERE name='<tool>';` against `~/.carsonos/carsonos.db`. The fix only catches new installs.
+
+## [0.3.2] - 2026-04-19
+
+Closes the orphan-file follow-up tracked against v0.3.1's Custom Tools Admin UI. SKILL.md files that exist on disk but have no matching registry row are now surfaced and importable from the dashboard.
+
+### Added
+
+- **Orphan banner on the Tools page.** When the loader finds SKILL.md files in `~/.carsonos/tools/{household}/` that have no matching `custom_tools` row, an amber banner appears above the filter tabs with a one-click open into the import modal. Common sources: hand-authored SKILL.md files, files synced from another machine without the DB, files restored from backup.
+- **Import modal.** Lists every orphan with parsed metadata (name, description, kind), parse errors if the SKILL.md is malformed, and name-conflict warnings if a tool with that name already exists. Importable orphans are pre-selected with checkboxes; click "Import N tools" to insert the rows. Imports are attributed to the household's Chief of Staff (or first active agent as fallback) and registered immediately so the new tools are callable on the next message.
+- **Two new admin routes:** `GET /api/tools/custom/orphans?household_id=` returns the parsed orphan list. `POST /api/tools/custom/import-orphans` takes `{household_id, paths: [...]}` and writes the rows + reloads the registry. Per-orphan failures (parse error, name conflict, missing handler.ts for script tools) are reported individually so a partial import doesn't abort the batch.
+
+### Fixed
+
+- **Route order in tools.ts** — `/custom/orphans` and `/custom/import-orphans` declared BEFORE `/custom/:id` so Express doesn't match `orphans` as the `:id` param.
+
+### For contributors
+
+- `walkForSkills` and `FoundSkill` are now exported from the custom-tools barrel.
+- The orphan importer reuses the existing `parseSkillMd` helper for validation, so any tightening of SKILL.md parsing applies uniformly to fresh imports and boot-time loading.
+- Frontmatter parsing in the modal is server-side (full subset YAML parser); the UI just displays what came back. No drift between what the importer accepts and what the loader accepts.
+
+## [0.3.1] - 2026-04-19
+
+A new dashboard page for the custom tool registry that shipped in v0.2.0. Manage every tool your agents have created or installed without leaving the browser.
+
+### Added
+
+- **Tools page in the dashboard.** New entry in the System nav (Wrench icon) at `/tools`. Shows every custom tool in your household with kind, status, the agent who created it, usage count, and last-used timestamp. Filter tabs for All / Pending / Active / Disabled / Broken with badge counts that pop in amber when there's something to look at.
+- **Bundle grouping.** Tools that live in a bundle directory (path like `bundle/tool`) collapse into one expandable row. A 12-tool YNAB integration becomes a single `ynab (7 tools)` row with aggregate stats — total usage, latest last-used, status summary like "all active" or "2 pending". Click the chevron to expand and see member tools indented underneath. Single-member bundles fall through to a normal row, no extra nesting overhead.
+- **Slide-out detail panel.** Click any tool to open a panel with parsed metadata (name, description, kind, version, source), a fully rendered SKILL.md (markdown via react-markdown + remark-gfm — same engine the Constitution and StaffDetail pages use), and a "Show raw SKILL.md" toggle for the curious.
+- **Action buttons in the panel.** Approve a `pending_approval` script tool (triggers the existing content-hash refresh on the server). Toggle active/disabled. Soft-delete (marks the row disabled and unregisters from the live registry; files stay on disk so the action is recoverable).
+- **Source attribution for installed skills.** When a tool came from `install_skill`, the panel surfaces a dedicated card with the source URL as a real `target=_blank` link and a "Check for updates" button. The button is disabled with a tooltip noting it's a future feature — the affordance is wired now so the eventual upstream-hash check only needs the backend route, not new UI.
+- **Tool secrets management.** Section at the bottom lists every encrypted secret name (values are never shown — by design) with a delete button. Helper text reminds you that agents create new secrets through conversation using `store_secret`.
+
+### For contributors
+
+- New page at `ui/src/pages/Tools.tsx` (~900 lines), wired into `ui/src/App.tsx` and `ui/src/components/Layout.tsx`.
+- Bundles are derived from the `path` column's first segment — no schema changes needed.
+- Frontmatter parser is intentionally naive (regex over top-level scalar lines, allow-listed metadata keys). When SKILL.md spec stabilizes around a richer schema, swap in a real YAML parser.
+
+## [0.3.0] - 2026-04-18
+
+Voice messages, audio files, and photos now work end-to-end. Send a voice note and Carson transcribes it. Send a photo and Carson actually sees it. Plus a new Settings field for the Groq key and a hardened shutdown so dev iterations don't fight the relay.
+
+### Added
+
+- **Voice & audio transcription:** Voice messages and audio file attachments are transcribed via Groq Whisper (whisper-large-v3-turbo) and answered like text. Dedicated handlers send a "typing" indicator immediately so you know the agent is working.
+- **Photo understanding (multimodal):** Photos go inline to the agent's actual model (Sonnet by default) as image content blocks. The agent sees the image directly and replies. Works with the Claude Max subscription via the Agent SDK, no Anthropic API key needed.
+- **Local media cache:** Downloaded files land at `~/.carsonos/media/` keyed by Telegram's `file_unique_id` (stable across bots). 1-hour TTL with auto-prune every 30 minutes. Re-asking about an image within an hour skips the redownload.
+- **Per-capability size guards:** Images up to 10MB, voice/audio up to 20MB, video up to 50MB, documents up to 20MB. Sizes checked from Telegram's update before any download starts. Friendly fallback message when exceeded.
+- **Min audio guard:** Clips under 1KB are skipped (almost always silence/corrupt) instead of failing through to a Whisper error.
+- **Document text injection:** Text-readable documents now inject up to 100K characters of content (was 10K) so the agent has more to work with.
+- **Settings → Voice & Media section:** New field for `GROQ_API_KEY` in the Settings page. Saving the key updates `process.env` immediately, no restart needed.
+- **Env hydration from instance_settings:** New boot-time service reads an explicit allow-list of platform secrets (currently just `GROQ_API_KEY`) from the SQLite `instance_settings` table into `process.env`. Operator env vars still win, the DB value only fills the gap. `ANTHROPIC_API_KEY` is intentionally excluded so the Claude Max subscription is never bypassed.
+
+### Changed
+
+- **Telegram message handlers:** Voice/audio split into dedicated handlers separate from the generic photo/document/sticker/video loop. Real Grammy `Context` is always passed through (the previous spread-the-context pattern was the root cause of the "I had trouble processing that" error).
+- **Photo flow simplified:** Removed the Haiku pre-describe round-trip. Photos now go in the same LLM call as the user's message, one round-trip instead of two.
+- **Whisper model:** `whisper-large-v3` to `whisper-large-v3-turbo` (faster, same quality).
+- **Telegram polling timeout:** 30s to 3s long-poll. Updates still arrive instantly when present; this only changes how fast `runner.stop()` returns during a hot reload.
+- **Shutdown handler:** Force-terminates WebSocket clients and HTTP keep-alives before closing the server, with a 4-second hard exit deadline. Hot reloads now release port 3300 cleanly so the new process can rebind without `EADDRINUSE`.
+- **Multimodal adapter API:** `AdapterExecuteParams` and `ProcessMessageParams` accept an optional `attachments` array. When present, the Claude Agent SDK is called with `AsyncIterable<SDKUserMessage>` containing image content blocks instead of a string prompt.
+
+### Fixed
+
+- **Voice messages no longer crash on dispatch:** The generic media handler used to spread the Grammy `Context` to inject extracted text. Spreading a class instance loses prototype methods (`reply()`, `replyWithChatAction()`, API getters), so `handleMessage()` threw a `TypeError` that the outer catch reported as "I had trouble processing that." Replaced with an explicit `textOverride` parameter.
+
+### Removed
+
+- Dead code in `multi-relay-manager.ts`: unused `DEDUP_TTL_MS` constant, unused `taskEngine` injection, unused `editFormatted` private method, and a duplicate `InputFile` import inside `sendFormatted`.
+
 ## [0.2.0] - 2026-04-15
 
 Custom tool registry: agents can now create, register, and invoke their own tools at runtime.

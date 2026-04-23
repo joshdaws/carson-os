@@ -16,14 +16,6 @@
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
 
-## Custom Tools Admin UI (React)
-- **What:** React pages for listing, inspecting, approving, and toggling custom tools; secrets manager; pending-approvals queue; orphan file importer
-- **Why:** Admin routes at `/api/tools/custom/*` and `/api/tools/secrets` exist and are working; only the UI layer is missing. Currently managed via API calls or direct DB access.
-- **Pros:** Parents get visual review/approval flow for kid-created tools (when kid-agent approval lands), orphan file cleanup, easy grant management
-- **Cons:** React work, design decisions for the approval queue UX
-- **Context:** Deferred from the custom tools M1 PR per the design doc's Phase 3d. Routes are shipped and tested; the UI ships separately.
-- **Depends on:** Custom tools registry (shipped in v0.2.0)
-
 ## CoS Dev Mode: Harness Self-Modification
 - **What:** Let the Chief of Staff agent modify CarsonOS source itself — add new system tools, fix bugs in the harness, ship commits via the agent. Includes a GUIDE.md for repo layout + git workflow, and git operations (commit/push/PR) as first-class agent capabilities with proper canUseTool gating.
 - **Why:** Today a CoS can create custom tools but can't add a new TOOL KIND or fix a harness bug without a human opening the editor. The platform should learn from itself.

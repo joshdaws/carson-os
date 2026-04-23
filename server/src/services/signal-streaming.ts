@@ -148,10 +148,15 @@ export function createSignalStream(
 
   const onDelta = (text: string): void => {
     if (finished) return;
-    // Start typing indicator on the very first token
-    if (accumulated === "") startTyping();
     accumulated += text;
   };
+
+  // Start typing indicator immediately at construction — user sees
+  // "Carson is typing..." as soon as the relay accepts the message, not
+  // only after Claude produces its first text token (which may be 5-15s in
+  // with thinking-mode models).
+  startTyping();
+
 
   const finish = async (): Promise<SignalStreamResult> => {
     finished = true;

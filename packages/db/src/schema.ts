@@ -31,6 +31,7 @@ export const familyMembers = sqliteTable(
     age: integer("age").notNull(),
     telegramUserId: text("telegram_user_id").unique(),
     signalNumber: text("signal_number").unique(), // Signal phone number (e.g. +15551234567)
+    signalUuid: text("signal_uuid").unique(), // Signal ACI (sender UUID) — used when phone sharing is off
     profileContent: text("profile_content"), // Per-person profile document (member.md)
     profileUpdatedAt: integer("profile_updated_at", { mode: "timestamp" }),
     memoryDir: text("memory_dir"), // Override: point at existing brain directory instead of default

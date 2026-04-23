@@ -38,8 +38,11 @@ import { DelegationOrchestrator } from "./services/delegation-orchestrator.js";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { SignalRelayManager } from "./services/signal-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
+import { hydrateEnvFromSettings } from "./services/env-hydration.js";
 import { ToolRegistry } from "./services/tool-registry.js";
 import { GoogleCalendarProvider, CALENDAR_TOOLS, GMAIL_TOOLS, DRIVE_TOOLS } from "./services/google/index.js";
+import { CalDavProvider, CALDAV_CALENDAR_TOOLS } from "./services/caldav/index.js";
+import { ImapProvider, IMAP_EMAIL_TOOLS } from "./services/imap/index.js";
 
 // Read VERSION from the repo root (two levels up from server/src/). Single
 // source of truth — bumping VERSION at ship time updates the boot banner
@@ -94,6 +97,11 @@ async function main() {
   });
   console.log(`[db] SQLite open at ${dbPath}`);
 
+  // 1b. Hydrate allow-listed platform secrets (currently GROQ_API_KEY) from
+  // instance_settings into process.env so services that read process.env can
+  // pick up keys saved via the Settings UI without the operator editing files.
+  await hydrateEnvFromSettings(db);
+
   // 2. Create adapter
   const adapter = createAdapter(config.adapterType);
   const adapterHealthy = await adapter.healthCheck();
@@ -110,11 +118,24 @@ async function main() {
     console.warn("[memory] Boot failed, running without memory:", err);
   }
 
-  // 2c. Google Calendar provider
+  // 2c. External providers
   const googleDir = join(config.dataDir, "google");
   const calendarProvider = new GoogleCalendarProvider(googleDir);
   const gwsHealthy = await calendarProvider.healthCheck();
   console.log(`[google] Calendar provider ${gwsHealthy ? "ready" : "unavailable (gws not installed)"}`);
+
+  // CalDAV — always available, no external CLI dependency. Used for members
+  // with iCloud/CalDAV credentials. Wins over Google at dispatch time for
+  // members who have creds saved.
+  const caldavDir = join(config.dataDir, "caldav");
+  const caldavProvider = new CalDavProvider(caldavDir);
+  console.log("[caldav] Calendar provider ready");
+
+  // IMAP — always available, no external CLI dependency.
+  // Per-member credentials resolved at dispatch time.
+  const imapDir = join(config.dataDir, "imap");
+  const imapProvider = new ImapProvider(imapDir);
+  console.log("[imap] Email provider ready");
 
   // 2d. Tool registry
   const toolRegistry = new ToolRegistry(db);
@@ -142,7 +163,30 @@ async function main() {
       DRIVE_TOOLS.map((def) => ({ definition: def, category: "drive", tier: "builtin" as const })),
       googlePlaceholder,
     );
+  } else {
+    // gws not installed — register calendar tools under CalDAV so agents can
+    // still use the calendar tools for members with CalDAV credentials saved.
+    const caldavPlaceholder = async (_name: string, _input: Record<string, unknown>) => ({
+      content: "CalDAV not configured for this member. Save credentials to ~/.carsonos/caldav/<member>/credentials.json",
+      is_error: true as const,
+    });
+
+    toolRegistry.registerAll(
+      CALDAV_CALENDAR_TOOLS.map((def) => ({ definition: def, category: "calendar", tier: "builtin" as const })),
+      caldavPlaceholder,
+    );
   }
+
+  // Register IMAP email tools (always available — per-member auth checked at call time)
+  const imapPlaceholder = async (_name: string, _input: Record<string, unknown>) => ({
+    content: "IMAP not configured for this member. Save credentials to ~/.carsonos/imap/<member>/credentials.json",
+    is_error: true as const,
+  });
+
+  toolRegistry.registerAll(
+    IMAP_EMAIL_TOOLS.map((def) => ({ definition: def, category: "email", tier: "builtin" as const })),
+    imapPlaceholder,
+  );
 
   // Skills are enabled via trust level ("Skill" built-in for full trust).
   // No need to discover/register them — the SDK handles skill loading.
@@ -161,6 +205,8 @@ async function main() {
     memoryProvider,
     toolRegistry,
     calendarProvider: gwsHealthy ? calendarProvider : undefined,
+    caldavProvider,
+    imapProvider,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
@@ -226,7 +272,6 @@ async function main() {
     db,
     adapter,
     engine: constitutionEngine,
-    taskEngine,
     orchestrator,
   });
 
@@ -237,7 +282,6 @@ async function main() {
   const signalRelay = new SignalRelayManager({
     db,
     engine: constitutionEngine,
-    taskEngine,
     orchestrator,
   });
 
@@ -258,7 +302,7 @@ async function main() {
 
   // 9. Create HTTP server and attach WebSocket
   const server = createServer(app);
-  setupWebSocket(server);
+  const wss = setupWebSocket(server);
 
   // 10. Wire event consumers
   eventBus.on("*", broadcast);
@@ -308,17 +352,64 @@ async function main() {
   });
 
   // Graceful shutdown
-  const shutdown = async () => {
-    console.log("\n[shutdown] closing...");
-    await Promise.all([multiRelay.stopAll(), signalRelay.stopAll()]);
-    server.close(() => {
+  //
+  // The hard requirement for dev ergonomics: when tsx watch sends SIGTERM, this
+  // process MUST fully exit before tsx force-kills it (~5s grace), AND must
+  // release port 3300 cleanly so the next process can rebind without
+  // EADDRINUSE.
+  //
+  // Order matters:
+  //   1. Stop the bot pollers — releases Telegram's lock so the new process
+  //      doesn't 409. Each bot has POLL_TIMEOUT_S = 3s, all stop in parallel.
+  //   2. Force-disconnect WebSocket clients — without this, server.close()
+  //      hangs on the open ws connections and the port stays bound.
+  //   3. Force-disconnect any lingering HTTP keep-alives via closeAllConnections.
+  //   4. server.close() releases the port. After this returns, rebinding works.
+  //   5. process.exit(0).
+  //
+  // Hard deadline (4s) under tsx's force-kill so we never get killed mid-shutdown.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[shutdown] ${signal} received, closing...`);
+
+    const HARD_EXIT_MS = 4_000;
+    const exitTimer = setTimeout(() => {
+      console.warn("[shutdown] hard deadline hit, exiting");
+      process.exit(0);
+    }, HARD_EXIT_MS);
+    exitTimer.unref();
+
+    void (async () => {
+      try {
+        await Promise.all([multiRelay.stopAll(), signalRelay.stopAll()]);
+      } catch (err) {
+        console.error("[shutdown] relay stop error:", err);
+      }
+
+      // Force-close all WebSocket clients so server.close() can complete.
+      try {
+        for (const client of wss.clients) {
+          try { client.terminate(); } catch { /* swallow */ }
+        }
+        wss.close();
+      } catch { /* swallow */ }
+
+      // Force-drop lingering keep-alive HTTP connections.
+      try { server.closeAllConnections(); } catch { /* swallow */ }
+
+      // Now server.close() returns quickly because nothing is open.
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+
+
       console.log("[shutdown] done");
       process.exit(0);
-    });
+    })();
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

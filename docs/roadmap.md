@@ -1,7 +1,7 @@
 # CarsonOS Roadmap
 
 Status: Living document
-Last updated: 2026-04-15
+Last updated: 2026-04-19
 
 ## Vision
 
@@ -27,6 +27,48 @@ script tools at runtime. `install_skill` pulls from GitHub (skills.sh ecosystem
 compatible). AES-256-GCM secret storage. Mid-session tool refresh. Activity log
 redaction. 11 security findings from dual Claude + Codex adversarial review all
 fixed before merge. See `CHANGELOG.md` v0.2.0.
+
+Working (v0.3.0): Telegram media handling, end-to-end. Voice messages and audio
+attachments transcribe via Groq Whisper. Photos go inline to the agent's actual
+model as Anthropic image content blocks (multimodal, one round-trip). Local media
+cache at `~/.carsonos/media/` with 1-hour TTL keyed by `file_unique_id`.
+Per-capability size guards (image 10MB, voice/audio 20MB, doc 20MB, video 50MB).
+New env-hydration service reads an allow-list of platform secrets (currently just
+`GROQ_API_KEY`) from `instance_settings` into `process.env` at boot —
+`ANTHROPIC_API_KEY` is intentionally excluded so the Claude Max subscription is
+never bypassed. Settings UI gains a "Voice & Media" section with live env update
+on save (no restart). Shutdown handler hardened: hot reloads release port 3300
+cleanly, no more `EADDRINUSE` zombies. See `CHANGELOG.md` v0.3.0.
+
+Working (v0.3.1): Custom Tools admin UI. New dashboard page at `/tools` that
+consumes the v0.2.0 admin routes — list every custom tool with bundle grouping
+(tools sharing a directory collapse into one expandable row with aggregate
+stats), slide-out detail panel with parsed metadata + fully rendered SKILL.md
+(markdown via react-markdown), approve / toggle / soft-delete actions, source
+attribution and a stub "Check for updates" button for installed skills, secrets
+manager (key names only — values are never returned). Two follow-ups remain
+in TODOS.md: orphan file importer and the upstream update check that backs the
+stubbed button. See `CHANGELOG.md` v0.3.1.
+
+Working (v0.3.2): Orphan SKILL.md importer. SKILL.md files that exist on disk
+but have no matching `custom_tools` row are now surfaced via an amber banner
+on the Tools page, openable into a modal that lists each orphan with parsed
+metadata, parse errors, and name conflicts. One-click batch import attributes
+the rows to the household's CoS and reloads the registry. Two new admin
+routes: `GET /api/tools/custom/orphans` and `POST /api/tools/custom/import-orphans`.
+Closes one of the two v0.3.1 follow-ups. See `CHANGELOG.md` v0.3.2.
+
+Working (v0.3.3): Bug fix. `install_skill` was writing `source: "skill_install"`
+and never persisting `source_url`. Schema documents `"installed-skill"` as the
+legal value and the UI checks for that exact string + a non-empty `sourceUrl`
+before showing the Installed Skill card. Fixed.
+
+Working (v0.3.4): Upstream update check. The "Check for updates" button on
+installed skills now actually works — re-fetches the source via the install
+pipeline, compares hashes, and offers a one-click Apply that atomically
+swaps the local files. Three small parser fixes shipped alongside: `https://`
+prefix on skills.sh URLs, multi-element YAML arrays, and one-bad-skill
+resilience in the install loop. Closes the second v0.3.1 follow-up.
 
 ## MVP (v1.0) — "Announce on X"
 

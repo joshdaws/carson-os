@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Db } from "@carsonos/db";
 import { instanceSettings, households } from "@carsonos/db";
+import { isHydratableEnvKey } from "../services/env-hydration.js";
 
 export function createSettingsRoutes(db: Db): Router {
   const router = Router();
@@ -79,6 +80,22 @@ export function createSettingsRoutes(db: Db): Router {
       });
     }
 
+    // For allow-listed platform secrets (GROQ_API_KEY), patch process.env so
+    // services pick up the new value without requiring a server restart.
+    // Operator env override is preserved by applyHydratableSetting.
+    if (isHydratableEnvKey(key)) {
+      // On UI save, the user is explicitly setting a new value — overwrite
+      // the in-process env (the boot-time precedence is operator-env-wins,
+      // but a deliberate UI save should take effect immediately).
+      if (typeof value === "string" && value.length > 0) {
+        process.env[key] = value;
+        console.log(`[settings] ${key} updated and applied to process.env`);
+      } else {
+        // Empty value clears the secret
+        delete process.env[key];
+        console.log(`[settings] ${key} cleared from process.env`);
+      }
+    }
     res.json({ settings: { [key]: value } });
   });
 

@@ -41,7 +41,7 @@
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, or, desc } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   staffAgents,
@@ -50,7 +50,6 @@ import {
   conversations,
 } from "@carsonos/db";
 import type { ConstitutionEngine } from "./constitution-engine.js";
-import type { TaskEngine } from "./task-engine.js";
 import type { DelegationOrchestrator } from "./delegation-orchestrator.js";
 import { createSignalStream, markdownToSignalText, chunkSignalMessage } from "./signal-streaming.js";
 import { stripThinkingBlocks } from "./telegram-format.js";
@@ -60,7 +59,6 @@ import { stripThinkingBlocks } from "./telegram-format.js";
 export interface SignalRelayConfig {
   db: Db;
   engine: ConstitutionEngine;
-  taskEngine: TaskEngine;
   orchestrator: DelegationOrchestrator;
 }
 
@@ -223,7 +221,6 @@ class RateLimiter {
 export class SignalRelayManager {
   private db: Db;
   private engine: ConstitutionEngine;
-  private taskEngine: TaskEngine;
   private orchestrator: DelegationOrchestrator;
 
   private accounts = new Map<string, ManagedAccount>();
@@ -235,7 +232,6 @@ export class SignalRelayManager {
   constructor(config: SignalRelayConfig) {
     this.db = config.db;
     this.engine = config.engine;
-    this.taskEngine = config.taskEngine;
     this.orchestrator = config.orchestrator;
 
     this.events.on(
@@ -479,8 +475,14 @@ export class SignalRelayManager {
             if (dataMessage.groupInfo) continue; // group messages — skip for now
 
             const timestamp = envelope.timestamp;
-            const senderNumber = envelope.sourceNumber || envelope.source;
-            if (!senderNumber) continue;
+            // Modern Signal clients may withhold sourceNumber if the sender
+            // has phone-number privacy enabled. In that case envelope.source
+            // is the ACI UUID and sourceUuid is populated. We keep track of
+            // both so identity lookup can match on either.
+            const senderNumber = envelope.sourceNumber || undefined;
+            const senderUuid = envelope.sourceUuid || (envelope.source && /^[0-9a-f-]{36}$/i.test(envelope.source) ? envelope.source : undefined);
+            const senderIdentifier = senderNumber || senderUuid || envelope.source;
+            if (!senderIdentifier) continue;
 
             // Deduplication by timestamp
             if (managed.recentTimestamps.has(timestamp)) continue;
@@ -500,7 +502,7 @@ export class SignalRelayManager {
 
             // Route to the message pipeline — errors are caught so one bad
             // message never tears down the SSE connection
-            this.handleIncomingMessage(agentId, senderNumber, dataMessage.message).catch((err) => {
+            this.handleIncomingMessage(agentId, senderIdentifier, senderNumber, senderUuid, dataMessage.message).catch((err) => {
               console.error(`[signal-relay:${managed.agentName}] handleIncomingMessage error:`, err);
             });
           }
@@ -521,37 +523,65 @@ export class SignalRelayManager {
 
   private async handleIncomingMessage(
     agentId: string,
-    senderNumber: string,
+    senderIdentifier: string,
+    senderNumber: string | undefined,
+    senderUuid: string | undefined,
     text: string,
   ): Promise<void> {
     const managed = this.accounts.get(agentId);
     if (!managed) return;
 
     console.log(
-      `[signal-relay:${managed.agentName}] Message from ${senderNumber}: ${text.slice(0, 50)}`,
+      `[signal-relay:${managed.agentName}] Message from ${senderIdentifier}: ${text.slice(0, 50)}`,
     );
 
     if (text.length > MAX_MESSAGE_LENGTH) {
-      await this.sendRaw(managed.daemonPort, senderNumber, "That message is too long. Try breaking it into shorter messages.");
+      await this.sendRaw(managed.daemonPort, senderIdentifier, "That message is too long. Try breaking it into shorter messages.");
       return;
     }
 
-    // Identify family member by signal_number field
-    // signal_number mirrors telegram_user_id: a nullable unique column
-    // that maps a Signal E.164 number to a family member record.
+    // Identify family member by signal_number OR signal_uuid. Modern Signal
+    // senders with phone-number privacy enabled deliver envelopes with only
+    // the ACI UUID, so we try to match on either identifier.
+    const identityClauses = [
+      senderNumber ? eq(familyMembers.signalNumber, senderNumber) : undefined,
+      senderUuid ? eq(familyMembers.signalUuid, senderUuid) : undefined,
+    ].filter((c): c is NonNullable<typeof c> => c !== undefined);
+
+    if (identityClauses.length === 0) {
+      await this.sendRaw(managed.daemonPort, senderIdentifier, "Could not identify your Signal account.");
+      return;
+    }
+
     const member = await this.db
       .select()
       .from(familyMembers)
-      .where(eq(familyMembers.signalNumber, senderNumber))
+      .where(identityClauses.length === 1 ? identityClauses[0] : or(...identityClauses))
       .then((rows) => rows[0]);
 
     if (!member) {
       await this.sendRaw(
         managed.daemonPort,
-        senderNumber,
-        "I don't recognize your number. Ask your family admin to add you in the CarsonOS dashboard.",
+        senderIdentifier,
+        "I don't recognize your Signal identity. Ask your family admin to add you in the CarsonOS dashboard.",
       );
       return;
+    }
+
+    // Opportunistically backfill the other identifier when we matched on one
+    // and the envelope provided the other. Lets admins bootstrap with just
+    // the UUID or just the phone and auto-fill the counterpart on first
+    // successful message.
+    const needsNumberFill = senderNumber && !member.signalNumber;
+    const needsUuidFill = senderUuid && !member.signalUuid;
+    if (needsNumberFill || needsUuidFill) {
+      await this.db
+        .update(familyMembers)
+        .set({
+          ...(needsNumberFill && { signalNumber: senderNumber }),
+          ...(needsUuidFill && { signalUuid: senderUuid }),
+        })
+        .where(eq(familyMembers.id, member.id));
     }
 
     // Verify agent is assigned to this member
@@ -567,13 +597,13 @@ export class SignalRelayManager {
       .then((rows) => rows[0]);
 
     if (!assignment) {
-      await this.sendRaw(managed.daemonPort, senderNumber, "I'm not your assigned agent. Contact your household admin.");
+      await this.sendRaw(managed.daemonPort, senderIdentifier, "I'm not your assigned agent. Contact your household admin.");
       return;
     }
 
     // Rate limit
     if (!this.rateLimiter.check(member.id, RATE_LIMIT, RATE_WINDOW_MS)) {
-      await this.sendRaw(managed.daemonPort, senderNumber, "You're sending messages too fast. Please wait a moment.");
+      await this.sendRaw(managed.daemonPort, senderIdentifier, "You're sending messages too fast. Please wait a moment.");
       return;
     }
 
@@ -591,17 +621,17 @@ export class SignalRelayManager {
       ) {
         existingBuf.messages.push(text);
         existingBuf.timer = setTimeout(
-          () => this.flushBuffer(bufferKey, agentId, senderNumber, member),
+          () => this.flushBuffer(bufferKey, agentId, senderIdentifier, member),
           DEBOUNCE_MS,
         );
       } else {
         // Buffer full — flush now, start fresh
-        this.flushBuffer(bufferKey, agentId, senderNumber, member);
+        this.flushBuffer(bufferKey, agentId, senderIdentifier, member);
         this.debounceBuffers.set(bufferKey, {
           messages: [text],
-          senderNumber,
+          senderNumber: senderIdentifier,
           timer: setTimeout(
-            () => this.flushBuffer(bufferKey, agentId, senderNumber, member),
+            () => this.flushBuffer(bufferKey, agentId, senderIdentifier, member),
             DEBOUNCE_MS,
           ),
         });
@@ -609,9 +639,9 @@ export class SignalRelayManager {
     } else {
       this.debounceBuffers.set(bufferKey, {
         messages: [text],
-        senderNumber,
+        senderNumber: senderIdentifier,
         timer: setTimeout(
-          () => this.flushBuffer(bufferKey, agentId, senderNumber, member),
+          () => this.flushBuffer(bufferKey, agentId, senderIdentifier, member),
           DEBOUNCE_MS,
         ),
       });

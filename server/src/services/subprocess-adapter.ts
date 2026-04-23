@@ -382,16 +382,82 @@ function isTurnLimitError(err: unknown): boolean {
   return /Reached maximum number of turns/i.test(msg);
 }
 
+/**
+ * Build an AsyncIterable<SDKUserMessage> that yields a single user turn with
+ * text + image content blocks. Used when the caller passes media attachments.
+ *
+ * The full conversation history is collapsed into the text part (matches the
+ * non-multimodal path's prompt construction). The images are appended as
+ * Anthropic-format image blocks, which Claude 4.x models all accept natively.
+ */
+function buildMultimodalPrompt(
+  userPromptText: string,
+  attachments: import("@carsonos/shared").MediaAttachment[],
+): AsyncIterable<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage> {
+  type ImageMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  const ALLOWED_IMAGE_MIMES = new Set<ImageMime>([
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ]);
+
+  const content: Array<
+    | { type: "text"; text: string }
+    | {
+        type: "image";
+        source: { type: "base64"; media_type: ImageMime; data: string };
+      }
+  > = [];
+
+  for (const att of attachments) {
+    if (att.type !== "image") continue;
+    if (!ALLOWED_IMAGE_MIMES.has(att.mediaType as ImageMime)) continue;
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: att.mediaType as ImageMime,
+        data: att.base64,
+      },
+    });
+  }
+
+  // Text follows the images so the model reads context after seeing them.
+  content.push({ type: "text", text: userPromptText });
+
+  return (async function* () {
+    yield {
+      type: "user" as const,
+      parent_tool_use_id: null,
+      message: {
+        role: "user" as const,
+        content,
+      },
+    };
+  })();
+}
+
 class ClaudeAgentSdkAdapter implements Adapter {
   name = "claude-agent-sdk";
 
   async execute(params: AdapterExecuteParams): Promise<AdapterExecuteResult> {
-    const { systemPrompt, messages, tools, toolExecutor, model } = params;
+    const { systemPrompt, messages, tools, toolExecutor, model, attachments } = params;
 
     // Build the user prompt from the messages array
     const userPrompt = messages
       .map((m) => (m.role === "user" ? m.content : `[assistant]: ${m.content}`))
       .join("\n\n");
+
+    // When attachments (images, etc) are present, swap the string prompt for
+    // an AsyncIterable<SDKUserMessage> that yields a single user message with
+    // text + image content blocks. This goes to the agent's actual model
+    // (sonnet/opus/haiku — all multimodal) in one round-trip; no Haiku
+    // pre-describe needed.
+    const hasAttachments = !!attachments && attachments.length > 0;
+    const promptForSdk = hasAttachments
+      ? buildMultimodalPrompt(userPrompt, attachments!)
+      : userPrompt;
 
     // Build MCP server with memory tools if tools + executor provided
     let mcpConfig: Record<string, ReturnType<typeof createSdkMcpServer>> | undefined;
@@ -554,7 +620,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
     };
 
     const conversation = query({
-      prompt: userPrompt,
+      prompt: promptForSdk,
       options: {
         systemPrompt,
         model: sdkModel as "sonnet" | "opus" | "haiku",

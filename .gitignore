@@ -17,3 +17,6 @@ dist/
 .gstack/
 .playwright-mcp/
 .claude/
+
+# Local test/smoke-test scripts
+scripts/test-*.ts

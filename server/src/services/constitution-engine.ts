@@ -51,6 +51,10 @@ import {
 import type { ToolRegistry } from "./tool-registry.js";
 import type { GoogleCalendarProvider } from "./google/index.js";
 import { createCalendarToolHandler, createGmailToolHandler, createDriveToolHandler } from "./google/index.js";
+import type { CalDavProvider } from "./caldav/index.js";
+import { createCalDavCalendarToolHandler } from "./caldav/index.js";
+import type { ImapProvider } from "./imap/index.js";
+import { createImapEmailToolHandler } from "./imap/index.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -68,6 +72,12 @@ export interface ProcessMessageParams {
   channel: Channel;
   /** Streaming callback — forwarded to the adapter for real-time text deltas */
   onTextDelta?: (text: string) => void;
+  /**
+   * Optional multimodal attachments (images, etc) to merge into this turn.
+   * Used by the Telegram relay for photos so the agent's actual model sees
+   * the image inline — no Haiku pre-describe round-trip.
+   */
+  attachments?: import("@carsonos/shared").MediaAttachment[];
 }
 
 export interface ProcessMessageResult {
@@ -83,6 +93,8 @@ export interface EngineConfig {
   memoryProvider?: MemoryProvider;
   toolRegistry?: ToolRegistry;
   calendarProvider?: GoogleCalendarProvider;
+  caldavProvider?: CalDavProvider;
+  imapProvider?: ImapProvider;
   multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
@@ -217,6 +229,8 @@ export class ConstitutionEngine {
   private memoryProvider: MemoryProvider | null;
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
+  private caldavProvider: CalDavProvider | null;
+  private imapProvider: ImapProvider | null;
   private hardEvaluatorsEnabled: boolean;
   private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
 
@@ -227,6 +241,8 @@ export class ConstitutionEngine {
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
+    this.caldavProvider = config.caldavProvider ?? null;
+    this.imapProvider = config.imapProvider ?? null;
     this.multiRelay = config.multiRelay ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
   }
@@ -540,6 +556,29 @@ export class ConstitutionEngine {
         tools = built.tools;
         toolExecutor = built.executor;
         toolCallLog = built.calls;
+
+        // Wrap executor to resolve CalDAV credentials per-member at dispatch
+        // time — avoids mutating the shared ToolRegistry handler map.
+        if (this.caldavProvider && this.caldavProvider.getAuthStatus(memberSlug).authenticated) {
+          const caldavHandler = createCalDavCalendarToolHandler(this.caldavProvider, memberSlug);
+          const caldavToolNames = new Set(["list_calendar_events", "create_calendar_event", "get_calendar_event"]);
+          const base = toolExecutor;
+          toolExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (caldavToolNames.has(name)) return caldavHandler(name, input);
+            return base(name, input);
+          };
+        }
+
+        // Same pattern for IMAP email tools.
+        if (this.imapProvider && this.imapProvider.getAuthStatus(memberSlug).authenticated) {
+          const imapHandler = createImapEmailToolHandler(this.imapProvider, memberSlug);
+          const imapToolNames = new Set(["imap_triage", "imap_read", "imap_search"]);
+          const base = toolExecutor;
+          toolExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (imapToolNames.has(name)) return imapHandler(name, input);
+            return base(name, input);
+          };
+        }
       }
 
       // Expose a refresh callback to the adapter so mid-session custom tool
@@ -547,7 +586,26 @@ export class ConstitutionEngine {
       refreshToolsForAdapter = async () => {
         const rebuilt = await this.toolRegistry!.buildExecutor(executorCtx);
         if (!rebuilt) return { tools: [], toolExecutor: async () => ({ content: "no tools", is_error: true }) };
-        return { tools: rebuilt.tools, toolExecutor: rebuilt.executor };
+        let refreshedExecutor = rebuilt.executor;
+        if (this.caldavProvider && this.caldavProvider.getAuthStatus(memberSlug).authenticated) {
+          const caldavHandler = createCalDavCalendarToolHandler(this.caldavProvider, memberSlug);
+          const caldavToolNames = new Set(["list_calendar_events", "create_calendar_event", "get_calendar_event"]);
+          const base = refreshedExecutor;
+          refreshedExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (caldavToolNames.has(name)) return caldavHandler(name, input);
+            return base(name, input);
+          };
+        }
+        if (this.imapProvider && this.imapProvider.getAuthStatus(memberSlug).authenticated) {
+          const imapHandler = createImapEmailToolHandler(this.imapProvider, memberSlug);
+          const imapToolNames = new Set(["imap_triage", "imap_read", "imap_search"]);
+          const base = refreshedExecutor;
+          refreshedExecutor = async (name: string, input: Record<string, unknown>) => {
+            if (imapToolNames.has(name)) return imapHandler(name, input);
+            return base(name, input);
+          };
+        }
+        return { tools: rebuilt.tools, toolExecutor: refreshedExecutor };
       };
     }
 
@@ -567,6 +625,7 @@ export class ConstitutionEngine {
         enabledSkills,
         onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
+        attachments: params.attachments,
         // Mid-session tool refresh: re-run buildExecutor after a custom tool
         // is created/updated/disabled. The adapter uses this to call
         // setMcpServers so the new tool is immediately usable in this conv.

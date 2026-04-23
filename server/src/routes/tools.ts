@@ -5,12 +5,22 @@
 
 import { Router } from "express";
 import { and, eq, inArray } from "drizzle-orm";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Db } from "@carsonos/db";
 import { customTools, staffAgents, toolSecrets } from "@carsonos/db";
 import type { ToolRegistry } from "../services/tool-registry.js";
-import { TOOLS_ROOT, hashToolDir, loadCustomTools } from "../services/custom-tools/index.js";
+import {
+  TOOLS_ROOT,
+  hashToolDir,
+  loadCustomTools,
+  parseSkillMd,
+  walkForSkills,
+  prepareInstall,
+  promoteTool,
+  cleanupStaging,
+  InstallError,
+} from "../services/custom-tools/index.js";
 
 export interface ToolRouteDeps {
   db: Db;
@@ -131,6 +141,329 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
       ? db.select().from(customTools).where(eq(customTools.householdId, String(householdId))).all()
       : db.select().from(customTools).all();
     res.json({ customTools: rows });
+  });
+
+  // ── Orphan SKILL.md detection + import ──────────────────────────────
+  //
+  // The loader counts orphans at boot but only logs them. These routes
+  // expose them to the admin UI so the operator can review and import
+  // (insert custom_tools rows + register in the live registry).
+  //
+  // Sources of orphans: hand-authored SKILL.md files, files synced from
+  // another machine without the DB, recovered files from a backup.
+  //
+  // IMPORTANT: declared BEFORE /custom/:id so Express doesn't match
+  // "orphans" as the :id param.
+
+  // GET /custom/orphans — list SKILL.md files on disk that have no DB row
+  router.get("/custom/orphans", async (req, res) => {
+    const householdId = typeof req.query.household_id === "string" ? req.query.household_id : null;
+    if (!householdId) { res.status(400).json({ error: "household_id required" }); return; }
+
+    const householdDir = join(TOOLS_ROOT, householdId);
+    if (!existsSync(householdDir)) { res.json({ orphans: [] }); return; }
+
+    const knownPaths = new Set(
+      db
+        .select({ path: customTools.path })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.path),
+    );
+    const knownNames = new Set(
+      db
+        .select({ name: customTools.name })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.name),
+    );
+
+    const found = walkForSkills(householdDir);
+    const orphans: Array<{
+      bundle: string | null;
+      toolName: string;
+      relPath: string;
+      parsed: { name: string; description: string; kind: string; hasHandler: boolean } | null;
+      parseError: string | null;
+      nameConflict: boolean;
+    }> = [];
+
+    for (const f of found) {
+      const relPath = f.bundle ? `${f.bundle}/${f.toolName}` : f.toolName;
+      if (knownPaths.has(relPath)) continue;
+
+      let parsed: { name: string; description: string; kind: string; hasHandler: boolean } | null = null;
+      let parseError: string | null = null;
+      let conflictName: string | null = null;
+      try {
+        const doc = parseSkillMd(readFileSync(f.absPath, "utf8"));
+        const kind = doc.frontmatter.kind ?? "prompt";
+        const handlerPath = join(f.absPath, "..", "handler.ts");
+        const hasHandler = existsSync(handlerPath);
+        if (kind === "script" && !hasHandler) {
+          parseError = "Script tool missing handler.ts next to SKILL.md";
+        } else {
+          parsed = { name: doc.frontmatter.name, description: doc.frontmatter.description, kind, hasHandler };
+          conflictName = doc.frontmatter.name;
+        }
+      } catch (err) {
+        parseError = (err as Error).message;
+      }
+
+      orphans.push({
+        bundle: f.bundle ?? null,
+        toolName: f.toolName,
+        relPath,
+        parsed,
+        parseError,
+        nameConflict: conflictName ? knownNames.has(conflictName) : false,
+      });
+    }
+
+    res.json({ orphans });
+  });
+
+  // POST /custom/import-orphans — body: { household_id, paths: string[] }
+  router.post("/custom/import-orphans", async (req, res) => {
+    const { household_id: householdId, paths } = req.body as {
+      household_id?: string;
+      paths?: string[];
+    };
+    if (!householdId) { res.status(400).json({ error: "household_id required" }); return; }
+    if (!Array.isArray(paths) || paths.length === 0) {
+      res.status(400).json({ error: "paths must be a non-empty array" });
+      return;
+    }
+
+    const agents = db
+      .select()
+      .from(staffAgents)
+      .where(eq(staffAgents.householdId, householdId))
+      .all();
+    const defaultAgent =
+      agents.find((a) => a.staffRole === "chief_of_staff") ??
+      agents.find((a) => a.status === "active") ??
+      agents[0];
+    if (!defaultAgent) {
+      res.status(400).json({ error: "No staff agents in this household to attribute imports to" });
+      return;
+    }
+
+    const householdDir = join(TOOLS_ROOT, householdId);
+    const found = walkForSkills(householdDir);
+    const byRelPath = new Map<string, typeof found[0]>();
+    for (const f of found) {
+      const relPath = f.bundle ? `${f.bundle}/${f.toolName}` : f.toolName;
+      byRelPath.set(relPath, f);
+    }
+
+    const knownNames = new Set(
+      db
+        .select({ name: customTools.name })
+        .from(customTools)
+        .where(eq(customTools.householdId, householdId))
+        .all()
+        .map((r) => r.name),
+    );
+
+    const imported: string[] = [];
+    const failed: Array<{ relPath: string; error: string }> = [];
+
+    for (const relPath of paths) {
+      const f = byRelPath.get(relPath);
+      if (!f) { failed.push({ relPath, error: "No SKILL.md found at that path on disk" }); continue; }
+
+      let doc;
+      try {
+        doc = parseSkillMd(readFileSync(f.absPath, "utf8"));
+      } catch (err) {
+        failed.push({ relPath, error: `SKILL.md parse failed: ${(err as Error).message}` });
+        continue;
+      }
+
+      const kind = doc.frontmatter.kind ?? "prompt";
+      const dir = join(f.absPath, "..");
+      if (kind === "script" && !existsSync(join(dir, "handler.ts"))) {
+        failed.push({ relPath, error: "Script tool missing handler.ts" });
+        continue;
+      }
+
+      if (knownNames.has(doc.frontmatter.name)) {
+        failed.push({
+          relPath,
+          error: `Tool name '${doc.frontmatter.name}' already exists in this household`,
+        });
+        continue;
+      }
+
+      let approvedContentHash: string | null = null;
+      if (kind === "script") {
+        try { approvedContentHash = hashToolDir(dir); } catch { /* leave null */ }
+      }
+
+      try {
+        db.insert(customTools).values({
+          householdId,
+          name: doc.frontmatter.name,
+          kind,
+          path: relPath,
+          createdByAgentId: defaultAgent.id,
+          source: "imported",
+          status: "active",
+          approvedContentHash,
+        }).run();
+        knownNames.add(doc.frontmatter.name);
+        imported.push(relPath);
+      } catch (err) {
+        failed.push({ relPath, error: `DB insert failed: ${(err as Error).message}` });
+      }
+    }
+
+    if (imported.length > 0) {
+      try { await loadCustomTools(db, toolRegistry); }
+      catch (err) { console.error("[tools] Registry reload after import failed:", err); }
+    }
+
+    res.json({ imported: imported.length, importedPaths: imported, failed });
+  });
+
+  // ── Upstream update check + apply (installed skills only) ──────────
+  //
+  // The detail panel shows a "Check for updates" button on tools where
+  // source === "installed-skill" and sourceUrl is set. These routes power it.
+  //
+  // The check re-runs prepareInstall (same fetch+validate+hash pipeline as
+  // install_skill) against the saved sourceUrl, finds the matching tool by
+  // name, and compares the upstream contentHash to the locally stored
+  // approvedContentHash. The apply route does the same fetch then promotes
+  // the new files in place, bumps generation, refreshes content hash, and
+  // reloads the registry so the new version is callable immediately.
+  //
+  // IMPORTANT: declared BEFORE /custom/:id so Express doesn't match
+  // "check-update" or "apply-update" as the :id param.
+
+  // GET /custom/:id/check-update — fetch upstream and compare hashes
+  router.get("/custom/:id/check-update", async (req, res) => {
+    const row = db.select().from(customTools).where(eq(customTools.id, req.params.id)).get();
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    if (row.source !== "installed-skill" || !row.sourceUrl) {
+      res.status(400).json({ error: "Tool was not installed from a source URL" });
+      return;
+    }
+
+    let result;
+    try {
+      result = await prepareInstall(row.sourceUrl);
+    } catch (err) {
+      const msg = err instanceof InstallError ? err.message : (err as Error).message;
+      res.status(502).json({ error: `Upstream fetch failed: ${msg}` });
+      return;
+    }
+
+    try {
+      const entry = result.entries.find((e) => e.toolName === row.name);
+      if (!entry) {
+        res.json({
+          hasUpdate: false,
+          upstreamMissing: true,
+          currentHash: row.approvedContentHash,
+          upstreamHash: null,
+          message: `The upstream source no longer contains a tool named "${row.name}". It may have been renamed or removed.`,
+        });
+        return;
+      }
+
+      res.json({
+        hasUpdate: entry.contentHash !== row.approvedContentHash,
+        upstreamMissing: false,
+        currentHash: row.approvedContentHash,
+        upstreamHash: entry.contentHash,
+        message: entry.contentHash === row.approvedContentHash ? "Up to date." : "Update available.",
+      });
+    } finally {
+      cleanupStaging(result.stagingRoot);
+    }
+  });
+
+  // POST /custom/:id/apply-update — re-fetch and overwrite the local copy
+  router.post("/custom/:id/apply-update", async (req, res) => {
+    const row = db.select().from(customTools).where(eq(customTools.id, req.params.id)).get();
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    if (row.source !== "installed-skill" || !row.sourceUrl) {
+      res.status(400).json({ error: "Tool was not installed from a source URL" });
+      return;
+    }
+
+    let result;
+    try {
+      result = await prepareInstall(row.sourceUrl);
+    } catch (err) {
+      const msg = err instanceof InstallError ? err.message : (err as Error).message;
+      res.status(502).json({ error: `Upstream fetch failed: ${msg}` });
+      return;
+    }
+
+    try {
+      const entry = result.entries.find((e) => e.toolName === row.name);
+      if (!entry) {
+        res.status(404).json({
+          error: `The upstream source no longer contains a tool named "${row.name}". It may have been renamed or removed. To switch to the new name, run install_skill again.`,
+        });
+        return;
+      }
+
+      if (entry.contentHash === row.approvedContentHash) {
+        res.json({ ok: true, applied: false, message: "Already up to date." });
+        return;
+      }
+
+      const destDir = join(TOOLS_ROOT, row.householdId, row.path);
+      // Atomic swap: move the existing dir aside, promote the upstream into
+      // its place, then remove the backup. If the promote fails, restore the
+      // backup so we never leave the user with a half-installed tool.
+      const backupDir = `${destDir}.bak.${Date.now()}`;
+      let backupCreated = false;
+      try {
+        if (existsSync(destDir)) {
+          renameSync(destDir, backupDir);
+          backupCreated = true;
+        }
+        promoteTool(entry, destDir);
+        if (backupCreated) {
+          rmSync(backupDir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        if (backupCreated && !existsSync(destDir)) {
+          // Restore the backup since the new files never landed
+          try { renameSync(backupDir, destDir); } catch { /* swallow restore error; original is more relevant */ }
+        }
+        res.status(500).json({
+          error: `Failed to promote upstream files: ${(err as Error).message}`,
+        });
+        return;
+      }
+
+      db.update(customTools)
+        .set({
+          approvedContentHash: entry.contentHash,
+          generation: row.generation + 1,
+          schemaVersion: row.schemaVersion + 1,
+          status: "active",
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(customTools.id, row.id))
+        .run();
+
+      try { await loadCustomTools(db, toolRegistry); }
+      catch (err) { console.error("[tools] Registry reload after update failed:", err); }
+
+      res.json({ ok: true, applied: true, newHash: entry.contentHash });
+    } finally {
+      cleanupStaging(result.stagingRoot);
+    }
   });
 
   // GET /custom/pending — convenience endpoint for the admin approvals queue

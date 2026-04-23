@@ -20,6 +20,7 @@ import {
   existsSync,
 } from "node:fs";
 import { join, basename } from "node:path";
+import { homedir } from "node:os";
 import type {
   MemoryProvider,
   MemoryEntry,
@@ -32,6 +33,18 @@ const execFileAsync = promisify(execFile);
 const QMD_BIN = "qmd";
 const SEARCH_TIMEOUT_MS = 30_000; // qmd query (hybrid) can take 5-10s
 const UPDATE_TIMEOUT_MS = 30_000;
+
+/**
+ * Expand a leading `~` or `~/` in a path to the user's home directory.
+ * Node's fs and path APIs don't do this automatically — it's a shell thing —
+ * so stored paths like `~/projects/brain` fail silently by creating a
+ * literal `~` directory relative to cwd if we don't expand them first.
+ */
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+  return path;
+}
 
 // ── QMD Provider ───────────────────────────────────────────────────
 
@@ -59,7 +72,8 @@ export class QmdMemoryProvider implements MemoryProvider {
    * instead of creating a new one (avoids duplicate indexing).
    */
   async ensureCollection(name: string, dirOverride?: string): Promise<void> {
-    const dir = dirOverride ?? join(this.rootDir, name);
+    const expandedOverride = dirOverride ? expandHome(dirOverride) : undefined;
+    const dir = expandedOverride ?? join(this.rootDir, name);
     mkdirSync(dir, { recursive: true });
 
     // Check if QMD already has this directory under a different name
@@ -76,8 +90,8 @@ export class QmdMemoryProvider implements MemoryProvider {
 
       // If dirOverride is set, check if that directory is already registered
       // under a different collection name. If so, alias to it.
-      if (dirOverride) {
-        const resolvedDir = dirOverride.replace(/\/$/, "");
+      if (expandedOverride) {
+        const resolvedDir = expandedOverride.replace(/\/$/, "");
         // Extract collection names from the list output
         const collectionNames = [...stdout.matchAll(/^(\S+)\s+\(qmd:\/\//gm)].map(m => m[1]);
 
@@ -290,19 +304,67 @@ export class QmdMemoryProvider implements MemoryProvider {
     return { id, filePath };
   }
 
-  /** Find a memory file by ID — checks filename first, then frontmatter. */
+  /**
+   * Find a memory file by ID — checks filename first, then frontmatter.
+   * Walks the directory recursively so both flat collections (written by
+   * save()) and nested brain-style collections (knowledge/year/foo.md) work.
+   */
   private findMemoryFile(dir: string, id: string): string | null {
     const direct = join(dir, `${id}.md`);
     if (existsSync(direct)) return direct;
 
-    const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-    for (const file of files) {
-      const content = readFileSync(join(dir, file), "utf-8");
-      if (content.includes(`id: ${id}`)) {
-        return join(dir, file);
+    // Recursive walk. Skip hidden directories (.git, .obsidian) — they
+    // can contain thousands of files and never hold memories.
+    const walk = (current: string): string | null => {
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = readdirSync(current, { withFileTypes: true, encoding: "utf8" }) as import("node:fs").Dirent[];
+      } catch {
+        return null;
       }
-    }
-    return null;
+      for (const entry of entries) {
+        const name = entry.name;
+        if (name.startsWith(".")) continue;
+        const full = join(current, name);
+        if (entry.isDirectory()) {
+          const found = walk(full);
+          if (found) return found;
+          continue;
+        }
+        if (!name.endsWith(".md")) continue;
+        if (name === `${id}.md`) return full;
+        try {
+          const content = readFileSync(full, "utf-8");
+          if (content.includes(`id: ${id}`)) return full;
+        } catch {
+          // Skip unreadable files
+        }
+      }
+      return null;
+    };
+
+    return walk(dir);
+  }
+
+  async read(
+    collection: string,
+    id: string,
+  ): Promise<{ id: string; title: string; content: string; frontmatter: Record<string, unknown>; filePath: string } | null> {
+    const dir = this.collections.get(collection);
+    if (!dir) return null;
+
+    const filePath = this.findMemoryFile(dir, id);
+    if (!filePath) return null;
+
+    const raw = readFileSync(filePath, "utf-8");
+    const parsed = parseMemoryFile(raw, filePath, collection);
+    return {
+      id: parsed?.id ?? id,
+      title: parsed?.title ?? id,
+      content: parsed?.content ?? raw,
+      frontmatter: parsed?.frontmatter ?? {},
+      filePath,
+    };
   }
 
   async delete(collection: string, id: string): Promise<void> {

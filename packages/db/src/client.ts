@@ -47,6 +47,7 @@ CREATE TABLE family_members (
   age INTEGER NOT NULL,
   telegram_user_id TEXT UNIQUE,
   signal_number TEXT UNIQUE,
+  signal_uuid TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
   memory_dir TEXT,
@@ -348,7 +349,8 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     !tableExists("scheduled_tasks") ||
     !staffCols.has("signal_account") || !staffCols.has("signal_daemon_port") ||
     !memberCols.has("profile_content") || !memberCols.has("profile_updated_at") ||
-    !memberCols.has("memory_dir") || !memberCols.has("signal_number");
+    !memberCols.has("memory_dir") || !memberCols.has("signal_number") ||
+    !memberCols.has("signal_uuid");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -576,6 +578,13 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // family_members: add Signal number
     if (!memberCols.has("signal_number")) {
       sqlite.prepare("ALTER TABLE family_members ADD COLUMN signal_number TEXT").run();
+      upgraded = true;
+    }
+
+    // family_members: add Signal UUID (ACI) — used when sender's phone
+    // privacy prevents sourceNumber from appearing in the envelope
+    if (!memberCols.has("signal_uuid")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN signal_uuid TEXT").run();
       upgraded = true;
     }
 

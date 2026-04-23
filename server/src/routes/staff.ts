@@ -171,6 +171,8 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         soulContent: soulContent ?? null,
         visibility: visibility ?? "family",
         telegramBotToken: telegramBotToken ?? null,
+        signalAccount: req.body.signal_account ?? null,
+        signalDaemonPort: req.body.signal_daemon_port ?? null,
         model: model ?? "claude-sonnet-4-6",
         trustLevel: trustLevel ?? "restricted",
         isHeadButler: isHeadButler ?? false,
@@ -221,6 +223,9 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       autonomyLevel,
     } = req.body;
 
+    const signalAccount = req.body.signal_account;
+    const signalDaemonPort = req.body.signal_daemon_port;
+
     const [updated] = await db
       .update(staffAgents)
       .set({
@@ -231,6 +236,8 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         ...(soulContent !== undefined && { soulContent }),
         ...(visibility !== undefined && { visibility }),
         ...(telegramBotToken !== undefined && { telegramBotToken }),
+        ...(signalAccount !== undefined && { signalAccount }),
+        ...(signalDaemonPort !== undefined && { signalDaemonPort }),
         ...(model !== undefined && { model }),
         ...(status !== undefined && { status }),
         ...(autonomyLevel !== undefined && { autonomyLevel }),
@@ -247,7 +254,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
     }
 
     // If Signal account was added or changed, start/restart the Signal relay
-    if (req.body.signal_account && signalRelay) {
+    if (signalAccount && signalRelay) {
       signalRelay.startAccount(req.params.id).catch((err) => {
         console.error(`[staff] Failed to start Signal relay after account update:`, err);
       });

@@ -693,7 +693,12 @@ async function handleInstallSkill(
           kind: entry.kind,
           path: relPath,
           createdByAgentId: ctx.agentId,
-          source: "skill_install",
+          // Schema documents legal values as 'agent' | 'installed-skill' | 'imported'.
+          // Earlier versions wrote "skill_install" here, which never matched the
+          // UI check (`source === "installed-skill"`) so the install card and
+          // future update-check button stayed hidden. Standardized now.
+          source: "installed-skill",
+          sourceUrl: result.sourceUrl,
           status: "active",
           approvedContentHash: entry.contentHash,
           schemaVersion: 1,

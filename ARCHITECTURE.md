@@ -25,8 +25,17 @@ The head agent (Chief of Staff) manages the household. Other agents are personal
 When a family member sends a message on Telegram, here's what happens:
 
 ```
-User message (Telegram)
+Telegram update (text | voice | audio | photo | document | sticker | video)
   │
+  ├─ 0. Media handler (telegram-media.ts) if non-text:
+  │     ├─ Size guard against per-capability cap (image 10MB, voice/audio 20MB, doc 20MB, video 50MB)
+  │     ├─ Min audio guard (1KB) for voice/audio
+  │     ├─ Local cache lookup at ~/.carsonos/media/ (key: file_unique_id, 1hr TTL)
+  │     ├─ Cache miss → download from Telegram, write to cache
+  │     ├─ Voice/audio → Groq Whisper (whisper-large-v3-turbo) → transcript text
+  │     ├─ Photo → keep image bytes as base64, attach as multimodal content block
+  │     ├─ Document → text-readable types inject up to 100K chars; PDFs acknowledged
+  │     └─ Returns { text, optional image attachment } to relay
   ├─ 1. Identify member (by Telegram user ID)
   ├─ 2. Load agent + member info from DB
   ├─ 3. Load constitution clauses (cached 5min)
@@ -34,7 +43,9 @@ User message (Telegram)
   ├─ 5. Compile system prompt (constitution first, then role/personality/memory instructions)
   ├─ 6. Resolve agent's tools (registry + grants + trust level)
   ├─ 7. Resume session if continuing a conversation (Agent SDK session resume)
-  ├─ 8. Execute via Agent SDK (MCP tools, streaming, max 15 turns)
+  ├─ 8. Execute via Agent SDK (MCP tools, streaming, max turns from CARSONOS_MAX_TURNS)
+  │     ├─ When attachments present: AsyncIterable<SDKUserMessage> with image content blocks
+  │     ├─ Otherwise: string prompt
   │     ├─ Agent searches memory on demand via search_memory tool
   │     ├─ Agent may call tools: save_memory, update_memory, list_calendar_events, etc.
   │     ├─ Tool calls handled by MCP server inside the SDK
@@ -60,6 +71,8 @@ Uses `query()` from `@anthropic-ai/claude-agent-sdk`. This spawns a Claude proce
 **Session Resume:** Conversations maintain continuity via the Agent SDK's `resume` parameter. Each conversation stores a `sessionId` (on `conversation.sessionContext`), and subsequent messages resume the existing session rather than starting fresh. This gives agents memory of the conversation without replaying the full history.
 
 **Model Selection:** Agents can use different Claude models — Sonnet 4.6 (default), Opus 4.6, or Haiku 4.5. The model is mapped to the Agent SDK's model parameter (`"sonnet"`, `"opus"`, `"haiku"`).
+
+**Multimodal input:** When a Telegram photo arrives, the relay extracts the image bytes and passes them as an `attachments` array through `processMessage` to the adapter. The adapter switches from a string prompt to `AsyncIterable<SDKUserMessage>` with Anthropic image content blocks, so the agent's actual model (Sonnet by default, never a forced Haiku pre-describe) sees the image inline. One LLM round-trip, not two.
 
 **How tools work:** We define tools as MCP tools using `tool()` and `createSdkMcpServer()` from the SDK. Each tool has a name, description, Zod schema, and async handler. The SDK presents them to Claude and handles the tool_use loop internally. Our code never touches the Anthropic API's tool_use protocol directly.
 
@@ -232,13 +245,11 @@ The profile interview collects information that becomes the member's profile, in
 ## What's Not Built Yet
 
 - **Post-onboarding checklist** in the dashboard (constitution builder, personality setup, profile interviews)
-- **Sub-agents** — Specialist agents (tutor, developer) that the Chief of Staff delegates to
-- **Task system** — Long-running tasks with approval flows and progress tracking
-- **Tool generation** — Head agent creating new tools (scripts) that other agents can use
-- **Skills import** — Installing skills from skills.sh and registering them as tools
+- **Sub-agents** — Specialist agents (tutor, developer) that the Chief of Staff delegates to (delegation infra exists, disabled in v0.1+)
 - **Tool-call notifications** — Italicized status text in stream during tool execution ("*Searching calendar...*")
 - **Web UI chat** — Chat with agents from the dashboard (currently Telegram only)
 - **Signal / WhatsApp / Slack** — Other messaging platforms
+- **Inbound video understanding** — Videos are size-guarded and acknowledged; frame extraction / vision pass not yet wired
 
 ## Inspiration
 

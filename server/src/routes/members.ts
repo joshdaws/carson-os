@@ -26,7 +26,7 @@ export function createMemberRoutes(db: Db): Router {
 
   // POST /:householdId/members -- create member
   router.post("/:householdId/members", async (req, res) => {
-    const { name, role, age, telegramUserId, memoryDir } = req.body;
+    const { name, role, age, telegramUserId, memoryDir, signalNumber, signalUuid } = req.body;
     const { householdId } = req.params;
 
     if (!name || !role || age === undefined) {
@@ -51,6 +51,8 @@ export function createMemberRoutes(db: Db): Router {
           role,
           age,
           telegramUserId: telegramUserId ?? null,
+          signalNumber: signalNumber ?? null,
+          signalUuid: signalUuid ?? null,
           memoryDir: memoryDir ?? null,
         })
         .returning();
@@ -59,7 +61,7 @@ export function createMemberRoutes(db: Db): Router {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("UNIQUE constraint")) {
-        res.status(409).json({ error: "That Telegram ID is already assigned to another member." });
+        res.status(409).json({ error: "That Telegram ID, Signal number, or Signal UUID is already assigned to another member." });
       } else {
         throw err;
       }
@@ -68,7 +70,7 @@ export function createMemberRoutes(db: Db): Router {
 
   // PUT /:householdId/members/:id -- update member
   router.put("/:householdId/members/:id", async (req, res) => {
-    const { name, role, age, telegramUserId, memoryDir } = req.body;
+    const { name, role, age, telegramUserId, memoryDir, signalNumber, signalUuid } = req.body;
 
     const existing = await db
       .select()
@@ -86,19 +88,30 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
-    const [updated] = await db
-      .update(familyMembers)
-      .set({
-        ...(name !== undefined && { name }),
-        ...(role !== undefined && { role }),
-        ...(age !== undefined && { age }),
-        ...(telegramUserId !== undefined && { telegramUserId }),
-        ...(memoryDir !== undefined && { memoryDir }),
-      })
-      .where(eq(familyMembers.id, req.params.id))
-      .returning();
+    try {
+      const [updated] = await db
+        .update(familyMembers)
+        .set({
+          ...(name !== undefined && { name }),
+          ...(role !== undefined && { role }),
+          ...(age !== undefined && { age }),
+          ...(telegramUserId !== undefined && { telegramUserId }),
+          ...(signalNumber !== undefined && { signalNumber }),
+          ...(signalUuid !== undefined && { signalUuid }),
+          ...(memoryDir !== undefined && { memoryDir }),
+        })
+        .where(eq(familyMembers.id, req.params.id))
+        .returning();
 
-    res.json({ member: updated });
+      res.json({ member: updated });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("UNIQUE constraint")) {
+        res.status(409).json({ error: "That Telegram ID, Signal number, or Signal UUID is already assigned to another member." });
+      } else {
+        throw err;
+      }
+    }
   });
 
   // DELETE /:householdId/members/:id -- delete member
