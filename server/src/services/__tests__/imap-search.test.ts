@@ -70,7 +70,7 @@ describe("parseSearchQuery", () => {
     const result = parseSearchQuery("after:2026-01-01");
     expect(result.since).toBeInstanceOf(Date);
     // Use getUTCFullYear so the test passes in all timezones (new Date("YYYY-MM-DD") is midnight UTC)
-    expect(result.since!.getUTCFullYear()).toBe(2026);
+    expect((result.since as Date).getUTCFullYear()).toBe(2026);
   });
 
   it("parses since: as alias for after:", () => {
@@ -81,7 +81,7 @@ describe("parseSearchQuery", () => {
   it("parses before: as Date object", () => {
     const result = parseSearchQuery("before:2026-06-30");
     expect(result.before).toBeInstanceOf(Date);
-    expect(result.before!.getUTCFullYear()).toBe(2026);
+    expect((result.before as Date).getUTCFullYear()).toBe(2026);
   });
 
   it("treats unrecognised tokens as full-text search", () => {
