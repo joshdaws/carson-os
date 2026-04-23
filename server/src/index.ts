@@ -356,6 +356,7 @@ async function main() {
     constitutionEngine,
     taskEngine,
     oversight,
+    delegationService: orchestrator,
     interviewEngine,
     profileInterviewEngine,
     personalityInterviewEngine,

@@ -11,15 +11,17 @@ import { tasks, taskEvents } from "@carsonos/db";
 import type { TaskStatus } from "@carsonos/shared";
 import type { TaskEngine } from "../services/task-engine.js";
 import type { CarsonOversight } from "../services/carson-oversight.js";
+import type { DelegationService } from "../services/delegation-service.js";
 
 export interface TaskRouteDeps {
   db: Db;
   taskEngine: TaskEngine;
   oversight: CarsonOversight;
+  delegationService: DelegationService;
 }
 
 export function createTaskRoutes(deps: TaskRouteDeps): Router {
-  const { db, taskEngine, oversight } = deps;
+  const { db, taskEngine, oversight, delegationService } = deps;
   const router = Router();
 
   // GET / -- list tasks with optional filters
@@ -177,6 +179,33 @@ export function createTaskRoutes(deps: TaskRouteDeps): Router {
         err instanceof Error ? err.message : "Failed to reject task";
       res.status(400).json({ error: message });
     }
+  });
+
+  // POST /:id/approve-hire -- approve a hire_proposal task via the Web UI
+  // (fallback path when the Telegram callback_query handler isn't an option:
+  // bot offline, user not set up on Telegram, admin doing a bulk review).
+  // Routes through DelegationService.handleHireApproval so the v0.4
+  // materialization (staff_agents insert + delegation_edges + auto-delegate
+  // if originalUserRequest is set) runs the same way as the Telegram path.
+  router.post("/:id/approve-hire", async (req, res) => {
+    const approvedBy = typeof req.body?.approvedBy === "string" ? req.body.approvedBy : "web-ui";
+    const result = await delegationService.handleHireApproval(req.params.id, approvedBy);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  });
+
+  // POST /:id/reject-hire -- reject a hire_proposal task via the Web UI.
+  router.post("/:id/reject-hire", async (req, res) => {
+    const rejectedBy = typeof req.body?.rejectedBy === "string" ? req.body.rejectedBy : "web-ui";
+    const result = await delegationService.handleHireRejection(req.params.id, rejectedBy);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result);
   });
 
   // POST /:id/execute -- execute a task

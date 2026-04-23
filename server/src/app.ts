@@ -26,6 +26,7 @@ import type { PersonalityInterviewEngine } from "./services/personality-intervie
 import type { ToolRegistry } from "./services/tool-registry.js";
 import type { MultiRelayManager } from "./services/multi-relay-manager.js";
 import type { SignalRelayManager } from "./services/signal-relay-manager.js";
+import type { DelegationService } from "./services/delegation-service.js";
 
 import { createHealthRoutes } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
@@ -50,6 +51,7 @@ export interface AppDeps {
   constitutionEngine: ConstitutionEngine;
   taskEngine: TaskEngine;
   oversight: CarsonOversight;
+  delegationService: DelegationService;
   interviewEngine: InterviewEngine;
   profileInterviewEngine: ProfileInterviewEngine;
   personalityInterviewEngine: PersonalityInterviewEngine;
@@ -96,7 +98,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
   app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay }));
-  app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight }));
+  app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight, delegationService: deps.delegationService }));
   app.use(
     "/api/constitution",
     createConstitutionRoutes({ db, constitutionEngine, interviewEngine }),
