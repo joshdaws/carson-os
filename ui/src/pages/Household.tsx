@@ -24,7 +24,6 @@ import {
   Users,
   UserCog,
   Shield,
-  FileUser,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { InterviewOverlay } from "@/components/InterviewOverlay";
@@ -53,6 +52,7 @@ interface StaffAgent {
   isHeadButler?: boolean;
   trustLevel?: string;
   model?: string;
+  createdAt?: string;
   assignments?: Assignment[];
 }
 
@@ -91,6 +91,7 @@ const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
+  "claude-opus-4-7": "Opus 4.7",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
   "claude-haiku-4-5": "Haiku 4.5",
 };
@@ -435,23 +436,28 @@ function MemberCard({
             </span>
           )}
         </div>
-        {/* Profile status + interview button */}
-        <div className="flex items-center justify-between pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
-          <div className="flex items-center gap-1.5">
-            <FileUser className="h-3.5 w-3.5" style={{ color: hasProfile ? "#2e7d32" : "#ddd5c8" }} />
-            <span className="text-[11px]" style={{ color: hasProfile ? "#2e7d32" : "#a09080" }}>
-              {hasProfile ? "Profile set" : "No profile"}
-            </span>
-          </div>
+        {/* Profile CTA — a single button that tells you the state. If the
+            profile is built, a check glyph + "Re-interview" affords updates.
+            If empty, a muted "+" reads as a create action. */}
+        <div className="flex justify-end pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
           <Button
             variant="ghost"
             size="sm"
             className="h-7 text-[11px]"
-            style={{ color: "#8b6f4e" }}
+            style={{ color: hasProfile ? "#2e7d32" : "#8b6f4e" }}
             onClick={() => onStartInterview(member.id)}
           >
-            <FileUser className="h-3 w-3 mr-1" />
-            {hasProfile ? "Re-interview" : "Build Profile"}
+            {hasProfile ? (
+              <>
+                <Check className="h-3 w-3 mr-1" />
+                Re-interview
+              </>
+            ) : (
+              <>
+                <Plus className="h-3 w-3 mr-1" />
+                Build profile
+              </>
+            )}
           </Button>
         </div>
       </CardContent>
@@ -642,30 +648,66 @@ function AddStaffModal({
 
 function StaffCard({ agent }: { agent: StaffAgent }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const isButler = agent.isHeadButler || agent.staffRole === "head_butler";
+  const isPersonal = agent.staffRole === "personal";
+  const isHired = !isButler && !isPersonal;
+
+  // "Tools specialist" / "Research specialist" — drop the internal "Custom ·"
+  // prefix for hired staff since the section already says Staff.
+  const roleSubtitle = isButler
+    ? "Chief of Staff"
+    : isHired && agent.specialty
+      ? `${agent.specialty.charAt(0).toUpperCase()}${agent.specialty.slice(1)} specialist`
+      : roleLabel(agent.staffRole);
+
+  // Relative "on staff 3d" — only shown on hired staff cards, near the avatar,
+  // so the user sees provenance at a glance.
+  const onStaffFor = (() => {
+    if (!isHired || !agent.createdAt) return null;
+    const ms = Date.now() - new Date(agent.createdAt).getTime();
+    const days = Math.floor(ms / 86_400_000);
+    if (days < 1) return "today";
+    if (days < 7) return `${days}d`;
+    if (days < 30) return `${Math.floor(days / 7)}w`;
+    if (days < 365) return `${Math.floor(days / 30)}mo`;
+    return `${Math.floor(days / 365)}y`;
+  })();
 
   const deleteMutation = useMutation({
     mutationFn: () => api.delete(`/staff/${agent.id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      setConfirmDelete(false);
+      toast.success(`${agent.name} removed`);
+    },
+    onError: (err: Error) => {
+      // 409 carries actionable text ("cancel these tasks first: …" /
+      // "delete these tools first: …"). Surface it so the user knows what
+      // to do — the inline Confirm/Cancel UI doesn't show errors on its own.
+      toast.error(err.message);
+      setConfirmDelete(false);
     },
   });
-
-  const isButler = agent.isHeadButler || agent.staffRole === "head_butler";
 
   return (
     <Card
       className="border hover:shadow-sm transition-shadow"
+      // Chief of Staff: warm cream fill signals "special" without the 2px
+      // gold border that used to read as "currently selected."
       style={{
-        borderColor: isButler ? "#8b6f4e" : "#ddd5c8",
-        borderWidth: isButler ? "2px" : "1px",
+        borderColor: "#ddd5c8",
+        borderWidth: "1px",
+        background: isButler ? "#fbf7ef" : undefined,
       }}
     >
       <CardContent className="p-4">
         <div className="flex items-center gap-3 mb-2">
           <div
             className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold"
-            style={{ background: isButler ? "#f5f0e8" : "#f0ede6", color: "#8b6f4e" }}
+            style={{ background: isButler ? "#f5e8cc" : "#f0ede6", color: "#8b6f4e" }}
           >
             {agent.name.charAt(0)}
           </div>
@@ -679,10 +721,18 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
               >
                 {agent.name}
               </Link>
+              {onStaffFor && (
+                <span
+                  className="text-[10px] shrink-0"
+                  style={{ color: "#a09080" }}
+                  title={`on staff since ${agent.createdAt}`}
+                >
+                  · {onStaffFor}
+                </span>
+              )}
             </div>
             <p className="text-xs" style={{ color: "#8a8070" }}>
-              {isButler ? "Chief of Staff" : roleLabel(agent.staffRole)}
-              {agent.specialty ? ` \u00B7 ${agent.specialty}` : ""}
+              {roleSubtitle}
             </p>
           </div>
         </div>
@@ -737,7 +787,8 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-xs h-7 text-red-500 hover:text-red-600"
+                  className="text-xs h-7 hover:text-red-600"
+                  style={{ color: "#a09080" }}
                   onClick={() => setConfirmDelete(true)}
                 >
                   <Trash2 className="h-3 w-3" />
@@ -775,6 +826,22 @@ export function HouseholdPage() {
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
   const householdId = householdData?.household?.id;
+
+  // Split for the two-section layout:
+  //   personal = Chief of Staff + assigned personal agents (the ones users text)
+  //   hired    = custom-role specialists (hired via Carson, delegated to)
+  // Other legacy roles (tutor/coach/scheduler) count as hired since they're
+  // not chat-facing. Carson always sorts first in Personal.
+  const personalAgents = staff
+    .filter((a) => a.isHeadButler || a.staffRole === "head_butler" || a.staffRole === "personal")
+    .sort((a, b) => {
+      if (a.isHeadButler && !b.isHeadButler) return -1;
+      if (!a.isHeadButler && b.isHeadButler) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  const hiredStaff = staff
+    .filter((a) => !a.isHeadButler && a.staffRole !== "head_butler" && a.staffRole !== "personal")
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // Build a lookup: memberId -> which staff are assigned to them
   function getStaffForMember(memberId: string) {
@@ -885,12 +952,21 @@ export function HouseholdPage() {
                 />
               )}
 
-              {/* Parents row */}
+              {/* Parents — matches Personal/Staff serif heading style. No
+                  icon on people sections; icons differentiate agent sections. */}
               {parents.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "#8a8070" }}>
-                    Parents
-                  </p>
+                  <div className="mb-5">
+                    <h2
+                      className="text-[22px] font-normal"
+                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+                    >
+                      Parents
+                    </h2>
+                    <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+                      {parents.length} {parents.length === 1 ? "adult" : "adults"} in the household.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {parents.map((m) => (
                       <MemberCard
@@ -905,19 +981,20 @@ export function HouseholdPage() {
                 </div>
               )}
 
-              {/* Connector line between parents and children */}
-              {parents.length > 0 && children.length > 0 && (
-                <div className="flex justify-center">
-                  <div className="w-px h-6" style={{ background: "#ddd5c8" }} />
-                </div>
-              )}
-
-              {/* Children row */}
+              {/* Kids */}
               {children.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "#8a8070" }}>
-                    Kids
-                  </p>
+                  <div className="mb-5">
+                    <h2
+                      className="text-[22px] font-normal"
+                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+                    >
+                      Kids
+                    </h2>
+                    <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+                      {children.length} {children.length === 1 ? "kid" : "kids"} in the household.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {children.map((m) => (
                       <MemberCard
@@ -978,19 +1055,23 @@ export function HouseholdPage() {
         />
       )}
 
-      {/* Staff Agents section */}
-      <div>
+      {/* Personal agents section — the ones you text with on Telegram/Signal.
+          Sorted: Chief of Staff first, then personal agents by name.
+          mb-10 matches the Family Members section's bottom gap so the
+          Personal → Staff transition has the same breathing room as the
+          rest of the page. */}
+      <div className="mb-10">
         <div className="flex items-center justify-between mb-5">
           <div>
             <h2
               className="text-[22px] font-normal flex items-center gap-2"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
             >
-              <Shield className="h-5 w-5" style={{ color: "#8a8070" }} />
-              Staff Agents
+              <Users className="h-5 w-5" style={{ color: "#8a8070" }} />
+              Personal agents
             </h2>
             <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
-              {staff.length} agent{staff.length !== 1 ? "s" : ""}
+              The ones you text with. {personalAgents.length} agent{personalAgents.length !== 1 ? "s" : ""}.
             </p>
           </div>
           <Button
@@ -999,7 +1080,7 @@ export function HouseholdPage() {
             disabled={showAddStaff}
             style={{ background: "#1a1f2e", color: "#e8dfd0" }}
           >
-            <Plus className="h-3.5 w-3.5 mr-1" /> Add Staff
+            <Plus className="h-3.5 w-3.5 mr-1" /> Add personal
           </Button>
         </div>
 
@@ -1011,13 +1092,47 @@ export function HouseholdPage() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {staff.map((agent) => (
+          {personalAgents.map((agent) => (
             <StaffCard key={agent.id} agent={agent} />
           ))}
-          {staff.length === 0 && !showAddStaff && (
+          {!loadingStaff && personalAgents.length === 0 && !showAddStaff && (
             <p className="text-sm col-span-full" style={{ color: "#8a8070" }}>
-              No staff agents configured yet.
+              No personal agents yet.
             </p>
+          )}
+        </div>
+      </div>
+
+      {/* Staff section — hired specialists Carson can delegate to.
+          These don't have a dedicated chat — you talk to Carson, Carson
+          hands work off. Hired via `propose_hire` from Carson, not this page. */}
+      <div>
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2
+              className="text-[22px] font-normal flex items-center gap-2"
+              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+            >
+              <Shield className="h-5 w-5" style={{ color: "#8a8070" }} />
+              Staff
+            </h2>
+            <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+              Hired specialists Carson delegates to. {hiredStaff.length} on staff.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {hiredStaff.map((agent) => (
+            <StaffCard key={agent.id} agent={agent} />
+          ))}
+          {!loadingStaff && hiredStaff.length === 0 && (
+            <div
+              className="col-span-full p-4 rounded text-sm"
+              style={{ background: "#faf6ed", color: "#5a4a2e", border: "1px solid #eee8dd" }}
+            >
+              No staff hired yet. Ask Carson to hire a specialist — e.g., "Carson, hire a Developer to help me build tools" or "hire a researcher named Lex."
+            </div>
           )}
         </div>
       </div>
