@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { eq, desc } from "drizzle-orm";
+import { sql, eq, desc } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   conversations,
@@ -41,6 +41,8 @@ export function createConversationRoutes(
         memberName: familyMembers.name,
         memberRole: familyMembers.role,
         agentName: staffAgents.name,
+        lastMessage: sql<string | null>`(SELECT content FROM messages WHERE conversation_id = ${conversations.id} ORDER BY created_at DESC LIMIT 1)`,
+        messageCount: sql<number>`(SELECT COUNT(*) FROM messages WHERE conversation_id = ${conversations.id})`,
       })
       .from(conversations)
       .leftJoin(familyMembers, eq(familyMembers.id, conversations.memberId))
@@ -60,6 +62,51 @@ export function createConversationRoutes(
     }
 
     res.json({ conversations: filtered });
+  });
+
+  // POST / -- create a new web conversation
+  router.post("/", async (req, res) => {
+    const { agentId, memberId } = req.body;
+
+    if (!agentId || !memberId) {
+      res.status(400).json({ error: "agentId and memberId are required" });
+      return;
+    }
+
+    const member = await db
+      .select({ id: familyMembers.id, householdId: familyMembers.householdId })
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+
+    if (!member) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+
+    const agent = await db
+      .select({ id: staffAgents.id })
+      .from(staffAgents)
+      .where(eq(staffAgents.id, agentId))
+      .get();
+
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const [conversation] = await db
+      .insert(conversations)
+      .values({
+        householdId: member.householdId,
+        agentId,
+        memberId,
+        channel: "web",
+        startedAt: new Date().toISOString(),
+      })
+      .returning();
+
+    res.status(201).json({ conversation });
   });
 
   // GET /:id/messages -- messages for a conversation
