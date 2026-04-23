@@ -4,6 +4,87 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0.0] - 2026-04-23
+
+## **Carson can hire specialists now. You text Carson, Carson proposes a hire, you tap Approve on Telegram, a Developer shows up on staff and starts working. Results come back when they're done.**
+
+This is the delegation release. The core v0.1 idea — a family Chief of Staff that knows everyone — gains the missing half: Carson can now recognize when a job is too big for one conversation turn and hand it to a hired specialist (Developer for tools/projects/core, Researcher, Tutor, Music specialist, whatever the family needs). The specialist runs async in its own workspace, can take as long as it needs, and messages you back on completion. The conversation stays responsive the whole time.
+
+### What lands
+
+- **Propose-hire flow.** Carson calls `propose_hire({role, specialty, reason, proposedName?, customInstructions?, model?, trustLevel?, originalUserRequest?})`. An approval card goes to the principal's Telegram with inline Approve/Reject buttons. On approve, a `staff_agents` row materializes with the specialty template as operating instructions, a `delegation_edges` row wires Carson to the new specialist, and — if `originalUserRequest` was set — Carson auto-delegates the user's original ask so the principal doesn't have to re-prompt.
+- **Workspace provisioning.** `project` and `core` specialties get a per-task git worktree under `~/.carsonos/worktrees/{project}/{runId}` on a fresh `carson/{slug}` branch. `tools` specialty gets a scratch sandbox under `~/.carsonos/sandbox/{runId}`. Teardown is idempotent.
+- **Two-phase exactly-once notifier.** Prepare writes `notify_payload` + terminal status in one UPDATE. Deliver sends via Telegram, upserts a `delegation_notifications` row, then atomic-flips `notified_at` under a conditional WHERE gate. If the bot is down, reconciler replays on boot + hourly. No duplicates, no drops.
+- **MCP delegation tools.** `delegate_task`, `propose_hire`, `cancel_task`, `list_active_tasks`, `register_project` — granted by default to `head_butler` and `personal` agents, gated by `delegation_edges` + `delegationDepth` (max 2).
+- **Developer-with-tools bypass.** A hired Dev with `specialty='tools'` gets `canCreateActiveTools=true` and the 8 custom-tool management grants at hire-time — the Dev builds and installs tools directly without per-tool principal approval (the hire card was the approval).
+- **UI surfaces.** New `/projects` page for explicit project registration. Tasks page renders hire-proposal cards with Approve/Reject + full customInstructions + trustLevel + originalUserRequest visible. Tools page gains an Add Secret form with AES-256-GCM encrypted storage. Household page splits the flat staff grid into "Personal agents" (the ones you text with) and "Staff" (hired specialists Carson delegates to).
+
+### Security review (22 findings, all fixed before merge)
+
+Adversarial review caught:
+
+- **Hire approval kind gate.** `handleHireApproval/Rejection` now refuses to materialize a staff agent unless `task.description.kind === 'hire_proposal'`. Prevents any pending task from being promoted into phantom staff via `/approve-hire`.
+- **Authorization on Telegram callback.** Inline Approve/Reject buttons verify `ctx.from.id` resolves to a `familyMembers` row with `role='parent'`. Kids, guests, and forwarded-message recipients get denied.
+- **Same-origin gate on `/api`.** State-changing routes (POST/PUT/PATCH/DELETE) require `Origin` or `Referer` matching the dashboard origin. Blocks local-process curls — including Dev agents with Bash — from hitting mutation endpoints without spoofing headers.
+- **Path traversal defense.** `POST /api/projects` validates `name` against a slug regex and `path` against absolute-no-traversal. `workspace.provisionWorktree` defensively `resolve()`s the final path and rejects any escape from the worktrees root.
+- **Hire card transparency.** `composeHireCardText` surfaces the effective `model` + `trustLevel` + the first 400 chars of `customInstructions` verbatim, so the principal sees what will actually boot instead of a hardcoded specialty template description.
+- **Exactly-once invariant.** After approve/reject, `notifyPayload` is cleared and `notifiedAt` flipped so the replay scan can't resurrect dead hire cards on every boot. After sweep-expires, `notifiedAt` is reset to null so the cancellation message actually delivers.
+- **Cross-member isolation.** `list_active_tasks` now filters by `requestedBy=ctx.memberId`. A kid's personal agent can't see parent task previews.
+- **Data integrity.** `DELETE /projects/:id` returns 409 if referencing tasks exist. Fresh-install table order puts `projects` before `tasks` so FK references resolve in declaration order. `redact_recent_user_message` no longer double-encodes `messages.metadata` against the JSON column.
+
+### Fixed
+
+- **Delete hired agents works.** `DELETE /api/staff/:id` cascades all FK references in a sync transaction (better-sqlite3 enforces `foreign_keys=ON`). Blocks with 409 if the agent has active tasks or live custom tools. Cleans messages → conversations → task_events → delegation_notifications → tasks, plus tool_grants, scheduled_tasks, delegation_edges, assignments, personality_interview_state, and the `grants_seeded:<id>` boot marker.
+- **`update-service.sh` and `install-service.sh` run `pnpm build`.** Closes #17. The launchd/systemd plist runs with `NODE_ENV=production`; without `ui/dist/` on disk, the server 404s every GET `/` until someone builds manually.
+- **Telegram bot retry on transient network errors.** `ETIMEDOUT`, `ECONNRESET`, `EAI_AGAIN`, `ENETUNREACH`, `ECONNREFUSED`, "socket hang up", and "fetch failed" now trigger 5s/15s/45s backoff retries instead of a zombie-bot state. Auth errors fail fast.
+- **Phase-2 notifier replay runs after `multiRelay.startAll()`.** Splits `recoverStuckTasks` into Phase-1 (DB writes, early boot) and `replayPendingNotifications` (delivery, after the bot is wired).
+- **Conversation freshness.** `getOrCreateConversation` rotates after 2h of silence based on `lastMessageAt`, not UTC-today. History injection adds `[time note: Nh Mm since the previous message]` markers when gaps exceed 30 minutes. System prompt declares the current time with triple-stated timezone to prevent paraphrase hallucinations.
+
+### Known deferrals
+
+Documented in `TODOS.md` as v0.5 work:
+
+- **Scope `ctx.db` in custom-tool handlers** — a compromised Dev with `specialty='tools'` can read other households' `tool_secrets` via the unscoped Drizzle client. Single-family today = low practical risk.
+- **`apply-update` preserves script-tool approval invariant** — upstream can currently push new `handler.ts` code and have it go active on a single click without re-approval.
+- **Workspace crash-safety** — server crash between `git worktree add` and the DB UPDATE orphans branches that permanently block retry by title.
+- **Signal transport delegation UX** — Signal-only users currently have no inline-button equivalent; approval flow needs the web-UI deep-link path or keyword-reply parsing.
+- **Detached Claude adapter** — durability upgrade so Dev tasks survive server restarts. v0.4 is demo-grade; 20min of Dev work lost on reboot.
+
+### Itemized changes
+
+#### Added
+
+- **v0.4 delegation schema** — `projects`, `delegation_notifications` tables; `tasks` columns `delegation_depth`, `project_id`, `workspace_kind`, `workspace_path`, `workspace_branch`, `timeout_sec`, `approval_expires_at`, `notify_payload`, `notified_at`, `notify_agent_id`.
+- **`DelegationService`** (~1100 lines) with `handleDelegateTaskCall`, `handleHireProposal`, `handleHireApproval/Rejection`, `handleCancelTask`, `handleProjectCompleted`.
+- **`WorkspaceProvider`** with `provision` (worktree + tool_sandbox), `teardown`, `branchExists`, defense-in-depth path-traversal guards, `slugify` for branch names.
+- **`DelegationNotifier`** with `prepare`, `deliver`, `findPendingDelivery`, `threadIntoConversation`, atomic `flip`.
+- **`dispatcher.executeDeveloperTask`** + `executeSpecialistTask` + `sweepExpiredApprovals` + `replayPendingNotifications` + `handleCancelBroadcast`.
+- **`specialty-templates/`** — curated operating instructions for `tools.md`, `project.md`, `core.md`, plus `cos-delegation-preamble.md` and `composeGenericSpecialistInstructions` for arbitrary specialists.
+- **Telegram `callback_query:data` handler** wired to hire approval with parent-role gate.
+- **UI: `/projects`** new page + route. **`/tools/secrets`** POST endpoint with AES-256-GCM via `encryptSecret`. **`/tasks`** hire-proposal detail panel with Approve/Reject. **Household** Personal vs Staff split.
+- **`seedMissingDefaults`** boot-time reconciler so agents created before a tool's default-grant gets retroactive access.
+- **`POST /api/tasks/:id/approve-hire` and `/reject-hire`** — web-UI fallback when Telegram is down / user isn't set up on Telegram.
+
+#### Changed
+
+- **`tasks.requestedBy` threads through delegation depth** — child tasks inherit `requestedBy` from the calling turn's member id so completion routes correctly.
+- **`notifyAgentId`** routes completion to a specific agent (usually the kid's personal agent) instead of the dispatcher's caller agent.
+- **Delegation tools tier=`builtin`** with `DEFAULT_GRANTS` mapping by role.
+- **Home-button `Dashboard` renamed to `Household` in the sidebar, Tasks gets badge count from pending/approved/in-progress.**
+- **Conversation idle timeout 2h** with `[time note: Nh]` markers in history.
+
+#### Removed
+
+- **`delegate-parser.ts` XML-block parsing.** MCP `delegate_task` is the only delegation entry point in v0.4.
+- Dead private methods `getOrCreateConversationId` (signal-relay) and `getConversationId` (multi-relay) — legacy v0.3 paths.
+- Dead filter tautology in `GET /api/tasks/projects`.
+
+#### For contributors
+
+- **218 tests passing** (up from 153 in v0.3.x). New suites: `DelegationService` (9 tests), `DelegationNotifier` (8 tests), `WorkspaceProvider` (12 tests), `summary-card` (6 tests), `delegate-parser` (5 tests, legacy).
+- **Design pattern:** atomic conditional UPDATE gates (`WHERE status = 'pending'`) keep approve/reject races safe. The `notified_at` flip-invariant does the same for exactly-once delivery.
+- **Prior learnings logged:** Drizzle double-encode against JSON columns, CarsonOS API localhost-bypass, hire-card must surface overrides, kind-gate before race-gate.
+
 ## [0.3.4] - 2026-04-19
 
 Closes the second of the two v0.3.1 follow-ups: the disabled "Check for updates" button on installed skills now actually works.

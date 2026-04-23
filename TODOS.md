@@ -64,7 +64,8 @@
 - **Context:** Surfaced during v0.2.0 retrospective (2026-04-14). All three tool kinds currently require CoS trust.
 - **Depends on:** Custom tools registry (shipped in v0.2.0)
 
-## Delegation: Chief of Staff → Specialist Agent for Big Tasks
+## [COMPLETED v0.4.0.0] Delegation: Chief of Staff → Specialist Agent for Big Tasks
+- **Completed:** v0.4.0.0 (2026-04-23)
 - **What:** When the Chief of Staff recognizes a request will take many turns or
   requires capabilities a specialist has (e.g., coding), it dispatches to a
   specialist agent (e.g., "Carlos" the coding agent, Opus-powered) via task
