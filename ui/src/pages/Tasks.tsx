@@ -58,6 +58,7 @@ interface HireProposalMeta {
   specialty?: string;
   reason?: string;
   proposedName?: string;
+  customInstructions?: string;
   model?: string;
   trustLevel?: "full" | "standard" | "restricted";
   originalUserRequest?: string;
@@ -406,6 +407,17 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                     <div className="mb-1">
                       <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Reason</span>{" "}
                       {hire.reason}
+                    </div>
+                  )}
+                  {hire.customInstructions && (
+                    <div className="mb-1">
+                      <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Custom operating instructions</span>
+                      <pre
+                        className="mt-1 p-2 text-[11px] whitespace-pre-wrap rounded"
+                        style={{ background: "#fff", border: "1px solid #e0d9c7", maxHeight: "12rem", overflowY: "auto" }}
+                      >
+                        {hire.customInstructions}
+                      </pre>
                     </div>
                   )}
                   {hire.originalUserRequest && (

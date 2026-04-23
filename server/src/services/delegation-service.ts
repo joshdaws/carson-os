@@ -12,10 +12,8 @@
  *   - handleProjectCompleted(projectId) — synthesis path used by the existing
  *     kid-agent flow (multiple subtasks → one response). Preserved from v0.1.
  *
- * What's gone in v0.4:
- *   - <delegate> XML block parsing (handleAgentResponse). The MCP tool call
- *     is the only delegation entry point. delegate-parser.ts is dead code
- *     scheduled for deletion in Lane B cleanup.
+ * v0.4 removed <delegate> XML block parsing — the MCP tool call is the only
+ * delegation entry point. delegate-parser.ts was deleted.
  */
 
 import { eq, and, inArray } from "drizzle-orm";
@@ -391,6 +389,10 @@ export class DelegationService {
         role: input.role,
         specialty: input.specialty,
         reason: input.reason,
+        customInstructions: input.customInstructions,
+        model: input.model,
+        trustLevel: input.trustLevel,
+        originalUserRequest: input.originalUserRequest,
       });
       const replyMarkup = {
         inline_keyboard: [
@@ -451,16 +453,6 @@ export class DelegationService {
       .limit(1);
     if (!task) return { ok: false, error: `approval task ${approvalTaskId} not found` };
 
-    // Atomic race gate: only one approve/reject wins.
-    const updated = await this.db
-      .update(tasks)
-      .set({ status: "approved", approvedBy, updatedAt: new Date() })
-      .where(and(eq(tasks.id, approvalTaskId), eq(tasks.status, "pending")))
-      .returning({ id: tasks.id });
-    if (updated.length === 0) {
-      return { ok: true, alreadyResolved: true };
-    }
-
     // Parse the hire proposal metadata stored in the task description.
     let proposal: {
       kind?: string;
@@ -476,6 +468,26 @@ export class DelegationService {
       proposal = task.description ? JSON.parse(task.description) : {};
     } catch {
       proposal = {};
+    }
+
+    // Kind gate: refuse to materialize a staff agent from a task that isn't a
+    // hire proposal. Prevents phantom-staff creation if /approve-hire is hit
+    // with an arbitrary pending task id.
+    if (proposal.kind !== "hire_proposal") {
+      return {
+        ok: false,
+        error: `task ${approvalTaskId} is not a hire proposal (kind=${proposal.kind ?? "unknown"})`,
+      };
+    }
+
+    // Atomic race gate: only one approve/reject wins.
+    const updated = await this.db
+      .update(tasks)
+      .set({ status: "approved", approvedBy, updatedAt: new Date() })
+      .where(and(eq(tasks.id, approvalTaskId), eq(tasks.status, "pending")))
+      .returning({ id: tasks.id });
+    if (updated.length === 0) {
+      return { ok: true, alreadyResolved: true };
     }
 
     const role = proposal.role?.trim() || "Specialist";
@@ -597,13 +609,18 @@ export class DelegationService {
     }
 
     // Mark the approval task completed + note the developer id for audit.
+    // Clear notifyPayload and flip notifiedAt so the replay scan can't
+    // re-deliver the old hire_proposal card after the approval lands.
+    const now = new Date();
     await this.db
       .update(tasks)
       .set({
         status: "completed",
         result: JSON.stringify({ developerAgentId: developer.id, specialty, name }),
-        completedAt: new Date(),
-        updatedAt: new Date(),
+        completedAt: now,
+        updatedAt: now,
+        notifyPayload: null,
+        notifiedAt: now,
       })
       .where(eq(tasks.id, approvalTaskId));
 
@@ -644,13 +661,32 @@ export class DelegationService {
       .limit(1);
     if (!task) return { ok: false, error: `approval task ${approvalTaskId} not found` };
 
+    // Kind gate (see handleHireApproval): don't cancel non-hire tasks
+    // via the hire-reject path.
+    let kind: string | undefined;
+    try {
+      const parsed = task.description ? JSON.parse(task.description) : {};
+      kind = parsed?.kind;
+    } catch {
+      /* undefined */
+    }
+    if (kind !== "hire_proposal") {
+      return {
+        ok: false,
+        error: `task ${approvalTaskId} is not a hire proposal (kind=${kind ?? "unknown"})`,
+      };
+    }
+
+    const now = new Date();
     const updated = await this.db
       .update(tasks)
       .set({
         status: "cancelled",
         approvedBy: rejectedBy,
-        completedAt: new Date(),
-        updatedAt: new Date(),
+        completedAt: now,
+        updatedAt: now,
+        notifyPayload: null,
+        notifiedAt: now,
       })
       .where(and(eq(tasks.id, approvalTaskId), eq(tasks.status, "pending")))
       .returning({ id: tasks.id });
@@ -1107,15 +1143,18 @@ function defaultNameForSpecialty(role: string, specialty: string): string {
   return role.toLowerCase() === "developer" ? "Dev" : "Specialist";
 }
 
-/** Hire approval card text shown above the inline buttons. Kept terse — the
- *  buttons do the heavy lifting, the card just surfaces what's being decided.
- *  Uses markdown (not raw HTML) because the relay runs it through
- *  markdownToTelegramHtml before sending with parse_mode: HTML. */
+/** Hire approval card text shown above the inline buttons. Surfaces every
+ *  field the principal is about to authorize — including customInstructions
+ *  and trustLevel overrides — so the card matches what will actually boot. */
 function composeHireCardText(args: {
   proposedName: string;
   role: string;
   specialty: string;
   reason: string;
+  customInstructions?: string;
+  model?: string;
+  trustLevel?: "full" | "standard" | "restricted";
+  originalUserRequest?: string;
 }): string {
   const developerDescriptions: Record<string, string> = {
     tools: "builds custom tools in sandboxed workspaces",
@@ -1126,19 +1165,51 @@ function composeHireCardText(args: {
   const specialtyLine = devRole
     ? `${args.specialty} — ${developerDescriptions[args.specialty]}`
     : args.specialty;
-  const trustLine = devRole
-    ? "full (Bash, Read, Write, Edit, Skill)"
-    : "standard (Read, Glob, Grep, WebFetch, WebSearch)";
-  const modelLine = devRole ? "claude-opus-4-7" : "claude-sonnet-4-6";
 
-  return [
+  // Resolve the effective trust level + model the same way handleHireApproval
+  // does, then DISPLAY it — so an overridden trustLevel='full' on a Researcher
+  // shows up in the card instead of silently escalating under a "standard"
+  // label. Capability lines follow the trust-level assignments in
+  // ToolRegistry.resolveTrustLevelTools.
+  const effectiveTrust: "full" | "standard" | "restricted" =
+    args.trustLevel ?? (devRole ? "full" : "standard");
+  const trustCapabilities: Record<typeof effectiveTrust, string> = {
+    full: "Bash, Read, Write, Edit, Skill",
+    standard: "Read, Glob, Grep, WebFetch, WebSearch",
+    restricted: "WebFetch, WebSearch only",
+  };
+  const trustLine = `${effectiveTrust} (${trustCapabilities[effectiveTrust]})`;
+  const effectiveModel =
+    args.model?.trim() || (devRole ? "claude-opus-4-7" : "claude-sonnet-4-6");
+
+  const lines: string[] = [
     `**Hire ${args.proposedName} — ${args.role}?**`,
     "",
     `_Specialty:_ ${specialtyLine}`,
     `_Reason:_ ${args.reason}`,
     "",
-    `_Model:_ ${modelLine}`,
+    `_Model:_ ${effectiveModel}`,
     `_Trust level:_ ${trustLine}`,
-    `_Approval auto-expires in 24h_`,
-  ].join("\n");
+  ];
+
+  if (args.customInstructions?.trim()) {
+    // Show the first 400 chars so the principal sees what the specialist will
+    // actually run under. This is the authorization linchpin — without this
+    // line, the proposer could override the specialty template with anything.
+    const preview = args.customInstructions.trim();
+    const truncated = preview.length > 400 ? preview.slice(0, 400) + "…" : preview;
+    lines.push("", `_Custom operating instructions:_`, `> ${truncated.replace(/\n/g, "\n> ")}`);
+  }
+
+  if (args.originalUserRequest?.trim()) {
+    const req = args.originalUserRequest.trim();
+    const truncated = req.length > 300 ? req.slice(0, 300) + "…" : req;
+    lines.push(
+      "",
+      `_Will auto-start with:_ "${truncated}"`,
+    );
+  }
+
+  lines.push("", `_Approval auto-expires in 24h_`);
+  return lines.join("\n");
 }

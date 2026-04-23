@@ -119,9 +119,11 @@ export async function handleRedactionTool(
   metadataObj.redactedAt = new Date().toISOString();
   metadataObj.originalLength = originalLength;
 
+  // messages.metadata is `text(mode: "json")` — Drizzle stringifies on write.
+  // Pass the plain object; stringifying here would double-encode.
   ctx.db
     .update(messages)
-    .set({ content: redactedContent, metadata: JSON.stringify(metadataObj) })
+    .set({ content: redactedContent, metadata: metadataObj })
     .where(eq(messages.id, recentUserMsg.id))
     .run();
 

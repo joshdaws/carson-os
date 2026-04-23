@@ -266,10 +266,10 @@ export class ToolRegistry {
       });
     }
 
-    // v0.4 delegation tools — system tier, role-gated via DEFAULT_GRANTS so
-    // only head_butler + personal see them unless explicitly granted. Kept
-    // in "system" tier because the registry already special-cases routing
-    // via DELEGATION_TOOL_NAMES in buildExecutor().
+    // v0.4 delegation tools — registered in the `builtin` tier, role-gated via
+    // DEFAULT_GRANTS so only head_butler + personal see them unless explicitly
+    // granted. The registry already special-cases routing via
+    // DELEGATION_TOOL_NAMES in buildExecutor().
     for (const def of DELEGATION_TOOLS) {
       this.tools.set(def.name, {
         definition: def,

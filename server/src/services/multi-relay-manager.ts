@@ -417,7 +417,34 @@ export class MultiRelayManager {
           await ctx.answerCallbackQuery({ text: "Unknown action" }).catch(() => {});
           return;
         }
-        const approvedBy = String(ctx.from?.id ?? "unknown");
+        const telegramUserId = String(ctx.from?.id ?? "");
+        if (!telegramUserId) {
+          await ctx.answerCallbackQuery({ text: "No Telegram user id" }).catch(() => {});
+          return;
+        }
+
+        // Authorization: only family members with role='parent' can approve
+        // hires. Resolving via telegramUserId prevents a kid (or a stranger
+        // added to the bot chat) from tapping Approve on a message they
+        // shouldn't decide on. Forwarded/shared messages hit the same gate.
+        const [approver] = await this.db
+          .select()
+          .from(familyMembers)
+          .where(eq(familyMembers.telegramUserId, telegramUserId))
+          .limit(1);
+        if (!approver) {
+          await ctx
+            .answerCallbackQuery({ text: "Not a recognized family member" })
+            .catch(() => {});
+          return;
+        }
+        if (approver.role !== "parent") {
+          await ctx
+            .answerCallbackQuery({ text: "Only a parent can approve hires" })
+            .catch(() => {});
+          return;
+        }
+        const approvedBy = approver.id;
 
         const result =
           action === "approve"
@@ -1016,52 +1043,6 @@ export class MultiRelayManager {
       }
     }
     return false;
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────
-
-  private async getConversationId(
-    agentId: string,
-    memberId: string,
-    householdId: string,
-  ): Promise<string> {
-    const { conversations } = await import("@carsonos/db");
-    const { desc } = await import("drizzle-orm");
-
-    const today = new Date().toISOString().slice(0, 10);
-
-    const existing = await this.db
-      .select()
-      .from(conversations)
-      .where(
-        and(
-          eq(conversations.agentId, agentId),
-          eq(conversations.memberId, memberId),
-          eq(conversations.householdId, householdId),
-          eq(conversations.channel, "telegram"),
-        ),
-      )
-      .orderBy(desc(conversations.startedAt))
-      .limit(1);
-
-    if (existing.length > 0 && existing[0].startedAt.startsWith(today)) {
-      return existing[0].id;
-    }
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-
-    await this.db.insert(conversations).values({
-      id,
-      agentId,
-      memberId,
-      householdId,
-      channel: "telegram",
-      startedAt: now,
-      lastMessageAt: now,
-    });
-
-    return id;
   }
 
   private logMemory(): void {

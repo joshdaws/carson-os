@@ -281,6 +281,10 @@ async function handleListActiveTasks(
   const RECENT_TERMINAL_WINDOW_MS = 60 * 60 * 1000; // 60 min
   const recentCutoff = new Date(Date.now() - RECENT_TERMINAL_WINDOW_MS);
 
+  // Scope to the caller's member. A kid's personal agent should not see parent
+  // task results (task.result can contain sensitive specialist output). CoS
+  // calls arrive with ctx.memberId=the-parent, so parent delegations stay
+  // visible to their own CoS. Household-wide views are served by REST, not MCP.
   const rows = await ctx.db
     .select({
       id: tasks.id,
@@ -296,6 +300,7 @@ async function handleListActiveTasks(
     .where(
       and(
         eq(tasks.householdId, ctx.householdId),
+        eq(tasks.requestedBy, ctx.memberId),
         gt(tasks.delegationDepth, 0),
         or(
           inArray(tasks.status, ["pending", "approved", "in_progress"]),

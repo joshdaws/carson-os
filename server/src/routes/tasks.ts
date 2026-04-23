@@ -58,8 +58,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): Router {
     );
 
     const projects = allTasks
-      .filter((t) => parentIds.has(t.id) || (!t.parentTaskId && !parentIds.has(t.id) === false))
-      .filter((t) => !t.parentTaskId) // only top-level
+      .filter((t) => !t.parentTaskId && parentIds.has(t.id))
       .map((project) => {
         const subtasks = allTasks.filter((t) => t.parentTaskId === project.id);
         const completed = subtasks.filter((t) => t.status === "completed").length;

@@ -117,6 +117,26 @@ CREATE TABLE constitution_clauses (
 );
 CREATE INDEX constitution_clauses_constitution_idx ON constitution_clauses(constitution_id);
 
+-- projects must be created before tasks because tasks.project_id references it.
+-- SQLite accepts forward references when PRAGMA foreign_keys is OFF, but this
+-- order is the correct invariant and lets a future operator enable FK checking.
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  repo_url TEXT,
+  default_branch TEXT NOT NULL DEFAULT 'main',
+  test_cmd TEXT,
+  dev_cmd TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  metadata TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX projects_household_idx ON projects(household_id);
+CREATE UNIQUE INDEX projects_household_name_unique ON projects(household_id, name);
+
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY,
   household_id TEXT NOT NULL REFERENCES households(id),
@@ -316,23 +336,6 @@ CREATE TABLE tool_secrets (
 );
 CREATE INDEX tool_secrets_household_idx ON tool_secrets(household_id);
 CREATE UNIQUE INDEX tool_secrets_household_key_unique ON tool_secrets(household_id, key_name);
-
-CREATE TABLE projects (
-  id TEXT PRIMARY KEY,
-  household_id TEXT NOT NULL REFERENCES households(id),
-  name TEXT NOT NULL,
-  path TEXT NOT NULL,
-  repo_url TEXT,
-  default_branch TEXT NOT NULL DEFAULT 'main',
-  test_cmd TEXT,
-  dev_cmd TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  metadata TEXT,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-);
-CREATE INDEX projects_household_idx ON projects(household_id);
-CREATE UNIQUE INDEX projects_household_name_unique ON projects(household_id, name);
 
 CREATE TABLE delegation_notifications (
   id TEXT PRIMARY KEY,

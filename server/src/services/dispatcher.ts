@@ -371,6 +371,13 @@ export class Dispatcher {
             agentId: task.notifyAgentId ?? task.agentId,
           },
         });
+        // Reset notifiedAt so the replay scan picks up the new cancellation
+        // payload. Without this, if the original hire_proposal was delivered
+        // (notifiedAt set), the cancellation would be written but never sent.
+        await this.db
+          .update(tasks)
+          .set({ notifiedAt: null })
+          .where(eq(tasks.id, task.id));
       }
 
       this.broadcast({

@@ -25,7 +25,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, rm, access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
 const execFileAsync = promisify(execFile);
@@ -138,7 +138,20 @@ export class WorkspaceProvider {
   private async provisionWorktree(
     input: ProvisionWorktreeInput,
   ): Promise<ProvisionedWorkspace> {
-    const path = join(this.worktreeRoot(input.projectName), input.runId);
+    // Defense-in-depth against a projectName that slipped past route validation
+    // (e.g., direct service call, test, or future migration). Resolve the final
+    // path and require it stays inside the worktrees root.
+    const root = join(this.baseDir, "worktrees");
+    const parent = this.worktreeRoot(input.projectName);
+    const path = join(parent, input.runId);
+    const resolvedRoot = resolve(root) + sep;
+    const resolvedPath = resolve(path);
+    if (!resolvedPath.startsWith(resolvedRoot)) {
+      throw new WorkspaceError(
+        "E_GIT_FAILED",
+        `Worktree path escape: ${resolvedPath} is outside ${resolvedRoot}`,
+      );
+    }
     const branch = `carson/${input.slug}`;
 
     if (await this.branchExists(input.projectPath, branch)) {
@@ -149,14 +162,14 @@ export class WorkspaceProvider {
       );
     }
 
-    if (await pathExists(path)) {
+    if (await pathExists(resolvedPath)) {
       throw new WorkspaceError(
         "E_WORKTREE_EXISTS",
-        `Worktree path ${path} already exists. Clean up before provisioning.`,
+        `Worktree path ${resolvedPath} already exists. Clean up before provisioning.`,
       );
     }
 
-    await mkdir(this.worktreeRoot(input.projectName), { recursive: true });
+    await mkdir(parent, { recursive: true });
 
     try {
       await execFileAsync(this.gitBin, [
@@ -166,7 +179,7 @@ export class WorkspaceProvider {
         "add",
         "-b",
         branch,
-        path,
+        resolvedPath,
         input.defaultBranch,
       ]);
     } catch (err) {
@@ -178,7 +191,7 @@ export class WorkspaceProvider {
       );
     }
 
-    return { kind: "worktree", path, branch, repoPath: input.projectPath };
+    return { kind: "worktree", path: resolvedPath, branch, repoPath: input.projectPath };
   }
 
   private async teardownWorktree(

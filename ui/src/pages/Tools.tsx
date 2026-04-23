@@ -11,6 +11,7 @@
  *   PUT    /api/tools/custom/:id/status
  *   DELETE /api/tools/custom/:id
  *   GET    /api/tools/secrets?household_id=
+ *   POST   /api/tools/secrets
  *   DELETE /api/tools/secrets/:id
  */
 

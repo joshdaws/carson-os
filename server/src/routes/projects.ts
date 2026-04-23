@@ -14,9 +14,28 @@
  */
 
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { resolve, isAbsolute } from "node:path";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { projects } from "@carsonos/db";
+import { projects, tasks } from "@carsonos/db";
+
+// Slug-safe: lowercase, digits, underscore, hyphen. First char alphanumeric.
+// Rejects path separators, '..', whitespace, and control chars — name is used
+// as a directory segment under ~/.carsonos/worktrees/{name}/.
+const PROJECT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/**
+ * Validate a filesystem path: must be absolute, not contain null bytes, and
+ * resolve to itself (no traversal).
+ */
+function validateProjectPath(raw: string): string | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 4096) return null;
+  if (raw.includes("\0")) return null;
+  if (!isAbsolute(raw)) return null;
+  const resolved = resolve(raw);
+  if (resolved !== raw) return null;
+  return resolved;
+}
 
 export function createProjectRoutes(db: Db): Router {
   const router = Router();
@@ -49,13 +68,25 @@ export function createProjectRoutes(db: Db): Router {
       res.status(400).json({ error: "householdId, name, path are required" });
       return;
     }
+    if (!PROJECT_NAME_REGEX.test(body.name)) {
+      res.status(400).json({
+        error:
+          "name must be lowercase alphanumeric with _ or - (max 64 chars, starts with a letter or digit)",
+      });
+      return;
+    }
+    const normalizedPath = validateProjectPath(body.path);
+    if (!normalizedPath) {
+      res.status(400).json({ error: "path must be an absolute filesystem path with no traversal" });
+      return;
+    }
     try {
       const [row] = await db
         .insert(projects)
         .values({
           householdId: body.householdId,
           name: body.name,
-          path: body.path,
+          path: normalizedPath,
           defaultBranch: body.defaultBranch ?? "main",
           testCmd: body.testCmd ?? null,
           devCmd: body.devCmd ?? null,
@@ -73,7 +104,8 @@ export function createProjectRoutes(db: Db): Router {
           .json({ error: `a project named '${body.name}' already exists in this household` });
         return;
       }
-      res.status(500).json({ error: `failed to register project: ${msg}` });
+      console.error("[projects] insert failed:", err);
+      res.status(500).json({ error: "failed to register project" });
     }
   });
 
@@ -91,8 +123,21 @@ export function createProjectRoutes(db: Db): Router {
     }>;
 
     const patch: Record<string, unknown> = { updatedAt: new Date() };
-    if (body.name !== undefined) patch.name = body.name;
-    if (body.path !== undefined) patch.path = body.path;
+    if (body.name !== undefined) {
+      if (!PROJECT_NAME_REGEX.test(body.name)) {
+        res.status(400).json({ error: "name must match the project-name regex" });
+        return;
+      }
+      patch.name = body.name;
+    }
+    if (body.path !== undefined) {
+      const normalized = validateProjectPath(body.path);
+      if (!normalized) {
+        res.status(400).json({ error: "path must be an absolute filesystem path with no traversal" });
+        return;
+      }
+      patch.path = normalized;
+    }
     if (body.defaultBranch !== undefined) patch.defaultBranch = body.defaultBranch;
     if (body.testCmd !== undefined) patch.testCmd = body.testCmd;
     if (body.devCmd !== undefined) patch.devCmd = body.devCmd;
@@ -100,22 +145,46 @@ export function createProjectRoutes(db: Db): Router {
     if (body.enabled !== undefined) patch.enabled = body.enabled;
     if (body.metadata !== undefined) patch.metadata = body.metadata;
 
-    const [row] = await db.update(projects).set(patch).where(eq(projects.id, id)).returning();
-    if (!row) {
-      res.status(404).json({ error: "project not found" });
-      return;
+    try {
+      const [row] = await db.update(projects).set(patch).where(eq(projects.id, id)).returning();
+      if (!row) {
+        res.status(404).json({ error: "project not found" });
+        return;
+      }
+      res.json({ project: row });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("UNIQUE constraint failed")) {
+        res.status(409).json({ error: "a project with that name already exists in this household" });
+        return;
+      }
+      console.error("[projects] update failed:", err);
+      res.status(500).json({ error: "failed to update project" });
     }
-    res.json({ project: row });
   });
 
   router.delete("/:id", async (req, res) => {
     const id = req.params.id;
+    // Refuse hard-delete if tasks reference this project. SQLite FK enforcement
+    // is off globally so the DB can't protect us; prefer a 409 to orphan rows.
+    // Soft-retire via POST /:id/toggle if the user wants to disable.
+    const [countRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(tasks)
+      .where(eq(tasks.projectId, id));
+    const refs = countRow?.count ?? 0;
+    if (refs > 0) {
+      res.status(409).json({
+        error: `project has ${refs} referencing task(s). Use POST /:id/toggle to soft-disable instead.`,
+      });
+      return;
+    }
     const [row] = await db.delete(projects).where(eq(projects.id, id)).returning();
     if (!row) {
       res.status(404).json({ error: "project not found" });
       return;
     }
-    res.json({ deleted: row.id });
+    res.json({ deleted: true });
   });
 
   router.post("/:id/toggle", async (req, res) => {
@@ -128,7 +197,7 @@ export function createProjectRoutes(db: Db): Router {
     const [row] = await db
       .update(projects)
       .set({ enabled: !current.enabled, updatedAt: new Date() })
-      .where(and(eq(projects.id, id)))
+      .where(eq(projects.id, id))
       .returning();
     res.json({ project: row });
   });

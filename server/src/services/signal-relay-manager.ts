@@ -41,13 +41,12 @@
 
 import { EventEmitter } from "node:events";
 import http from "node:http";
-import { eq, and, or, desc } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   staffAgents,
   staffAssignments,
   familyMembers,
-  conversations,
 } from "@carsonos/db";
 import type { ConstitutionEngine } from "./constitution-engine.js";
 import type { DelegationService } from "./delegation-service.js";
@@ -889,47 +888,4 @@ export class SignalRelayManager {
     }
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────
-
-  private async getOrCreateConversationId(
-    agentId: string,
-    memberId: string,
-    householdId: string,
-  ): Promise<string> {
-    const today = new Date().toISOString().slice(0, 10);
-
-    const existing = await this.db
-      .select()
-      .from(conversations)
-      .where(
-        and(
-          eq(conversations.agentId, agentId),
-          eq(conversations.memberId, memberId),
-          eq(conversations.householdId, householdId),
-          eq(conversations.channel, "signal"),
-        ),
-      )
-      .orderBy(desc(conversations.startedAt))
-      .limit(1)
-      .then((rows) => rows[0]);
-
-    if (existing?.startedAt.startsWith(today)) {
-      return existing.id;
-    }
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-
-    await this.db.insert(conversations).values({
-      id,
-      agentId,
-      memberId,
-      householdId,
-      channel: "signal",
-      startedAt: now,
-      lastMessageAt: now,
-    });
-
-    return id;
-  }
 }

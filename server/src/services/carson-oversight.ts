@@ -38,8 +38,8 @@ export interface ReviewResult {
 export interface HireProposal {
   householdId: string;
   proposedByAgentId: string;
-  role: string; // 'Developer'
-  specialty: string; // 'tools' | 'project' | 'core'
+  role: string; // free-form role name (Developer, Researcher, Tutor, ...)
+  specialty: string; // kebab-case; 'tools'|'project'|'core' get workspace provisioning
   reason: string; // why this hire is needed
   proposedName?: string; // 'Bob', 'Alice', etc.
 }
