@@ -20,7 +20,7 @@
  * 100ms stagger between sends avoids Telegram rate-limit bursts.
  */
 
-import { eq, and, isNotNull, isNull } from "drizzle-orm";
+import { eq, and, isNotNull, isNull, lt } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { tasks, taskEvents, staffAgents, projects } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
@@ -272,11 +272,116 @@ export class Dispatcher {
       });
     }
 
+    // Expired approval cleanup runs here too — doesn't need multiRelay yet,
+    // just the DB + notifier.prepare. Phase-2 delivery happens later.
+    await this.sweepExpiredApprovals();
+
     // Phase-2 notifier replay is NOT run here. It has to happen after the
     // multiRelay is constructed + its notifier send target is bound,
     // otherwise every deliver attempt silently fails with "multiRelay not
     // ready yet" and the reconciler re-hits the same window on every boot.
     // Call replayPendingNotifications() explicitly after multiRelay is up.
+  }
+
+  /**
+   * Cancel any pending-approval task whose approval_expires_at has passed.
+   * Prepares a cancellation payload via the notifier (Phase 1 only; Phase 2
+   * delivery happens on the next replayPendingNotifications call). Safe to
+   * call from boot (as part of recoverStuckTasks) and periodically while
+   * running — idempotent because the status gate filters out anything
+   * already non-pending.
+   *
+   * Covers the design-doc success criterion "an approval card left
+   * unclicked for 24h auto-cancels the pending action, emits a cancellation
+   * message, and logs a task event" — without this, orphaned hire
+   * proposals pile up forever in the /tasks UI.
+   */
+  async sweepExpiredApprovals(): Promise<void> {
+    const now = new Date();
+    const expired = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.status, "pending"),
+          eq(tasks.requiresApproval, true),
+          isNotNull(tasks.approvalExpiresAt),
+          lt(tasks.approvalExpiresAt, now),
+        ),
+      );
+
+    if (expired.length === 0) return;
+    console.log(`[dispatcher] Expiring ${expired.length} unapproved proposal(s) past TTL`);
+
+    for (const task of expired) {
+      // Flip status first with a conditional UPDATE — if something else
+      // (the Telegram callback_query handler, the UI fallback, a concurrent
+      // sweep) already moved the task out of `pending`, we lose the race
+      // and leave it alone.
+      const updated = await this.db
+        .update(tasks)
+        .set({ status: "cancelled", updatedAt: now, completedAt: now })
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, "pending")))
+        .returning({ id: tasks.id });
+      if (updated.length === 0) continue;
+
+      // Parse proposal metadata to pick a human-friendly name for the card.
+      let proposedName = "the specialist";
+      let reason = "no reason recorded";
+      try {
+        if (task.description) {
+          const meta = JSON.parse(task.description) as {
+            proposedName?: string;
+            reason?: string;
+          };
+          if (meta.proposedName) proposedName = meta.proposedName;
+          if (meta.reason) reason = meta.reason;
+        }
+      } catch {
+        /* fall through with defaults */
+      }
+
+      const ttlHours = task.approvalExpiresAt
+        ? Math.round(
+            (task.approvalExpiresAt.getTime() - task.createdAt.getTime()) /
+              (60 * 60 * 1000),
+          )
+        : 24;
+      const text =
+        `⏱ Hire proposal for **${proposedName}** expired after ${ttlHours}h without approval.\n\n` +
+        `_Reason was: ${reason}_\n\n` +
+        `Re-propose any time if you still want it.`;
+
+      await this.logEvent(
+        task.id,
+        "approval_expired",
+        task.agentId,
+        `Approval TTL passed (${ttlHours}h)`,
+        { proposedName, reason },
+      );
+
+      if (this.notifier && task.requestedBy) {
+        await this.notifier.prepare(task.id, {
+          terminalStatus: "cancelled",
+          payload: {
+            kind: "cancellation",
+            text,
+            householdId: task.householdId,
+            memberId: task.requestedBy,
+            agentId: task.notifyAgentId ?? task.agentId,
+          },
+        });
+      }
+
+      this.broadcast({
+        type: "task.cancelled",
+        data: {
+          taskId: task.id,
+          householdId: task.householdId,
+          reason: "approval_expired",
+        },
+      });
+    }
   }
 
   /**

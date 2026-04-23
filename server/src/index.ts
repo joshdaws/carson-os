@@ -498,6 +498,23 @@ async function main() {
     console.error("[engine] Phase-2 notification replay failed:", err);
   });
 
+  // Hourly sweep of expired hire proposals. Boot-time pass already fired
+  // inside recoverStuckTasks; this catches anything that expires during a
+  // long-running session (past the 24h TTL) without waiting for the next
+  // restart. Cheap: just an indexed query + conditional UPDATE per hit.
+  const APPROVAL_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+  setInterval(() => {
+    dispatcher.sweepExpiredApprovals().catch((err: unknown) => {
+      console.error("[engine] approval TTL sweep failed:", err);
+    });
+    // Also re-drive Phase-2 delivery in case any newly-expired tasks
+    // prepared payloads — otherwise they'd sit undelivered until the
+    // next server restart.
+    dispatcher.replayPendingNotifications().catch((err: unknown) => {
+      console.error("[engine] approval sweep replay failed:", err);
+    });
+  }, APPROVAL_SWEEP_INTERVAL_MS);
+
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
     db,
