@@ -1,5 +1,21 @@
 # TODOS
 
+## v0.5 — Specialist-path abort-controller parity (cancel doesn't stop specialist compute)
+- **What:** Mirror the v0.4 Developer-task cancel infrastructure on the specialist (non-Developer) path. Register an `AbortController` at `dispatcher.executeSpecialistTask` start, stash it in `inFlightAborts`, thread it into `adapter.execute`, and handle the aborted-mid-stream case the same way `executeDeveloperTask` does.
+- **Why:** v0.4's mid-release refinement fixed the "cancelled task flips back to completed" bug for Developer tasks by wiring the abort through the Agent SDK. The specialist path (Lex, Nora, any non-`tools`/`project`/`core` specialty) got the cancel-sticky DB guard via the shared `finalizeTerminalTask`, so the status row is safe, but the specialist's SDK query keeps running to completion and burns tokens before its result is dropped. Specialist tasks are usually short (research one-liners) so low practical impact today, but the invariant is inconsistent between paths.
+- **Pros:** Consistent cancel semantics everywhere. Stops wasted compute.
+- **Cons:** ~30 lines of near-duplicate plumbing. Could be paired with the workspace-strategy dedupe below so both execute paths merge.
+- **Context:** Surfaced 2026-04-24 during the /codex review of the PR 3 (proactive wake) commit. The Developer path was the one we hit in E2E testing, so it got fixed; the specialist path was logged here for v0.5.
+- **Depends on:** None.
+
+## v0.5 — Merge executeDeveloperTask / executeSpecialistTask via WorkspaceStrategy
+- **What:** Extract a `WorkspaceStrategy` interface with two implementations: `DeveloperWorkspace` (provisions a git worktree or tool_sandbox, sets `cwd` + `maxTurns=200` on the adapter, registers the abort controller) and `NoWorkspace` (no cwd, no turn-limit override, no abort controller today but see previous item). Then `dispatcher.executeDeveloperTask` + `executeSpecialistTask` collapse into a single `executeTask(taskId, agent, slotKey, strategy)` method that calls `strategy.setup()` → `adapter.execute(...)` → `finalizeTerminalTask(...)` → `strategy.teardown()`.
+- **Why:** v0.4 PR 3 extracted the shared post-execute finalize step into `finalizeTerminalTask`, but the pre-execute setup still forks: workspace provisioning, `cwd`/`maxTurns` passing, AbortController registration, queue-key scheme (`drainDeveloperQueue` vs `drainSpecialistQueue`). Every new cancel/wake/notifier refinement has to touch two places. Codex flagged this during PR 3 review; Josh ratified the plan to dedupe in v0.5 since the divergence is real (not pure dupe) and needs a thoughtful abstraction, not a rushed one.
+- **Pros:** Single execute path, lower cost of future refinements (canary hooks, budget gates, resume-after-restart).
+- **Cons:** Non-trivial refactor touching both the dispatcher hot path and the workspace provisioning layer. Needs regression coverage for both Dev and specialist flows.
+- **Context:** Surfaced 2026-04-24 during the /codex review of PR 3 and called out explicitly in Josh's "are we making this DRY" pushback. Scoped to v0.5 to avoid dragging mid-release refinements past the v0.4 merge window.
+- **Depends on:** Could land alongside the specialist-path abort-controller parity item above — same area, same diff.
+
 ## v0.5 — Scope ctx.db in custom-tool handlers (tool_secrets exfil risk)
 - **What:** Replace `ctx.db` in `CustomToolHandlerContext` with scoped helpers (`ctx.getSecret`, `ctx.storeSecret`, `ctx.listTools`, etc.) or a Proxy that injects `householdId` into queries. Also restrict `node:fs` in the esbuild bundle (`packages: 'external'` currently allows `fs.readFileSync`), so the handler can't `readFileSync('~/.carsonos/.secret')` to lift the AES master key.
 - **Why:** A Developer with `specialty='tools'` + `canCreateActiveTools=true` can author a script tool whose handler does `ctx.db.select().from(toolSecrets)` to dump every household's encrypted secret rows, then reads `~/.carsonos/.secret` (32-byte master key) from disk and decrypts. Single-family today = low practical risk, but the scoping gap is live code.

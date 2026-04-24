@@ -40,6 +40,16 @@ Adversarial review caught:
 - **Phase-2 notifier replay runs after `multiRelay.startAll()`.** Splits `recoverStuckTasks` into Phase-1 (DB writes, early boot) and `replayPendingNotifications` (delivery, after the bot is wired).
 - **Conversation freshness.** `getOrCreateConversation` rotates after 2h of silence based on `lastMessageAt`, not UTC-today. History injection adds `[time note: Nh Mm since the previous message]` markers when gaps exceed 30 minutes. System prompt declares the current time with triple-stated timezone to prevent paraphrase hallucinations.
 
+### Mid-release refinements (2026-04-24)
+
+Four stacked commits fixing architectural gaps surfaced during v0.4 E2E testing.
+All Codex-reviewed; 236 tests pass (up from 218).
+
+- **Cancel actually stops compute.** Was flipping a DB flag but the Agent SDK worker kept running ~5 min, then its final `completed` event clobbered the `cancelled` status. Now: `AbortController` threaded through to `query()` so abort kills the CLI subprocess; `notifier.prepare` refuses to overwrite a cancelled row (cancel-sticky WHERE guard); dispatcher checks prepare's `{updated}` return so log/broadcast/deliver side effects skip on refused writes; `handleCancelTask` uses compare-and-swap so two concurrent cancels fire exactly one broadcast.
+- **N:M delegation grants.** Split "hired" from "has access." A specialist like Dev is hired once via `propose_hire`; any personal agent can be granted delegation access via new `grant_delegation` / `revoke_delegation` MCP tools (CoS-only) or via checkboxes on the staff detail page. Topology is strict tree — no personal→personal, no self-grants, no re-delegation. Legacy `/staff/:id/delegations` endpoints now route through the same service-level validation.
+- **Proactive wake + `read_task_result`.** Kills the templated "✅ Tool build finished" card. On task completion the delegator's agent runs a turn on its existing SDK session with a plain-prose task-completion brief and replies in voice. Follow-ups pull the full specialist output via a new `read_task_result({runId})` tool (delegator-OR-requester auth, household-scoped). Serialization shares the per-agent queue with user traffic so a wake can't race an in-flight user turn on the same session. On any wake non-delivery, dispatcher falls back to the templated notifier; on wake success, `markDeliveredByWake` flips `notified_at` so the restart reconciler doesn't replay the templated card.
+- **UI polish.** `/tasks` now resolves `agent_id` + `requested_by` to real names via batched household-scoped joins (was "Unknown agent" + raw UUID). Hire announcement text is threaded into the CoS conversation scoped to `channel=telegram` so the resumed SDK session sees the new staff member in history on the next turn (closes the "X isn't on staff yet" stale-cache bug). Web-UI hire approval now edits the Telegram approval card to "✅ Approved" and strips the buttons via new `editMessage` helper on `multi-relay` + `delivered_message_id` lookup — was leaving live buttons in the chat for users to race-tap.
+
 ### Known deferrals
 
 Documented in `TODOS.md` as v0.5 work:
