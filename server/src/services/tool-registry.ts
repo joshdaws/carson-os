@@ -134,6 +134,8 @@ const CUSTOM_TOOL_MGMT_GRANTS = [
 // agents get the shorter set; the hire flow routes through CoS anyway.
 const DELEGATION_GRANTS_FULL = [
   "delegate_task", "propose_hire", "cancel_task", "list_active_tasks", "register_project",
+  // v0.4 N:M grants — CoS-only so kids can't self-authorize specialist access.
+  "grant_delegation", "revoke_delegation",
 ];
 const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active_tasks"];
 

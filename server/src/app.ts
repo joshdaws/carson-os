@@ -120,7 +120,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/health", createHealthRoutes({ adapter }));
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
-  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay }));
+  app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay, delegationService: deps.delegationService }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight, delegationService: deps.delegationService }));
   app.use(
     "/api/constitution",

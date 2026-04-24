@@ -770,6 +770,11 @@ export function StaffDetailPage() {
         </Card>
       )}
 
+      {/* N:M delegation edges — who can delegate to this agent, or who this
+         agent can delegate to. See v0.4 design: personal → specialist,
+         no personal → personal, no re-delegation. */}
+      <DelegationEdgesCard agentId={agent.id} agentName={agent.name} />
+
       {/* Assignments */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
@@ -906,48 +911,83 @@ export function StaffDetailPage() {
 
 // ── Delegation Edges Card ─────────────────────────────────────────
 
+interface EdgeRow {
+  edgeId: string;
+  agentId: string;
+  agentName: string;
+  agentRole: string;
+  isHeadButler: boolean;
+}
+interface CandidateRow {
+  id: string;
+  name: string;
+  staffRole: string;
+  specialty: string | null;
+  isHeadButler: boolean;
+}
+interface DelegationEdgesResponse {
+  agent: { id: string; name: string; staffRole: string; isPersonalAgent: boolean };
+  incoming: EdgeRow[];
+  outgoing: EdgeRow[];
+  incomingCandidates: CandidateRow[];
+  outgoingCandidates: CandidateRow[];
+}
+
 function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentName: string }) {
   const queryClient = useQueryClient();
 
-  // Load current delegation edges
-  const { data: edgesData } = useQuery<{ delegations: Array<{ id: string; toAgentId: string; toAgentName: string; toAgentRole: string }> }>({
-    queryKey: ["delegations", agentId],
-    queryFn: () => api.get(`/staff/${agentId}/delegations`),
+  const { data } = useQuery<DelegationEdgesResponse>({
+    queryKey: ["delegation-edges", agentId],
+    queryFn: () => api.get(`/staff/${agentId}/delegation-edges`),
   });
 
-  // Load all internal agents as candidates
-  const { data: staffData } = useQuery<{ staff: Array<{ id: string; name: string; staffRole: string; visibility: string }> }>({
-    queryKey: ["staff"],
-    queryFn: () => api.get("/staff"),
+  const grantIncoming = useMutation({
+    // On a specialist's page: grant a personal agent the right to delegate here.
+    mutationFn: (delegatorId: string) =>
+      api.post(`/staff/${agentId}/delegation-edges/incoming`, { delegatorId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegation-edges", agentId] }),
+  });
+  const revokeIncoming = useMutation({
+    mutationFn: (delegatorId: string) =>
+      api.delete(`/staff/${agentId}/delegation-edges/incoming/${delegatorId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegation-edges", agentId] }),
+  });
+  // Outgoing side (viewing a personal agent): this agent delegates to a
+  // specialist. Reuses the legacy-path endpoint which now routes through the
+  // same topology validation as the new endpoints.
+  const grantOutgoing = useMutation({
+    mutationFn: (specialistId: string) =>
+      api.post(`/staff/${agentId}/delegations`, { toAgentId: specialistId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegation-edges", agentId] }),
+  });
+  const revokeOutgoing = useMutation({
+    mutationFn: (specialistId: string) =>
+      api.delete(`/staff/${agentId}/delegations/${specialistId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegation-edges", agentId] }),
   });
 
-  const addEdge = useMutation({
-    mutationFn: (toAgentId: string) => api.post(`/staff/${agentId}/delegations`, { toAgentId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegations", agentId] }),
-  });
+  if (!data) {
+    return (
+      <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
+        <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
+          <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
+            <Shield className="h-4 w-4" style={{ color: "#8a8070" }} />
+            Delegation
+          </h3>
+        </div>
+        <CardContent className="p-4">
+          <p className="text-sm" style={{ color: "#8a8070" }}>Loading…</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
-  const removeEdge = useMutation({
-    mutationFn: (toAgentId: string) => api.delete(`/staff/${agentId}/delegations/${toAgentId}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["delegations", agentId] }),
-  });
+  const { agent, incoming, outgoing, incomingCandidates, outgoingCandidates } = data;
+  const incomingIds = new Set(incoming.map((e) => e.agentId));
+  const outgoingIds = new Set(outgoing.map((e) => e.agentId));
 
-  const edges = edgesData?.delegations || [];
-  const edgeTargetIds = new Set(edges.map((e) => e.toAgentId));
-  const internalAgents = (staffData?.staff || []).filter(
-    (a) => a.visibility === "internal" && a.id !== agentId,
-  );
-
-  // If no internal agents exist, show guidance
-  const allAgents = staffData?.staff || [];
-  const hasInternalAgents = internalAgents.length > 0;
-
-  const toggleEdge = (targetId: string) => {
-    if (edgeTargetIds.has(targetId)) {
-      removeEdge.mutate(targetId);
-    } else {
-      addEdge.mutate(targetId);
-    }
-  };
+  const mutationPending =
+    grantIncoming.isPending || revokeIncoming.isPending || grantOutgoing.isPending || revokeOutgoing.isPending;
 
   return (
     <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
@@ -958,71 +998,87 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
         </h3>
       </div>
       <CardContent className="p-4">
-        {!hasInternalAgents ? (
-          <p className="text-sm" style={{ color: "#8a8070" }}>
-            No internal agents available. Create internal specialist agents (tutor, coach, scheduler) from the{" "}
-            <Link to="/household" className="underline" style={{ color: "#8b6f4e" }}>Household page</Link>{" "}
-            to enable delegation.
-          </p>
-        ) : (
-          <div className="space-y-2">
+        {agent.isPersonalAgent ? (
+          <>
             <p className="text-xs mb-3" style={{ color: "#8a8070" }}>
-              {agentName} can delegate work to these internal specialists:
+              {agentName} can delegate work to these specialists. Personal agents never delegate to each other.
             </p>
-            {internalAgents.map((a) => (
-              <label
-                key={a.id}
-                className="flex items-center gap-3 py-2 px-3 rounded cursor-pointer hover:opacity-80"
-                style={{ background: edgeTargetIds.has(a.id) ? "#f0ede6" : "transparent" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={edgeTargetIds.has(a.id)}
-                  onChange={() => toggleEdge(a.id)}
-                  disabled={addEdge.isPending || removeEdge.isPending}
-                  className="rounded"
-                  style={{ accentColor: "#8b6f4e" }}
-                />
-                <div>
-                  <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
-                    {a.name}
-                  </span>
-                  <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
-                    {a.staffRole}
-                  </span>
-                </div>
-              </label>
-            ))}
-          </div>
-        )}
-
-        {/* Also show any edges to non-internal agents (family-visible specialists) */}
-        {allAgents.filter((a) => a.visibility !== "internal" && a.id !== agentId).length > 0 && hasInternalAgents && (
-          <div className="mt-3 pt-3 border-t" style={{ borderColor: "#eee8dd" }}>
-            <p className="text-xs mb-2" style={{ color: "#a09080" }}>
-              Family-visible agents (optional):
+            {outgoingCandidates.length === 0 ? (
+              <p className="text-sm" style={{ color: "#8a8070" }}>
+                No specialists hired yet. Hire one via Carson (propose_hire) or from the{" "}
+                <Link to="/household" className="underline" style={{ color: "#8b6f4e" }}>Household page</Link>.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {outgoingCandidates.map((a) => {
+                  const checked = outgoingIds.has(a.id);
+                  return (
+                    <label
+                      key={a.id}
+                      className="flex items-center gap-3 py-2 px-3 rounded cursor-pointer hover:opacity-80"
+                      style={{ background: checked ? "#f0ede6" : "transparent" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          checked ? revokeOutgoing.mutate(a.id) : grantOutgoing.mutate(a.id)
+                        }
+                        disabled={mutationPending}
+                        style={{ accentColor: "#8b6f4e" }}
+                      />
+                      <div>
+                        <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>{a.name}</span>
+                        <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                          {a.specialty ?? a.staffRole}
+                        </span>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="text-xs mb-3" style={{ color: "#8a8070" }}>
+              Personal agents who can delegate tasks to {agentName}. Granting access does not re-hire — it just opens a directional edge so this specialist can receive requests from another delegator too.
             </p>
-            {allAgents
-              .filter((a) => a.visibility !== "internal" && a.id !== agentId)
-              .map((a) => (
-                <label
-                  key={a.id}
-                  className="flex items-center gap-3 py-1.5 px-3 rounded cursor-pointer hover:opacity-80"
-                >
-                  <input
-                    type="checkbox"
-                    checked={edgeTargetIds.has(a.id)}
-                    onChange={() => toggleEdge(a.id)}
-                    disabled={addEdge.isPending || removeEdge.isPending}
-                    className="rounded"
-                    style={{ accentColor: "#8b6f4e" }}
-                  />
-                  <span className="text-xs" style={{ color: "#8a8070" }}>
-                    {a.name} ({a.staffRole})
-                  </span>
-                </label>
-              ))}
-          </div>
+            {incomingCandidates.length === 0 ? (
+              <p className="text-sm" style={{ color: "#8a8070" }}>
+                No personal agents in this household yet.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {incomingCandidates.map((a) => {
+                  const checked = incomingIds.has(a.id);
+                  return (
+                    <label
+                      key={a.id}
+                      className="flex items-center gap-3 py-2 px-3 rounded cursor-pointer hover:opacity-80"
+                      style={{ background: checked ? "#f0ede6" : "transparent" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          checked ? revokeIncoming.mutate(a.id) : grantIncoming.mutate(a.id)
+                        }
+                        disabled={mutationPending}
+                        style={{ accentColor: "#8b6f4e" }}
+                      />
+                      <div>
+                        <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>{a.name}</span>
+                        <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                          {a.isHeadButler ? "Chief of Staff" : a.staffRole}
+                        </span>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

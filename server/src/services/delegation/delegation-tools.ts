@@ -135,6 +135,32 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "grant_delegation",
+    description:
+      "Allow a personal agent (e.g., a kid's personal agent, or a sibling CoS) to delegate tasks to an existing specialist. Creates a directional edge from delegator → specialist. The specialist stays shared — one Dev can be reached by Carson, Django, and any other granted personal agent without re-hiring.\n\nUse when a user asks to 'give <kid's agent name> access to <specialist name>', or when a kid's agent messages you asking for help that only a specialist can do.\n\nTopology rules: the delegator must be a personal agent or CoS; the specialist must NOT be a personal agent. Delegation is strictly tree-shaped — no re-delegation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        delegator: { type: "string", description: "Name of the personal agent that will gain delegation access (e.g., 'Django', 'Carson')." },
+        specialist: { type: "string", description: "Name of the existing specialist to grant access to (e.g., 'Dev', 'Lex')." },
+      },
+      required: ["delegator", "specialist"],
+    },
+  },
+  {
+    name: "revoke_delegation",
+    description:
+      "Remove a personal agent's ability to delegate to a specialist. Idempotent — revoking a grant that doesn't exist returns success. In-flight tasks already dispatched continue to run; only future delegate_task calls are blocked.",
+    input_schema: {
+      type: "object",
+      properties: {
+        delegator: { type: "string", description: "Name of the personal agent whose access is being revoked." },
+        specialist: { type: "string", description: "Name of the specialist the delegator will no longer reach." },
+      },
+      required: ["delegator", "specialist"],
+    },
+  },
+  {
     name: "register_project",
     description:
       "Register a project so Developers can target it via projectId. Required before delegating project/core specialty work. Explicit registration only — folder-scan discovery is a v0.5 feature.",
@@ -173,6 +199,10 @@ export async function handleDelegationTool(
       return handleListActiveTasks(context);
     case "register_project":
       return handleRegisterProject(input, context);
+    case "grant_delegation":
+      return handleGrantDelegation(input, context);
+    case "revoke_delegation":
+      return handleRevokeDelegation(input, context);
     default:
       return toolError(`unknown delegation tool: ${name}`);
   }
@@ -421,6 +451,101 @@ async function handleRegisterProject(
     }
     return toolError(`Failed to register project: ${msg}`);
   }
+}
+
+async function handleGrantDelegation(
+  input: Record<string, unknown>,
+  ctx: DelegationToolContext,
+): Promise<ToolResult> {
+  const delegatorName = stringArg(input.delegator);
+  const specialistName = stringArg(input.specialist);
+  if (!delegatorName || !specialistName) {
+    return toolError("grant_delegation requires `delegator` and `specialist`");
+  }
+
+  const [delegator, specialist] = await Promise.all([
+    loadAgentByName(ctx, delegatorName),
+    loadAgentByName(ctx, specialistName),
+  ]);
+  if (!delegator) return toolError(`no agent named '${delegatorName}' found`);
+  if (!specialist) return toolError(`no agent named '${specialistName}' found`);
+
+  const result = await ctx.delegationService.handleGrantDelegation({
+    householdId: ctx.householdId,
+    delegatorId: delegator.id,
+    specialistId: specialist.id,
+  });
+  if (!result.ok) return toolError(result.error);
+  return toolOk(
+    result.created
+      ? `Granted ${delegatorName} access to delegate to ${specialistName}.`
+      : `${delegatorName} already had access to ${specialistName} — no change.`,
+    { created: result.created },
+  );
+}
+
+async function handleRevokeDelegation(
+  input: Record<string, unknown>,
+  ctx: DelegationToolContext,
+): Promise<ToolResult> {
+  const delegatorName = stringArg(input.delegator);
+  const specialistName = stringArg(input.specialist);
+  if (!delegatorName || !specialistName) {
+    return toolError("revoke_delegation requires `delegator` and `specialist`");
+  }
+
+  const [delegator, specialist] = await Promise.all([
+    loadAgentByName(ctx, delegatorName),
+    loadAgentByName(ctx, specialistName),
+  ]);
+  if (!delegator) return toolError(`no agent named '${delegatorName}' found`);
+  if (!specialist) return toolError(`no agent named '${specialistName}' found`);
+
+  const result = await ctx.delegationService.handleRevokeDelegation({
+    householdId: ctx.householdId,
+    delegatorId: delegator.id,
+    specialistId: specialist.id,
+  });
+  if (!result.ok) return toolError(result.error);
+  return toolOk(
+    result.removed
+      ? `Revoked ${delegatorName}'s access to ${specialistName}. In-flight tasks continue; new delegations will be rejected.`
+      : `${delegatorName} did not have access to ${specialistName} — nothing to revoke.`,
+    { removed: result.removed },
+  );
+}
+
+/** Scoped-to-household lookup by name, case-insensitive. Mirrors the
+ * DelegationService's internal lookup so grant/revoke can resolve the same
+ * names agents type. */
+async function loadAgentByName(
+  ctx: DelegationToolContext,
+  name: string,
+): Promise<{ id: string; name: string; staffRole: string; isHeadButler: boolean } | null> {
+  const { staffAgents } = await import("@carsonos/db");
+  const { and, eq } = await import("drizzle-orm");
+  const [hit] = await ctx.db
+    .select({ id: staffAgents.id, name: staffAgents.name, staffRole: staffAgents.staffRole, isHeadButler: staffAgents.isHeadButler })
+    .from(staffAgents)
+    .where(
+      and(
+        eq(staffAgents.householdId, ctx.householdId),
+        eq(staffAgents.name, name),
+        eq(staffAgents.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (hit) return hit;
+  const all = await ctx.db
+    .select({ id: staffAgents.id, name: staffAgents.name, staffRole: staffAgents.staffRole, isHeadButler: staffAgents.isHeadButler })
+    .from(staffAgents)
+    .where(
+      and(
+        eq(staffAgents.householdId, ctx.householdId),
+        eq(staffAgents.status, "active"),
+      ),
+    );
+  return all.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

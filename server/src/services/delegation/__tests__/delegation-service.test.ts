@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createDb, type Db } from "@carsonos/db";
 import {
   households,
@@ -437,5 +437,213 @@ describe("DelegationService — handleCancelTask", () => {
       expect(result.alreadyTerminal).toBe(true);
       expect(result.status).toBe("completed");
     }
+  });
+});
+
+describe("DelegationService — grant/revoke delegation (v0.4 N:M)", () => {
+  let db: Db;
+  let ids: Awaited<ReturnType<typeof seedBasics>>;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    ids = await seedBasics(db);
+  });
+
+  async function seedPersonalKid(dbRef: Db, householdId: string) {
+    const [kidAgent] = await dbRef
+      .insert(staffAgents)
+      .values({
+        householdId,
+        name: "Django",
+        staffRole: "personal",
+        model: "claude-sonnet-4-6",
+        trustLevel: "standard",
+      })
+      .returning();
+    return kidAgent;
+  }
+
+  it("grants an edge from a personal agent to a specialist, idempotent on re-grant", async () => {
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc } = makeService(db);
+
+    const first = await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    expect(first).toMatchObject({ ok: true, created: true });
+
+    const second = await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    expect(second).toMatchObject({ ok: true, created: false });
+
+    const edges = await db
+      .select()
+      .from(delegationEdges)
+      .where(and(eq(delegationEdges.fromAgentId, kid.id), eq(delegationEdges.toAgentId, ids.bobId)));
+    expect(edges).toHaveLength(1);
+  });
+
+  it("rejects grants where the delegator is not a personal agent", async () => {
+    // Can't use Bob (custom specialty) as a delegator — he's the one being
+    // delegated to, not delegating. Enforces the tree-shape rule.
+    const { svc } = makeService(db);
+    const second = await db
+      .insert(staffAgents)
+      .values({
+        householdId: ids.householdId,
+        name: "Alice",
+        staffRole: "custom",
+        specialty: "tools",
+        model: "claude-opus-4-7",
+        trustLevel: "full",
+      })
+      .returning();
+
+    const result = await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: ids.bobId,
+      specialistId: second[0].id,
+    });
+    expect(result).toMatchObject({ ok: false, code: "E_INVALID_ROLE" });
+  });
+
+  it("rejects grants where the specialist is a personal agent (no personal→personal)", async () => {
+    // Carson → Django is the forbidden case: we don't re-delegate through
+    // personal agents. Flow is always personal → specialist.
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc } = makeService(db);
+
+    const result = await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: ids.cosId,
+      specialistId: kid.id,
+    });
+    expect(result).toMatchObject({ ok: false, code: "E_INVALID_ROLE" });
+  });
+
+  it("rejects self-grants", async () => {
+    const { svc } = makeService(db);
+    const result = await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: ids.cosId,
+      specialistId: ids.cosId,
+    });
+    expect(result).toMatchObject({ ok: false, code: "E_SELF" });
+  });
+
+  it("revokes an existing edge and is idempotent on a missing edge", async () => {
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc } = makeService(db);
+
+    await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+
+    const first = await svc.handleRevokeDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    expect(first).toMatchObject({ ok: true, removed: true });
+
+    const second = await svc.handleRevokeDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    expect(second).toMatchObject({ ok: true, removed: false });
+
+    const edges = await db
+      .select()
+      .from(delegationEdges)
+      .where(and(eq(delegationEdges.fromAgentId, kid.id), eq(delegationEdges.toAgentId, ids.bobId)));
+    expect(edges).toHaveLength(0);
+  });
+
+  it("concurrent grants resolve idempotently — UNIQUE constraint loser returns created:false", async () => {
+    // Codex flagged this race: two simultaneous grants both miss the
+    // precheck, then the insert hits the (from,to) unique index. Loser used
+    // to throw, which bubbled as a 500 on the REST path. Caller should see
+    // clean idempotent semantics instead.
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc } = makeService(db);
+
+    const [first, second] = await Promise.all([
+      svc.handleGrantDelegation({
+        householdId: ids.householdId,
+        delegatorId: kid.id,
+        specialistId: ids.bobId,
+      }),
+      svc.handleGrantDelegation({
+        householdId: ids.householdId,
+        delegatorId: kid.id,
+        specialistId: ids.bobId,
+      }),
+    ]);
+    expect(first.ok && second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      const createdCount = [first, second].filter((r) => r.created).length;
+      expect(createdCount).toBe(1);
+    }
+
+    const edges = await db
+      .select()
+      .from(delegationEdges)
+      .where(and(eq(delegationEdges.fromAgentId, kid.id), eq(delegationEdges.toAgentId, ids.bobId)));
+    expect(edges).toHaveLength(1);
+  });
+
+  it("revoke with a mismatched householdId is rejected — no cross-household deletes", async () => {
+    // Codex flagged that handleRevokeDelegation used to ignore input.householdId
+    // so a caller who happened to know a pair of agent ids could delete an
+    // edge even without belonging to that household. Revoke now applies the
+    // same scoping grant does.
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc } = makeService(db);
+
+    await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+
+    const result = await svc.handleRevokeDelegation({
+      householdId: "some-other-household",
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    expect(result).toMatchObject({ ok: false, code: "E_AGENT_NOT_FOUND" });
+
+    const edges = await db
+      .select()
+      .from(delegationEdges)
+      .where(and(eq(delegationEdges.fromAgentId, kid.id), eq(delegationEdges.toAgentId, ids.bobId)));
+    expect(edges).toHaveLength(1);
+  });
+
+  it("broadcasts delegation.edge.granted on first grant and nothing on no-op re-grant", async () => {
+    const kid = await seedPersonalKid(db, ids.householdId);
+    const { svc, broadcasts } = makeService(db);
+
+    await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+    await svc.handleGrantDelegation({
+      householdId: ids.householdId,
+      delegatorId: kid.id,
+      specialistId: ids.bobId,
+    });
+
+    const granted = broadcasts.filter((b) => b.type === "delegation.edge.granted");
+    expect(granted).toHaveLength(1);
   });
 });

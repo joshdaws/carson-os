@@ -141,6 +141,29 @@ export interface HireApprovalError {
   error: string;
 }
 
+/** Grant/revoke a delegation edge — the explicit N:M access model v0.4
+ * switched to. The delegator (personal agent / CoS) is the "from"; the
+ * specialist is the "to". Edges are directional and strictly tree-shaped:
+ * personal agents never delegate to each other, and specialists never
+ * delegate at all. */
+export interface DelegationGrantInput {
+  householdId: string;
+  /** The agent that will be allowed to call delegate_task. Must be a
+   * personal agent or head_butler. */
+  delegatorId: string;
+  /** The specialist the delegator will reach. Must NOT be a personal agent
+   * or head_butler (enforces the no-re-delegation rule). */
+  specialistId: string;
+}
+
+export type DelegationGrantResult =
+  | { ok: true; created: boolean }
+  | { ok: false; error: string; code?: "E_AGENT_NOT_FOUND" | "E_INVALID_ROLE" | "E_SELF" };
+
+export type DelegationRevokeResult =
+  | { ok: true; removed: boolean }
+  | { ok: false; error: string; code?: "E_AGENT_NOT_FOUND" };
+
 interface DelegationServiceConfig {
   db: Db;
   adapter: Adapter;
@@ -818,6 +841,167 @@ export class DelegationService {
     });
 
     return { ok: true, status: "cancelled" };
+  }
+
+  /**
+   * Grant a personal agent the ability to delegate to a specialist. Creates
+   * one `delegation_edges` row from delegator → specialist. Idempotent: if
+   * the edge exists, returns `{created: false}`.
+   *
+   * Topology rules (v0.4):
+   *   - delegator must be `personal` or `head_butler`
+   *   - specialist must NOT be `personal` / `head_butler`
+   *   - self-grants rejected
+   *
+   * This is how v0.4 splits "hired" from "has access". Hiring creates the
+   * staff_agents row once; grants are per-delegator so multiple personal
+   * agents can share the same Dev/Researcher/etc. without duplicating.
+   */
+  async handleGrantDelegation(
+    input: DelegationGrantInput,
+  ): Promise<DelegationGrantResult> {
+    const validation = await this.validateGrantPair(input);
+    if (!validation.ok) return validation;
+    const { delegator, specialist } = validation;
+
+    const [existing] = await this.db
+      .select({ id: delegationEdges.id })
+      .from(delegationEdges)
+      .where(
+        and(
+          eq(delegationEdges.fromAgentId, delegator.id),
+          eq(delegationEdges.toAgentId, specialist.id),
+        ),
+      )
+      .limit(1);
+    if (existing) return { ok: true, created: false };
+
+    try {
+      await this.db.insert(delegationEdges).values({
+        fromAgentId: delegator.id,
+        toAgentId: specialist.id,
+      });
+    } catch (err) {
+      // Two concurrent grants can both miss the precheck and race on the
+      // (from_agent_id, to_agent_id) unique index. The first winner creates
+      // the edge; the loser hits a UNIQUE constraint violation. Treat the
+      // loser as a no-op success so the caller still sees idempotent
+      // semantics and the REST route doesn't 500.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/UNIQUE|unique constraint/i.test(msg)) {
+        return { ok: true, created: false };
+      }
+      throw err;
+    }
+
+    this.broadcast({
+      type: "delegation.edge.granted",
+      data: {
+        householdId: input.householdId,
+        delegatorId: delegator.id,
+        specialistId: specialist.id,
+      },
+    });
+
+    return { ok: true, created: true };
+  }
+
+  /** Remove a delegation edge. Idempotent — revoking an edge that doesn't
+   * exist returns `{removed: false}`. Applies the same household scoping
+   * as grant so a REST caller can't reach into another household's edges
+   * even by guessing an agent id. */
+  async handleRevokeDelegation(
+    input: DelegationGrantInput,
+  ): Promise<DelegationRevokeResult> {
+    const [delegator, specialist] = await Promise.all([
+      this.loadAgent(input.delegatorId),
+      this.loadAgent(input.specialistId),
+    ]);
+    if (!delegator) {
+      return { ok: false, error: `delegator agent ${input.delegatorId} not found`, code: "E_AGENT_NOT_FOUND" };
+    }
+    if (!specialist) {
+      return { ok: false, error: `specialist agent ${input.specialistId} not found`, code: "E_AGENT_NOT_FOUND" };
+    }
+    if (
+      delegator.householdId !== input.householdId ||
+      specialist.householdId !== input.householdId
+    ) {
+      return {
+        ok: false,
+        error: "cross-household revokes are not allowed",
+        code: "E_AGENT_NOT_FOUND",
+      };
+    }
+
+    const deleted = await this.db
+      .delete(delegationEdges)
+      .where(
+        and(
+          eq(delegationEdges.fromAgentId, delegator.id),
+          eq(delegationEdges.toAgentId, specialist.id),
+        ),
+      )
+      .returning({ id: delegationEdges.id });
+
+    if (deleted.length > 0) {
+      this.broadcast({
+        type: "delegation.edge.revoked",
+        data: {
+          householdId: input.householdId,
+          delegatorId: delegator.id,
+          specialistId: specialist.id,
+        },
+      });
+    }
+
+    return { ok: true, removed: deleted.length > 0 };
+  }
+
+  /** Shared validator for grant (and, eventually, any future grant-shaped
+   * op). Returns the loaded agent rows on success so the caller doesn't
+   * re-query. */
+  private async validateGrantPair(input: DelegationGrantInput): Promise<
+    | { ok: true; delegator: { id: string; staffRole: string; isHeadButler: boolean; name: string }; specialist: { id: string; staffRole: string; isHeadButler: boolean; name: string } }
+    | { ok: false; error: string; code: "E_AGENT_NOT_FOUND" | "E_INVALID_ROLE" | "E_SELF" }
+  > {
+    if (input.delegatorId === input.specialistId) {
+      return { ok: false, error: "cannot grant delegation to self", code: "E_SELF" };
+    }
+
+    const [delegator, specialist] = await Promise.all([
+      this.loadAgent(input.delegatorId),
+      this.loadAgent(input.specialistId),
+    ]);
+    if (!delegator) {
+      return { ok: false, error: `delegator agent ${input.delegatorId} not found`, code: "E_AGENT_NOT_FOUND" };
+    }
+    if (!specialist) {
+      return { ok: false, error: `specialist agent ${input.specialistId} not found`, code: "E_AGENT_NOT_FOUND" };
+    }
+    if (delegator.householdId !== input.householdId || specialist.householdId !== input.householdId) {
+      return { ok: false, error: "cross-household grants are not allowed", code: "E_AGENT_NOT_FOUND" };
+    }
+
+    const delegatorIsPersonal = delegator.staffRole === "personal" || delegator.staffRole === "head_butler" || delegator.isHeadButler;
+    const specialistIsPersonal = specialist.staffRole === "personal" || specialist.staffRole === "head_butler" || specialist.isHeadButler;
+
+    if (!delegatorIsPersonal) {
+      return {
+        ok: false,
+        error: `only personal agents (or CoS) can be delegators — ${delegator.name} is '${delegator.staffRole}'`,
+        code: "E_INVALID_ROLE",
+      };
+    }
+    if (specialistIsPersonal) {
+      return {
+        ok: false,
+        error: `cannot delegate to another personal agent — ${specialist.name} is '${specialist.staffRole}'. Delegation is strictly tree-shaped, one direction down.`,
+        code: "E_INVALID_ROLE",
+      };
+    }
+
+    return { ok: true, delegator, specialist };
   }
 
   /**
