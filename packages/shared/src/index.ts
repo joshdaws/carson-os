@@ -306,6 +306,12 @@ export interface AdapterExecuteParams {
    * env-driven MAX_TURNS (50). Developer tasks pass 200 (SDK hard ceiling) so
    * long refactors don't truncate mid-work. See design premise 9a. */
   maxTurns?: number;
+  /** v0.4 delegation: forwarded to the Agent SDK so a caller can actually stop
+   * compute when a task is cancelled. Aborting this controller causes the SDK
+   * to terminate the underlying CLI subprocess and reject the query's async
+   * iterator — the adapter turns that into a clean cancelled result instead of
+   * a status-overwriting `completed`. */
+  abortController?: AbortController;
 }
 
 export interface AdapterExecuteResult {

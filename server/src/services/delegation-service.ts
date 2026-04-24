@@ -16,7 +16,7 @@
  * delegation entry point. delegate-parser.ts was deleted.
  */
 
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   staffAgents,
@@ -770,20 +770,48 @@ export class DelegationService {
       };
     }
 
-    await this.db
+    // Single-winner cancel. The read-then-write above is non-atomic: two
+    // concurrent cancel_task calls can both observe status != terminal and
+    // both try to flip + log + broadcast. Guarding the UPDATE with the
+    // non-terminal WHERE makes this compare-and-swap so only the first
+    // caller's side effects actually run.
+    const flipped = await this.db
       .update(tasks)
       .set({ status: "cancelled", updatedAt: new Date() })
-      .where(eq(tasks.id, targetTaskId));
+      .where(
+        and(
+          eq(tasks.id, targetTaskId),
+          notInArray(tasks.status, terminalStatuses),
+        ),
+      )
+      .returning({ id: tasks.id });
+
+    if (flipped.length === 0) {
+      // Another cancel (or a completion that slipped in under the wire)
+      // already moved the row out of the non-terminal set. Re-read for the
+      // true state so the caller can see what it landed in.
+      const [current] = await this.db
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.id, targetTaskId))
+        .limit(1);
+      return {
+        ok: true,
+        status: (current?.status ?? "cancelled") as CancelTaskResult["status"],
+        alreadyTerminal: true,
+      };
+    }
 
     await this.logEvent(
       targetTaskId,
-      "failed",
+      "cancelled",
       null,
       `Task cancelled by user`,
       { reason: "cancelled by user" },
     );
 
-    // Broadcast so the Dispatcher can tear down the workspace (Lane E hook).
+    // Broadcast so the Dispatcher can tear down the workspace + abort the
+    // in-flight SDK query (Lane E hook).
     this.broadcast({
       type: "task.cancelled",
       data: { taskId: targetTaskId, householdId: input.householdId },

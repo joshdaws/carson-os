@@ -24,7 +24,7 @@
  * than one distinguishable one.
  */
 
-import { and, desc, eq, isNull, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNull, isNotNull, ne } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { tasks, delegationNotifications, conversations, messages } from "@carsonos/db";
 
@@ -87,6 +87,12 @@ export class DelegationNotifier {
    * Idempotent: re-preparing a task that's already terminal overwrites the
    * payload (e.g., a reconciler may re-prepare a failure message with
    * updated reason text). Does not reset notified_at.
+   *
+   * Cancel-sticky: a task that's already `cancelled` stays cancelled. This
+   * catches the slow-worker race where the SDK query finishes seconds or
+   * minutes after cancel_task fired, and used to flip `cancelled` back to
+   * `completed` (with a stale/empty result). The guard is a WHERE predicate so
+   * we can tell the caller whether the update actually landed.
    */
   async prepare(
     taskId: string,
@@ -94,9 +100,17 @@ export class DelegationNotifier {
       terminalStatus: "completed" | "failed" | "cancelled";
       payload: NotifyPayload;
     },
-  ): Promise<void> {
+  ): Promise<{ updated: boolean }> {
     const now = new Date();
-    await this.db
+    // A reconciler re-preparing an explicit cancellation is allowed (lets the
+    // cancel path still attach a payload). Any other terminal status is
+    // refused if the task is already cancelled.
+    const allowOverwriteCancelled = params.terminalStatus === "cancelled";
+    const whereClause = allowOverwriteCancelled
+      ? eq(tasks.id, taskId)
+      : and(eq(tasks.id, taskId), ne(tasks.status, "cancelled"));
+
+    const result = await this.db
       .update(tasks)
       .set({
         status: params.terminalStatus,
@@ -104,7 +118,10 @@ export class DelegationNotifier {
         completedAt: now,
         updatedAt: now,
       })
-      .where(eq(tasks.id, taskId));
+      .where(whereClause)
+      .returning({ id: tasks.id });
+
+    return { updated: result.length > 0 };
   }
 
   /**

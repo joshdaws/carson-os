@@ -134,6 +134,58 @@ describe("DelegationNotifier", () => {
     expect(row.completedAt).toBeInstanceOf(Date);
   });
 
+  it("prepare(completed) is refused when the task is already cancelled (cancel-sticky)", async () => {
+    // v0.4 E2E testing caught this: the user cancels, the slow Agent SDK worker
+    // finishes a few minutes later, and the final `completed` write flips the
+    // task back out of `cancelled` with no real result. prepare() must refuse
+    // any non-cancelled terminal status when the row is already cancelled.
+    await db
+      .update(tasks)
+      .set({ status: "cancelled", completedAt: new Date() })
+      .where(eq(tasks.id, seeded.taskId));
+
+    const notifier = new DelegationNotifier(db, async () => ({ ok: true }));
+    const payload = makePayload(seeded.agentId, seeded.memberId, seeded.householdId);
+
+    const outcome = await notifier.prepare(seeded.taskId, {
+      terminalStatus: "completed",
+      payload,
+    });
+
+    expect(outcome.updated).toBe(false);
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, seeded.taskId));
+    expect(row.status).toBe("cancelled");
+    expect(row.notifyPayload).toBeNull();
+  });
+
+  it("prepare(cancelled) is still allowed on an already-cancelled task (reconciler path)", async () => {
+    // Tooling like the expired-approval sweep + the cancel hook itself may
+    // re-prepare a cancellation payload. That specific overwrite stays allowed
+    // so the UI can render the cancellation summary.
+    await db
+      .update(tasks)
+      .set({ status: "cancelled", completedAt: new Date() })
+      .where(eq(tasks.id, seeded.taskId));
+
+    const notifier = new DelegationNotifier(db, async () => ({ ok: true }));
+    const payload: NotifyPayload = {
+      kind: "cancellation",
+      text: "Bob's task cancelled by user",
+      householdId: seeded.householdId,
+      memberId: seeded.memberId,
+      agentId: seeded.agentId,
+    };
+
+    const outcome = await notifier.prepare(seeded.taskId, {
+      terminalStatus: "cancelled",
+      payload,
+    });
+
+    expect(outcome.updated).toBe(true);
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, seeded.taskId));
+    expect(row.notifyPayload).toMatchObject({ kind: "cancellation" });
+  });
+
   it("deliver: fresh task → send + write audit row + flip notified_at atomically", async () => {
     const send = makeSpySend([{ ok: true, messageId: "tg-100" }]);
     const notifier = new DelegationNotifier(db, send);

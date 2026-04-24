@@ -20,7 +20,7 @@
  * 100ms stagger between sends avoids Telegram rate-limit bursts.
  */
 
-import { eq, and, isNotNull, isNull, lt } from "drizzle-orm";
+import { eq, and, ne, isNotNull, isNull, lt } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { tasks, taskEvents, staffAgents, projects } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
@@ -75,6 +75,13 @@ export class Dispatcher {
 
   /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
   private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
+
+  /** Tracks AbortControllers for in-flight Developer tasks so cancel can stop
+   * the Agent SDK query (and the underlying CLI subprocess) instead of letting
+   * compute run until it finishes and clobbers the `cancelled` status on the
+   * way out. Populated in executeDeveloperTask, cleared when the task exits
+   * any terminal state. */
+  private inFlightAborts = new Map<string, AbortController>();
 
   /** Tracks running agents. Key = `${agentId}:${parentTaskId || 'standalone'}` */
   private running = new Map<string, RunningSlot>();
@@ -435,6 +442,20 @@ export class Dispatcher {
     const data = event.data as { taskId?: string } | undefined;
     const taskId = data?.taskId;
     if (!taskId) return;
+
+    // Stop compute first. Aborting the controller causes the Agent SDK to
+    // terminate its CLI subprocess and reject the query's async iterator;
+    // executeDeveloperTask's catch branch then short-circuits the notify
+    // path so it can't overwrite the `cancelled` status with `completed`.
+    const abort = this.inFlightAborts.get(taskId);
+    if (abort) {
+      try {
+        abort.abort();
+      } catch (err) {
+        console.error(`[dispatcher] abort on cancel failed for ${taskId}:`, err);
+      }
+    }
+
     const workspace = this.workspaceByTaskId.get(taskId);
     if (!workspace || !this.workspace) return;
     try {
@@ -550,8 +571,21 @@ export class Dispatcher {
 
     this.workspaceByTaskId.set(taskId, workspace);
 
+    // Register the AbortController BEFORE we write in_progress so a cancel
+    // that lands in this window can still find something to abort. The
+    // controller stays in the map until the finally{} block after execute().
+    // Pre-register so handleCancelBroadcast (which fires sync from the
+    // cancel_task broadcast) has a handle even if its broadcast arrives
+    // before adapter.execute is called.
+    const abortController = new AbortController();
+    this.inFlightAborts.set(taskId, abortController);
+
     // -- 3. Persist workspace metadata + transition to in_progress ---
-    await this.db
+    // Conditional UPDATE so if handleCancelTask already flipped the row to
+    // `cancelled` before we claimed it (narrow race between the dispatcher
+    // picking the task up and the user tapping Reject/Cancel), this write is
+    // a no-op and we bail out instead of silently overwriting the cancel.
+    const claimed = await this.db
       .update(tasks)
       .set({
         status: "in_progress",
@@ -560,7 +594,23 @@ export class Dispatcher {
         workspaceBranch: workspace.branch ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, taskId));
+      .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
+      .returning({ id: tasks.id });
+
+    if (claimed.length === 0) {
+      // The cancel path won. Our pre-registered controller has already been
+      // aborted by handleCancelBroadcast; cleanup + bail.
+      this.inFlightAborts.delete(taskId);
+      await this.logEvent(
+        taskId,
+        "cancelled",
+        agent.id,
+        "Developer task cancelled before start",
+        { specialty, reason: "cancelled before in_progress" },
+      );
+      await this.drainDeveloperQueue(slotKey, agent);
+      return;
+    }
 
     await this.logEvent(taskId, "started", agent.id, `Developer task started (${specialty})`, {
       workspaceKind: workspace.kind,
@@ -623,9 +673,40 @@ export class Dispatcher {
         // ceiling so we pass it explicitly rather than relying on the
         // env-driven 50-default.
         maxTurns: 200,
+        abortController,
       });
     } catch (err) {
       adapterError = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.inFlightAborts.delete(taskId);
+    }
+
+    // If the task was cancelled during execute (either by handleCancelBroadcast
+    // aborting our controller, or directly by handleCancelTask flipping the
+    // status row), the status is already `cancelled` and we must NOT rerun
+    // notifier.prepare with `completed` — the bug v0.4 E2E testing caught was
+    // a slow worker finishing minutes after cancel and overwriting the status.
+    // Re-read the row so our decision is based on authoritative DB state.
+    const [currentState] = await this.db
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1);
+    const wasCancelled =
+      currentState?.status === "cancelled" || abortController.signal.aborted;
+
+    if (wasCancelled) {
+      await this.logEvent(
+        taskId,
+        "cancelled",
+        agent.id,
+        "Developer task cancelled by user",
+        { specialty, reason: "cancelled by user" },
+      );
+      // Continue to drain any queued tasks for this slot so other work keeps
+      // moving. drainDeveloperQueue will clear the slot when the queue empties.
+      await this.drainDeveloperQueue(slotKey, agent);
+      return;
     }
 
     const terminalStatus: "completed" | "failed" | "cancelled" =
@@ -663,11 +744,19 @@ export class Dispatcher {
     };
 
     // Persist the final status + notification payload atomically (Phase 1).
+    // The notifier's WHERE guard refuses to overwrite a row already in
+    // `cancelled`. When that refusal happens, everything below the guard
+    // (log event, broadcast, Telegram deliver) must also be suppressed —
+    // otherwise a cancelled task still emits a task.completed broadcast and
+    // a misleading completion card.
+    let preparedUpdate = true;
     if (this.notifier) {
-      await this.notifier.prepare(taskId, { terminalStatus, payload });
+      const { updated } = await this.notifier.prepare(taskId, { terminalStatus, payload });
+      preparedUpdate = updated;
     } else {
-      // No notifier wired — fall back to plain status update.
-      await this.db
+      // No notifier wired — same cancel-sticky guard inline so the fallback
+      // path can't overwrite `cancelled` either.
+      const result = await this.db
         .update(tasks)
         .set({
           status: terminalStatus,
@@ -675,7 +764,19 @@ export class Dispatcher {
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
+        .returning({ id: tasks.id });
+      preparedUpdate = result.length > 0;
+    }
+
+    if (!preparedUpdate) {
+      // A cancel landed between the earlier status re-read and prepare().
+      // Row already cancelled; skip the completion/failure side effects and
+      // fall straight into drain-queue so other slot work moves on. The
+      // cancel path already logged its own `cancelled` event via
+      // handleCancelTask's broadcast path.
+      await this.drainDeveloperQueue(slotKey, agent);
+      return;
     }
 
     await this.logEvent(

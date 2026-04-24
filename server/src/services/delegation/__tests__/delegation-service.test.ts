@@ -90,19 +90,25 @@ function makeService(db: Db) {
   const adapter = stubAdapter();
   const dispatcher = stubDispatcher();
   const oversight = stubOversight();
+  // Capture broadcasts so cancellation/double-cancel tests can assert
+  // single-fire semantics without needing the full event bus.
+  const broadcasts: Array<{ type: string; data?: unknown }> = [];
+  const capture = (e: { type: string; data?: unknown }) => {
+    broadcasts.push(e);
+  };
   const taskEngine = new TaskEngine({
     db,
     adapter: adapter as never,
     constitutionEngine: undefined as never,
-    broadcast: () => {},
+    broadcast: capture,
   });
   const svc = new DelegationService(
-    { db, adapter: adapter as never, broadcast: () => {} },
+    { db, adapter: adapter as never, broadcast: capture },
     dispatcher,
     taskEngine,
   );
   svc.setOversight(oversight);
-  return { svc, dispatcher, oversight };
+  return { svc, dispatcher, oversight, broadcasts };
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -364,6 +370,48 @@ describe("DelegationService — handleCancelTask", () => {
 
     const [r] = await db.select().from(tasks).where(eq(tasks.id, active.id));
     expect(r.status).toBe("cancelled");
+  });
+
+  it("two concurrent cancels → exactly one fires side effects, the other reports alreadyTerminal", async () => {
+    // Codex flagged this race: the previous read-then-update sequence let two
+    // callers both observe non-terminal, both flip + log + broadcast. The
+    // conditional UPDATE in handleCancelTask turns this into compare-and-swap
+    // so only the first caller returns a fresh cancellation and any loser
+    // sees alreadyTerminal=true without double-firing the broadcast.
+    const [active] = await db
+      .insert(tasks)
+      .values({
+        householdId: ids.householdId,
+        agentId: ids.bobId,
+        title: "doomed",
+        requiresApproval: false,
+        status: "in_progress",
+      })
+      .returning();
+
+    const { svc, broadcasts } = makeService(db);
+
+    const [first, second] = await Promise.all([
+      svc.handleCancelTask({ householdId: ids.householdId, runId: active.id }),
+      svc.handleCancelTask({ householdId: ids.householdId, runId: active.id }),
+    ]);
+
+    expect(first.ok && second.ok).toBe(true);
+
+    const winners = [first, second].filter(
+      (r) => r.ok && !(r as { alreadyTerminal?: boolean }).alreadyTerminal,
+    );
+    const losers = [first, second].filter(
+      (r) => r.ok && (r as { alreadyTerminal?: boolean }).alreadyTerminal,
+    );
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, active.id));
+    expect(row.status).toBe("cancelled");
+
+    const cancelBroadcasts = broadcasts.filter((b) => b.type === "task.cancelled");
+    expect(cancelBroadcasts).toHaveLength(1);
   });
 
   it("idempotent: cancelling a terminal task returns alreadyTerminal without mutation", async () => {
