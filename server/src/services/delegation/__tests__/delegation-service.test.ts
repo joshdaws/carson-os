@@ -647,3 +647,299 @@ describe("DelegationService — grant/revoke delegation (v0.4 N:M)", () => {
     expect(granted).toHaveLength(1);
   });
 });
+
+describe("DelegationService — wakeDelegator (v0.4 back-channel)", () => {
+  let db: Db;
+  let ids: Awaited<ReturnType<typeof seedBasics>>;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    ids = await seedBasics(db);
+  });
+
+  async function seedCompletedTask(
+    dbRef: Db,
+    opts: { householdId: string; notifyAgentId: string; requestedBy: string; specialistId: string; title?: string; result?: string },
+  ) {
+    const [t] = await dbRef
+      .insert(tasks)
+      .values({
+        householdId: opts.householdId,
+        agentId: opts.specialistId,
+        notifyAgentId: opts.notifyAgentId,
+        requestedBy: opts.requestedBy,
+        title: opts.title ?? "Summarize risks of SQLite",
+        status: "completed",
+        result: opts.result ?? "Three risks: 1. concurrency ... 2. access control ... 3. scale ...",
+        requiresApproval: false,
+        completedAt: new Date(),
+      })
+      .returning();
+    return t;
+  }
+
+  it("wakes the delegator, runs a turn on their session, delivers the reply to the user's bot", async () => {
+    const { svc } = makeService(db);
+    const processMessage = vi.fn().mockResolvedValue({
+      response: "Dev wrapped up. The big takeaway: SQLite's fine for prototypes but doesn't scale.",
+      blocked: false,
+    });
+    const sendToUser = vi.fn().mockResolvedValue(undefined);
+    svc.setEngineForWake({ processMessage });
+    svc.setSenderForWake(sendToUser);
+
+    const task = await seedCompletedTask(db, {
+      householdId: ids.householdId,
+      notifyAgentId: ids.cosId,
+      requestedBy: ids.principalId,
+      specialistId: ids.bobId,
+    });
+
+    await svc.wakeDelegator(task.id);
+
+    expect(processMessage).toHaveBeenCalledTimes(1);
+    const call = processMessage.mock.calls[0][0] as { agentId: string; memberId: string; message: string };
+    expect(call.agentId).toBe(ids.cosId);
+    expect(call.memberId).toBe(ids.principalId);
+    // Plain-prose trigger (Codex flagged the bracketed-sentinel version as
+    // prompt-injection-prone via task.title). Tagged key: value lines +
+    // explicit read_task_result hint.
+    expect(call.message).toMatch(/Task update/);
+    expect(call.message).toMatch(/- specialist: Bob/);
+    expect(call.message).toMatch(/read_task_result/);
+
+    expect(sendToUser).toHaveBeenCalledTimes(1);
+    expect(sendToUser.mock.calls[0][0]).toBe(ids.cosId);
+    expect(sendToUser.mock.calls[0][1]).toBe("1"); // Josh's telegramUserId from seedBasics
+  });
+
+  it("serializes wake turns through the shared agent queue (merges with user traffic)", async () => {
+    // The wake used to have its own mutex; PR3 review (Codex) flagged that
+    // the mutex only serialized wake-vs-wake, not wake-vs-real-user-turn.
+    // The fix is to route wake work through the MultiRelayManager's
+    // per-agent queue so user messages and wakes share one ordered stream.
+    const { svc } = makeService(db);
+
+    const order: string[] = [];
+    let resolveFirst: () => void = () => {};
+    const firstDone = new Promise<void>((r) => (resolveFirst = r));
+    const processMessage = vi.fn().mockImplementation(async (p: { message: string }) => {
+      const label = p.message.includes("first") ? "1" : "2";
+      order.push(`start:${label}`);
+      if (label === "1") await firstDone;
+      order.push(`end:${label}`);
+      return { response: "ok", blocked: false };
+    });
+    const sendToUser = vi.fn().mockResolvedValue(undefined);
+
+    // Test-bind a minimal agent-queue primitive: one chained promise per agent.
+    const queues = new Map<string, Promise<void>>();
+    const enqueue = async (agentId: string, fn: () => Promise<void>) => {
+      const prev = queues.get(agentId) ?? Promise.resolve();
+      const next = prev.catch(() => {}).then(fn);
+      queues.set(agentId, next);
+      await next;
+    };
+
+    svc.setEngineForWake({ processMessage });
+    svc.setSenderForWake(sendToUser);
+    svc.setAgentQueueForWake(enqueue);
+
+    const t1 = await seedCompletedTask(db, {
+      householdId: ids.householdId,
+      notifyAgentId: ids.cosId,
+      requestedBy: ids.principalId,
+      specialistId: ids.bobId,
+      title: "first",
+    });
+    const t2 = await seedCompletedTask(db, {
+      householdId: ids.householdId,
+      notifyAgentId: ids.cosId,
+      requestedBy: ids.principalId,
+      specialistId: ids.bobId,
+      title: "second",
+    });
+
+    const p1 = svc.wakeDelegator(t1.id);
+    const p2 = svc.wakeDelegator(t2.id);
+    await new Promise((r) => setImmediate(r));
+    resolveFirst();
+    await Promise.all([p1, p2]);
+
+    expect(order).toEqual(["start:1", "end:1", "start:2", "end:2"]);
+  });
+
+  it("returns delivered:false with a reason so the dispatcher can fall back to the templated notifier", async () => {
+    const { svc } = makeService(db);
+    const processMessage = vi.fn().mockRejectedValue(new Error("LLM offline"));
+    svc.setEngineForWake({ processMessage });
+    svc.setSenderForWake(vi.fn());
+
+    const task = await seedCompletedTask(db, {
+      householdId: ids.householdId,
+      notifyAgentId: ids.cosId,
+      requestedBy: ids.principalId,
+      specialistId: ids.bobId,
+    });
+
+    const outcome = await svc.wakeDelegator(task.id);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason).toMatch(/LLM offline/);
+  });
+
+  it("skips cancelled tasks — the user asked to stop, no summary needed", async () => {
+    const { svc } = makeService(db);
+    const processMessage = vi.fn();
+    svc.setEngineForWake({ processMessage });
+    svc.setSenderForWake(vi.fn());
+
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        householdId: ids.householdId,
+        agentId: ids.bobId,
+        notifyAgentId: ids.cosId,
+        requestedBy: ids.principalId,
+        title: "doomed",
+        status: "cancelled",
+        requiresApproval: false,
+        completedAt: new Date(),
+      })
+      .returning();
+
+    const outcome = await svc.wakeDelegator(task.id);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason).toMatch(/cancelled/);
+    expect(processMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("read_task_result MCP tool", () => {
+  let db: Db;
+  let ids: Awaited<ReturnType<typeof seedBasics>>;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    ids = await seedBasics(db);
+  });
+
+  async function callReadTaskResult(opts: {
+    agentId: string;
+    memberId: string;
+    householdId: string;
+    runId: string;
+  }) {
+    const { handleDelegationTool } = await import("../delegation-tools.js");
+    return handleDelegationTool(
+      "read_task_result",
+      { runId: opts.runId },
+      {
+        db,
+        agentId: opts.agentId,
+        memberId: opts.memberId,
+        householdId: opts.householdId,
+        delegationService: {} as never,
+        oversight: {} as never,
+      },
+    );
+  }
+
+  it("returns the task result to the delegator (notify_agent_id matches caller)", async () => {
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        householdId: ids.householdId,
+        agentId: ids.bobId,
+        notifyAgentId: ids.cosId,
+        requestedBy: ids.principalId,
+        title: "Research SQLite risks",
+        status: "completed",
+        result: "Risk 1: concurrency. Risk 2: access control. Risk 3: scale.",
+        requiresApproval: false,
+        completedAt: new Date(),
+      })
+      .returning();
+
+    const r = await callReadTaskResult({
+      agentId: ids.cosId,
+      memberId: ids.principalId,
+      householdId: ids.householdId,
+      runId: task.id,
+    });
+    expect(r.is_error).toBeFalsy();
+    expect(r.content).toContain("Risk 1: concurrency");
+    expect(r.content).toContain("Research SQLite risks");
+  });
+
+  it("rejects readers who are neither the delegator agent nor the requesting member", async () => {
+    // Seed a second household with its own agents so we can simulate an
+    // unrelated reader.
+    const [stranger] = await db
+      .insert(staffAgents)
+      .values({
+        householdId: ids.householdId,
+        name: "Stranger",
+        staffRole: "personal",
+      })
+      .returning();
+
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        householdId: ids.householdId,
+        agentId: ids.bobId,
+        notifyAgentId: ids.cosId,
+        requestedBy: ids.principalId,
+        title: "Private",
+        status: "completed",
+        result: "secrets",
+        requiresApproval: false,
+        completedAt: new Date(),
+      })
+      .returning();
+
+    const [otherMember] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: ids.householdId,
+        name: "Someone else",
+        role: "kid",
+        age: 10,
+        telegramUserId: "99",
+      })
+      .returning();
+
+    const r = await callReadTaskResult({
+      agentId: stranger.id,
+      memberId: otherMember.id,
+      householdId: ids.householdId,
+      runId: task.id,
+    });
+    expect(r.is_error).toBe(true);
+    expect(r.content).toContain("access");
+  });
+
+  it("returns a 'still running' note when the task hasn't reached terminal state", async () => {
+    const [task] = await db
+      .insert(tasks)
+      .values({
+        householdId: ids.householdId,
+        agentId: ids.bobId,
+        notifyAgentId: ids.cosId,
+        requestedBy: ids.principalId,
+        title: "Long doc",
+        status: "in_progress",
+        requiresApproval: false,
+      })
+      .returning();
+
+    const r = await callReadTaskResult({
+      agentId: ids.cosId,
+      memberId: ids.principalId,
+      householdId: ids.householdId,
+      runId: task.id,
+    });
+    expect(r.is_error).toBeFalsy();
+    expect(r.content).toContain("still in_progress");
+  });
+});

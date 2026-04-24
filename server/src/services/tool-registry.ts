@@ -136,8 +136,11 @@ const DELEGATION_GRANTS_FULL = [
   "delegate_task", "propose_hire", "cancel_task", "list_active_tasks", "register_project",
   // v0.4 N:M grants — CoS-only so kids can't self-authorize specialist access.
   "grant_delegation", "revoke_delegation",
+  // v0.4 back-channel — everyone who can delegate needs to be able to read
+  // the result on demand when the user follows up.
+  "read_task_result",
 ];
-const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active_tasks"];
+const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active_tasks", "read_task_result"];
 
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [

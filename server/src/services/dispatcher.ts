@@ -743,61 +743,25 @@ export class Dispatcher {
       summaryCard: card,
     };
 
-    // Persist the final status + notification payload atomically (Phase 1).
-    // The notifier's WHERE guard refuses to overwrite a row already in
-    // `cancelled`. When that refusal happens, everything below the guard
-    // (log event, broadcast, Telegram deliver) must also be suppressed —
-    // otherwise a cancelled task still emits a task.completed broadcast and
-    // a misleading completion card.
-    let preparedUpdate = true;
-    if (this.notifier) {
-      const { updated } = await this.notifier.prepare(taskId, { terminalStatus, payload });
-      preparedUpdate = updated;
-    } else {
-      // No notifier wired — same cancel-sticky guard inline so the fallback
-      // path can't overwrite `cancelled` either.
-      const result = await this.db
-        .update(tasks)
-        .set({
-          status: terminalStatus,
-          result: adapterError ? `Error: ${adapterError}` : (adapterResult?.content ?? null),
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
-        .returning({ id: tasks.id });
-      preparedUpdate = result.length > 0;
-    }
-
-    if (!preparedUpdate) {
-      // A cancel landed between the earlier status re-read and prepare().
-      // Row already cancelled; skip the completion/failure side effects and
-      // fall straight into drain-queue so other slot work moves on. The
-      // cancel path already logged its own `cancelled` event via
-      // handleCancelTask's broadcast path.
-      await this.drainDeveloperQueue(slotKey, agent);
-      return;
-    }
-
-    await this.logEvent(
+    const finalized = await this.finalizeTerminalTask({
       taskId,
-      terminalStatus === "completed" ? "completed" : "failed",
-      agent.id,
-      terminalStatus === "completed" ? "Developer task completed" : `Developer task failed: ${adapterError}`,
-      { durationSec: card.durationSec, specialty },
-    );
-
-    this.broadcast({
-      type: `task.${terminalStatus === "completed" ? "completed" : "failed"}`,
-      data: { taskId, agentId: agent.id, specialty },
+      agent,
+      task,
+      terminalStatus,
+      resultText: adapterError ? `Error: ${adapterError}` : (adapterResult?.content ?? null),
+      durationSec: card.durationSec,
+      specialty,
+      agentKind: "Developer",
+      payload,
+      adapterErrorForLog: adapterError,
     });
 
-    // Phase 2: deliver the Telegram notification. On failure, the reconciler
-    // retries at next boot; we never rollback the flip.
-    if (this.notifier) {
-      this.notifier
-        .deliver(taskId)
-        .catch((err) => console.error(`[dispatcher] notifier.deliver(${taskId}) threw:`, err));
+    if (!finalized.preparedUpdate) {
+      // A cancel landed between the earlier status re-read and prepare().
+      // Row already cancelled; skip the completion/failure side effects and
+      // fall straight into drain-queue so other slot work moves on.
+      await this.drainDeveloperQueue(slotKey, agent);
+      return;
     }
 
     // -- 7. Workspace teardown policy --------------------------------
@@ -1072,40 +1036,133 @@ export class Dispatcher {
       summaryCard: card,
     };
 
+    await this.finalizeTerminalTask({
+      taskId,
+      agent,
+      task,
+      terminalStatus,
+      resultText: adapterResult?.content ?? (adapterError ? `Error: ${adapterError}` : null),
+      durationSec: card.durationSec,
+      specialty,
+      agentKind: "Specialist",
+      payload,
+      adapterErrorForLog: adapterError,
+    });
+    // Specialist tasks don't currently support cancel-in-flight abort (future
+    // work), so a refused preparedUpdate on this path is unreachable today.
+    // drainSpecialistQueue always runs.
+    await this.drainSpecialistQueue(slotKey, agent);
+  }
+
+  /**
+   * Shared post-execute finalize for both Developer and Specialist tasks.
+   *
+   *   1. Persist terminal status + notify payload + result text, with the
+   *      cancel-sticky guard (WHERE status != 'cancelled') so a slow worker
+   *      returning after cancel can't flip the row back to completed.
+   *   2. If the guard refused the update, bail early and let the caller
+   *      drain its queue. (Cancel path already logged + broadcast.)
+   *   3. logEvent + broadcast task.completed / task.failed.
+   *   4. Try v0.4 back-channel wake (delegator's agent replies in voice);
+   *      on wake non-delivery fall back to notifier.deliver (templated
+   *      card). A silent miss would be worse than a utilitarian message.
+   *   5. On wake success, flip notified_at via markDeliveredByWake so the
+   *      restart reconciler doesn't replay the templated card.
+   */
+  private async finalizeTerminalTask(ctx: {
+    taskId: string;
+    agent: { id: string };
+    task: { notifyAgentId: string | null; requestedBy: string | null };
+    terminalStatus: "completed" | "failed";
+    resultText: string | null;
+    durationSec: number;
+    specialty: string;
+    agentKind: "Developer" | "Specialist";
+    payload: NotifyPayload;
+    adapterErrorForLog: string | null;
+  }): Promise<{ preparedUpdate: boolean }> {
+    const {
+      taskId,
+      agent,
+      task,
+      terminalStatus,
+      resultText,
+      durationSec,
+      specialty,
+      agentKind,
+      payload,
+      adapterErrorForLog,
+    } = ctx;
+
+    let preparedUpdate = true;
     if (this.notifier) {
-      await this.notifier.prepare(taskId, { terminalStatus, payload });
+      const { updated } = await this.notifier.prepare(taskId, { terminalStatus, payload });
+      preparedUpdate = updated;
+      // notifier.prepare writes status + payload + completedAt; the full
+      // specialist output lives on task.result so read_task_result can pull
+      // it. Same cancel-sticky guard so a slow worker can't blow away a
+      // cancelled row.
+      if (preparedUpdate && resultText) {
+        await this.db
+          .update(tasks)
+          .set({ result: resultText, updatedAt: new Date() })
+          .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")));
+      }
+    } else {
+      const result = await this.db
+        .update(tasks)
+        .set({
+          status: terminalStatus,
+          result: resultText,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
+        .returning({ id: tasks.id });
+      preparedUpdate = result.length > 0;
     }
-    // Also persist the specialist's response as task.result so status checks
-    // can read it even after notification delivery.
-    await this.db
-      .update(tasks)
-      .set({
-        status: terminalStatus,
-        result: adapterResult?.content ?? (adapterError ? `Error: ${adapterError}` : null),
-        completedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(tasks.id, taskId));
+
+    if (!preparedUpdate) {
+      return { preparedUpdate: false };
+    }
 
     await this.logEvent(
       taskId,
       terminalStatus === "completed" ? "completed" : "failed",
       agent.id,
-      terminalStatus === "completed" ? "Specialist task completed" : `Specialist task failed: ${adapterError}`,
-      { durationSec: card.durationSec, specialty },
+      terminalStatus === "completed"
+        ? `${agentKind} task completed`
+        : `${agentKind} task failed: ${adapterErrorForLog}`,
+      { durationSec, specialty },
     );
     this.broadcast({
       type: `task.${terminalStatus === "completed" ? "completed" : "failed"}`,
       data: { taskId, agentId: agent.id, specialty },
     });
 
-    if (this.notifier) {
-      this.notifier
-        .deliver(taskId)
-        .catch((err) => console.error(`[dispatcher] notifier.deliver(${taskId}) threw:`, err));
-    }
+    const hasWakeDeps = !!(this.delegationService && task.notifyAgentId && task.requestedBy);
+    const deliver = async () => {
+      if (hasWakeDeps) {
+        const wakeResult = await this.delegationService!.wakeDelegator(taskId);
+        if (wakeResult.delivered) {
+          if (this.notifier) {
+            await this.notifier
+              .markDeliveredByWake(taskId)
+              .catch((err) => console.error(`[dispatcher] markDeliveredByWake(${taskId}) failed:`, err));
+          }
+          return;
+        }
+        console.warn(
+          `[dispatcher] wake(${taskId}) did not deliver (${wakeResult.reason}); falling back to templated notifier`,
+        );
+      }
+      if (this.notifier) {
+        await this.notifier.deliver(taskId);
+      }
+    };
+    deliver().catch((err) => console.error(`[dispatcher] deliver(${taskId}) threw:`, err));
 
-    await this.drainSpecialistQueue(slotKey, agent);
+    return { preparedUpdate: true };
   }
 
   private async drainSpecialistQueue(

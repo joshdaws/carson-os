@@ -135,6 +135,18 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "read_task_result",
+    description:
+      "Pull the full output of a previously-delegated task. When a task you delegated completes, you get a short notification; the specialist's full report stays on the task row. Call this when the user asks a follow-up question about what the specialist found (quotes, specifics, the exact code/write-up).\n\nOnly the delegator (you, or the agent you originally routed through) can read the result — a kid's agent can't peek at a parent's task, and vice versa. Pass the runId from the notification.",
+    input_schema: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Task id returned by delegate_task / surfaced in the completion notification." },
+      },
+      required: ["runId"],
+    },
+  },
+  {
     name: "grant_delegation",
     description:
       "Allow a personal agent (e.g., a kid's personal agent, or a sibling CoS) to delegate tasks to an existing specialist. Creates a directional edge from delegator → specialist. The specialist stays shared — one Dev can be reached by Carson, Django, and any other granted personal agent without re-hiring.\n\nUse when a user asks to 'give <kid's agent name> access to <specialist name>', or when a kid's agent messages you asking for help that only a specialist can do.\n\nTopology rules: the delegator must be a personal agent or CoS; the specialist must NOT be a personal agent. Delegation is strictly tree-shaped — no re-delegation.",
@@ -199,6 +211,8 @@ export async function handleDelegationTool(
       return handleListActiveTasks(context);
     case "register_project":
       return handleRegisterProject(input, context);
+    case "read_task_result":
+      return handleReadTaskResult(input, context);
     case "grant_delegation":
       return handleGrantDelegation(input, context);
     case "revoke_delegation":
@@ -451,6 +465,51 @@ async function handleRegisterProject(
     }
     return toolError(`Failed to register project: ${msg}`);
   }
+}
+
+async function handleReadTaskResult(
+  input: Record<string, unknown>,
+  ctx: DelegationToolContext,
+): Promise<ToolResult> {
+  const runId = stringArg(input.runId);
+  if (!runId) return toolError("read_task_result requires `runId`");
+
+  const [task] = await ctx.db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, runId))
+    .limit(1);
+  if (!task) return toolError(`task ${runId} not found`);
+
+  // Household scope first — can't reach into another family's tasks even if
+  // you happen to guess a runId.
+  if (task.householdId !== ctx.householdId) {
+    return toolError(`task ${runId} not found`);
+  }
+
+  // Authorization: either the delegator (notify_agent_id is us) or the user
+  // who asked for it (requested_by matches our member). Keeps a kid's agent
+  // from snooping on a parent's delegation results even if they got a runId
+  // from another channel.
+  const isDelegator = task.notifyAgentId === ctx.agentId;
+  const isRequester = task.requestedBy === ctx.memberId;
+  if (!isDelegator && !isRequester) {
+    return toolError("you don't have access to this task's result");
+  }
+
+  const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+  if (!terminalStatuses.has(task.status)) {
+    return toolOk(
+      `Task ${runId} is still ${task.status}. No result to read yet. Use list_active_tasks to check status.`,
+      { status: task.status },
+    );
+  }
+
+  const resultText = task.result ?? "(no output captured)";
+  return toolOk(
+    `Task: ${task.title}\nStatus: ${task.status}\n\n---\n${resultText}`,
+    { status: task.status, title: task.title, result: resultText },
+  );
 }
 
 async function handleGrantDelegation(

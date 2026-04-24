@@ -285,4 +285,17 @@ export class DelegationNotifier {
       .set({ notifiedAt: now, updatedAt: now })
       .where(and(eq(tasks.id, taskId), isNull(tasks.notifiedAt)));
   }
+
+  /**
+   * Publicly mark a task as delivered without going through `send()`. Used by
+   * the v0.4 back-channel wake path: the delegator's agent already spoke to
+   * the user in-voice, so the templated notifier card must NOT be replayed
+   * on restart (prepare left notifyPayload set, notifiedAt null — same shape
+   * the reconciler looks for). Calling this closes that loop.
+   *
+   * Same atomic `WHERE notified_at IS NULL` guard as `flip`.
+   */
+  async markDeliveredByWake(taskId: string): Promise<void> {
+    return this.flip(taskId);
+  }
 }

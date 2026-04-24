@@ -945,6 +945,24 @@ export class MultiRelayManager {
    * When `replyMarkup` is present, we truncate to a single message (inline
    * keyboards can't span chunks) instead of splitting the payload.
    */
+  /** Serialize an async operation behind the agent's in-flight user turn,
+   * if any. Used by the v0.4 back-channel wake so a task-completion turn
+   * doesn't race a real user message on the same Agent SDK session.
+   *
+   * Chain is shared with `flushBuffer`'s queue — user messages + wakes are
+   * merged into one per-agent ordered stream. Returns a promise that
+   * resolves when the enqueued work finishes (success or failure). */
+  async enqueueAgentWork(agentId: string, fn: () => Promise<void>): Promise<void> {
+    const previousWork = this.agentQueues.get(agentId) ?? Promise.resolve();
+    const currentWork = previousWork
+      .catch(() => {
+        // Previous work failed; shouldn't block this one.
+      })
+      .then(fn);
+    this.agentQueues.set(agentId, currentWork);
+    await currentWork;
+  }
+
   async sendMessage(
     agentId: string,
     telegramUserId: string,

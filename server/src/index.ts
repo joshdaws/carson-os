@@ -342,6 +342,17 @@ async function main() {
   // Wire multiRelay into the constitution engine (for agent pause/resume tools)
   constitutionEngine.setMultiRelay(multiRelay);
 
+  // v0.4 back-channel wake: when a delegated task completes, DelegationService
+  // runs a turn on the delegator's session via processMessage and relays the
+  // reply through multiRelay.sendMessage. Wire both deps now that both exist.
+  orchestrator.setEngineForWake({
+    processMessage: (p) => constitutionEngine.processMessage({ ...p, channel: p.channel as "telegram" | "web" }),
+  });
+  orchestrator.setSenderForWake((agentId, telegramUserId, text) =>
+    multiRelay.sendMessage(agentId, telegramUserId, text),
+  );
+  orchestrator.setAgentQueueForWake((agentId, fn) => multiRelay.enqueueAgentWork(agentId, fn));
+
   // 7b. Signal relay (agents with signal_account + signal_daemon_port set)
   const signalRelay = new SignalRelayManager({
     db,
