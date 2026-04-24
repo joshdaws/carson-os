@@ -41,8 +41,8 @@ import {
   type TelegramSendFn,
   type TelegramSendResult,
 } from "./services/delegation/notifier.js";
-import { familyMembers, tasks as tasksTable } from "@carsonos/db";
-import { eq } from "drizzle-orm";
+import { familyMembers, tasks as tasksTable, conversations, messages, delegationNotifications } from "@carsonos/db";
+import { and, desc, eq } from "drizzle-orm";
 import { MultiRelayManager } from "./services/multi-relay-manager.js";
 import { SignalRelayManager } from "./services/signal-relay-manager.js";
 import { bootMemory } from "./services/memory/index.js";
@@ -439,6 +439,32 @@ async function main() {
           .limit(1);
         if (!member?.telegramUserId) return;
 
+        // Stamp the approval card with "✅ Approved" and strip the buttons.
+        // Telegram-path approvals already do this via ctx.editMessageText in
+        // the callback_query handler; this is idempotent-enough (editing to
+        // the same text just returns "not modified"), and it's the ONLY way
+        // to update the card when approval came through the Web UI instead.
+        // Previously the web-approval path left live Approve/Reject buttons
+        // sitting in Telegram — user would tap one later and race the flow.
+        const [notif] = await db
+          .select({ deliveredMessageId: delegationNotifications.deliveredMessageId, payload: delegationNotifications.payload })
+          .from(delegationNotifications)
+          .where(
+            and(
+              eq(delegationNotifications.taskId, data.taskId),
+              eq(delegationNotifications.kind, "hire_proposal"),
+            ),
+          )
+          .limit(1);
+        if (notif?.deliveredMessageId) {
+          const originalText =
+            (notif.payload && typeof notif.payload === "object" && "text" in (notif.payload as Record<string, unknown>)
+              ? String((notif.payload as Record<string, unknown>).text ?? "")
+              : "") || "";
+          const stampedText = `✅ Approved\n\n${originalText}`;
+          await multiRelay.editMessage(task.agentId, member.telegramUserId, notif.deliveredMessageId, stampedText).catch(() => {});
+        }
+
         // Pull originalUserRequest out of the hire-proposal metadata. If the
         // proposer passed it, auto-delegate so the user doesn't have to
         // re-prompt. If not (proactive hire), just tell the user the
@@ -458,6 +484,18 @@ async function main() {
             `✅ **${data.name}** is on staff — ${data.specialty} specialist.\n\n` +
             `Tell me what you want them to work on and I'll delegate it.`;
           await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          // Thread the announcement into the agent's conversation so the
+          // next turn's resumed SDK session sees "X is on staff" in
+          // history. Without this, the system prompt built at session-
+          // start is stale and Carson tells the user "X isn't on staff
+          // yet" right after he just confirmed the hire. See 2026-04-24
+          // E2E testing finding #1.
+          await threadHireAnnouncement(db, task.agentId, member.id, text, {
+            kind: "hire-approved",
+            developerAgentId: data.developerAgentId,
+            name: data.name,
+            specialty: data.specialty,
+          });
           return;
         }
 
@@ -482,6 +520,12 @@ async function main() {
             `I tried to auto-delegate your request (_${originalUserRequest.slice(0, 120)}${originalUserRequest.length > 120 ? "…" : ""}_) but hit: ${delegated.error}\n\n` +
             `Just tell me what you want them to do and I'll retry.`;
           await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          await threadHireAnnouncement(db, task.agentId, member.id, text, {
+            kind: "hire-approved-auto-delegate-failed",
+            developerAgentId: data.developerAgentId,
+            name: data.name,
+            specialty: data.specialty,
+          });
           return;
         }
 
@@ -490,6 +534,13 @@ async function main() {
           `_${originalUserRequest}_\n\n` +
           `I'll ping you when they're done. Say "kill ${data.name}'s task" to cancel.`;
         await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+        await threadHireAnnouncement(db, task.agentId, member.id, text, {
+          kind: "hire-approved-auto-delegated",
+          developerAgentId: data.developerAgentId,
+          name: data.name,
+          specialty: data.specialty,
+          runId: delegated.runId,
+        });
       } catch (err) {
         console.error("[events] hire.approved follow-up failed:", err);
       }
@@ -611,6 +662,62 @@ async function main() {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+/**
+ * Persist a system-announcement message into an agent's conversation with a
+ * specific member so the agent's next turn (which resumes the SDK session
+ * with a cached system prompt) has the announcement in history. Prevents
+ * the "X isn't on staff yet" bug where Carson's prompt was built at
+ * session-start, the hire landed during the session, and Carson had no
+ * visibility into the change until the prompt was rebuilt.
+ *
+ * Resilient by design: failure to persist is logged but doesn't block the
+ * Telegram send — the user still got the announcement.
+ */
+async function threadHireAnnouncement(
+  db: ReturnType<typeof createDb>,
+  agentId: string,
+  memberId: string,
+  text: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  try {
+    // Conversation key in the runtime is (agentId, memberId, householdId,
+    // channel) — see ConstitutionEngine.getOrCreateConversation. The
+    // next turn that must see this announcement is the resumed Telegram
+    // turn, so scope to channel="telegram" explicitly. Writing to the
+    // wrong conversation row (e.g., a web conversation when the next
+    // turn comes through Telegram) reintroduces the stale-staff-cache
+    // bug we're closing.
+    const [conversation] = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.agentId, agentId),
+          eq(conversations.memberId, memberId),
+          eq(conversations.channel, "telegram"),
+        ),
+      )
+      .orderBy(desc(conversations.lastMessageAt))
+      .limit(1);
+    if (!conversation) return;
+
+    const now = new Date();
+    await db.insert(messages).values({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: text,
+      metadata,
+    });
+    await db
+      .update(conversations)
+      .set({ lastMessageAt: now.toISOString() })
+      .where(eq(conversations.id, conversation.id));
+  } catch (err) {
+    console.warn("[events] threadHireAnnouncement failed:", err);
+  }
 }
 
 main().catch((err) => {

@@ -945,6 +945,38 @@ export class MultiRelayManager {
    * When `replyMarkup` is present, we truncate to a single message (inline
    * keyboards can't span chunks) instead of splitting the payload.
    */
+  /** Edit a previously-sent message and strip its inline buttons. Used by
+   * the web-UI approval path to stamp the Telegram approval card with
+   * "✅ Approved" so a parent approving a hire from the dashboard doesn't
+   * leave live Approve/Reject buttons sitting in the chat. Idempotent-ish:
+   * Telegram returns "message is not modified" if we edit to the same text;
+   * we swallow that.
+   *
+   * Returns true on successful edit, false on any error — caller decides
+   * whether a failed edit is load-bearing (usually it isn't). */
+  async editMessage(
+    agentId: string,
+    telegramUserId: string,
+    messageId: number | string,
+    text: string,
+  ): Promise<boolean> {
+    const managed = this.bots.get(agentId);
+    if (!managed?.running) return false;
+    try {
+      await managed.bot.api.editMessageText(
+        telegramUserId,
+        Number(messageId),
+        text,
+        { parse_mode: "HTML", reply_markup: undefined },
+      );
+      return true;
+    } catch (err) {
+      // Already-edited / 48h window / plain-text conflict — not load-bearing.
+      console.warn(`[multi-relay:${managed.agentName}] editMessage(${messageId}) failed:`, err);
+      return false;
+    }
+  }
+
   /** Serialize an async operation behind the agent's in-flight user turn,
    * if any. Used by the v0.4 back-channel wake so a task-completion turn
    * doesn't race a real user message on the same Agent SDK session.

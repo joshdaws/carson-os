@@ -43,6 +43,10 @@ interface Task {
   agentId: string;
   agentName?: string;
   requestedBy?: string;
+  /** Resolved family member name for `requestedBy`. v0.4 server enriches
+   * this on GET /tasks so the UI can show "Requested by Josh" instead of
+   * a raw memberId UUID. */
+  requestedByName?: string;
   governingClauses?: string[];
   result?: string;
   report?: string;
@@ -164,7 +168,11 @@ function TaskCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
               </p>
               <p className="text-[11px] mt-0.5" style={{ color: "#8a8070" }}>
                 {task.agentName || "Unknown agent"}
-                {task.requestedBy ? ` \u00B7 Requested by ${task.requestedBy}` : ""}
+                {task.requestedByName
+                  ? ` \u00B7 Requested by ${task.requestedByName}`
+                  : task.requestedBy
+                  ? ` \u00B7 Requested by ${task.requestedBy.slice(0, 8)}…`
+                  : ""}
                 {" \u00B7 "}
                 {relativeTime(task.createdAt)}
               </p>
@@ -288,7 +296,9 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         <div className="grid grid-cols-2 gap-3 mb-4 text-xs" style={{ color: "#8a8070" }}>
           <div>
             <span className="text-[10px] uppercase tracking-wider block mb-0.5">Requested by</span>
-            <span style={{ color: "#2c2c2c" }}>{task.requestedBy || "System"}</span>
+            <span style={{ color: "#2c2c2c" }}>
+              {task.requestedByName ?? (task.requestedBy ? `${task.requestedBy.slice(0, 8)}…` : "System")}
+            </span>
           </div>
           <div>
             <span className="text-[10px] uppercase tracking-wider block mb-0.5">Created</span>
