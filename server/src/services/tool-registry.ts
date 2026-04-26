@@ -101,6 +101,14 @@ export interface ToolExecutionContext {
   /** v0.4 delegation: the caller's current task row id, when this executor is
    * running inside a task (Dispatcher path). undefined for normal agent turns. */
   callerTaskId?: string;
+  /** Optional pre-resolved tool list for this turn, avoids duplicate DB reads. */
+  preResolvedTools?: ToolDefinition[];
+}
+
+export interface AgentToolAccess {
+  toolDefinitions: ToolDefinition[];
+  builtinTools: string[];
+  enabledSkills: string[];
 }
 
 // ── Trust level → Claude Code built-in tools ────────────────────────
@@ -489,21 +497,40 @@ export class ToolRegistry {
    * Passed as the `tools` option to the Agent SDK.
    */
   async getAgentBuiltins(agentId: string): Promise<string[]> {
+    const access = await this.resolveAgentAccess(agentId);
+    return access.builtinTools;
+  }
+
+  async getAgentSkills(agentId: string): Promise<string[]> {
+    const access = await this.resolveAgentAccess(agentId);
+    return access.enabledSkills;
+  }
+
+  /**
+   * Resolve all agent tool metadata in one pass for the current turn.
+   * This replaces the old hot path of getAgentBuiltins() + getAgentSkills() +
+   * buildExecutor() each independently reading agent/grant state.
+   */
+  async resolveAgentAccess(agentId: string): Promise<AgentToolAccess> {
     const [agent] = await this.db
-      .select({ trustLevel: staffAgents.trustLevel })
+      .select({
+        staffRole: staffAgents.staffRole,
+        isHeadButler: staffAgents.isHeadButler,
+        householdId: staffAgents.householdId,
+        trustLevel: staffAgents.trustLevel,
+      })
       .from(staffAgents)
       .where(eq(staffAgents.id, agentId))
       .limit(1);
 
+    const toolDefinitions = await this.resolveAgentToolDefinitions(agentId, agent);
     const level = (agent?.trustLevel ?? "restricted") as TrustLevel;
-    return TRUST_LEVEL_BUILTINS[level] ?? TRUST_LEVEL_BUILTINS.restricted;
-  }
-
-  async getAgentSkills(agentId: string): Promise<string[]> {
-    const tools = await this.getAgentTools(agentId);
-    return tools
+    const builtinTools = TRUST_LEVEL_BUILTINS[level] ?? TRUST_LEVEL_BUILTINS.restricted;
+    const enabledSkills = toolDefinitions
       .filter((t) => t.name.startsWith("skill:"))
       .map((t) => t.name.replace("skill:", ""));
+
+    return { toolDefinitions, builtinTools, enabledSkills };
   }
 
   // ── Per-agent resolution ──────────────────────────────────────────
@@ -514,7 +541,6 @@ export class ToolRegistry {
    * if no explicit grants exist.
    */
   async getAgentTools(agentId: string): Promise<ToolDefinition[]> {
-    // Load agent to check if Chief of Staff + get household for custom-tool resolution
     const [agent] = await this.db
       .select({
         staffRole: staffAgents.staffRole,
@@ -525,6 +551,19 @@ export class ToolRegistry {
       .where(eq(staffAgents.id, agentId))
       .limit(1);
 
+    return this.resolveAgentToolDefinitions(agentId, agent);
+  }
+
+  private async resolveAgentToolDefinitions(
+    agentId: string,
+    agent:
+      | {
+          staffRole: string;
+          isHeadButler: boolean;
+          householdId: string;
+        }
+      | undefined,
+  ): Promise<ToolDefinition[]> {
     const isChief = agent?.isHeadButler || agent?.staffRole === "head_butler";
     const householdId = agent?.householdId;
 
@@ -595,7 +634,7 @@ export class ToolRegistry {
     executor: ToolExecutor;
     calls: Array<{ name: string; input: Record<string, unknown>; result: ToolResult }>;
   } | null> {
-    const tools = await this.getAgentTools(ctx.agentId);
+    const tools = ctx.preResolvedTools ?? await this.getAgentTools(ctx.agentId);
     if (tools.length === 0) return null;
 
     const calls: Array<{ name: string; input: Record<string, unknown>; result: ToolResult }> = [];

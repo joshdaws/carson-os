@@ -260,12 +260,16 @@ async function handleSearchMemory(
       results.push(...r.entries);
     }
   } else {
-    if (scope === "personal" || scope === "both") {
+    if (scope === "both") {
+      const [personal, household] = await Promise.all([
+        ctx.memoryProvider.search(query, ctx.memberCollection, 5),
+        ctx.memoryProvider.search(query, ctx.householdCollection, 3),
+      ]);
+      results.push(...personal.entries, ...household.entries);
+    } else if (scope === "personal") {
       const personal = await ctx.memoryProvider.search(query, ctx.memberCollection, 5);
       results.push(...personal.entries);
-    }
-
-    if (scope === "household" || scope === "both") {
+    } else if (scope === "household") {
       const household = await ctx.memoryProvider.search(query, ctx.householdCollection, 3);
       results.push(...household.entries);
     }
@@ -390,4 +394,3 @@ async function handleReadMemory(
     content: `[${collection}] ${entry.title} (id: ${entry.id})\n\n--- frontmatter ---\n${fmLines}\n\n--- content ---\n${entry.content}`,
   };
 }
-
