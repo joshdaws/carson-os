@@ -221,6 +221,90 @@ body
     if (result.ok) return;
     expect(result.error).toContain("target_developer");
   });
+
+  it("tolerates leading narration before frontmatter", () => {
+    const body = `Let me read the codebase first.
+Reading packages/db/src/schema.ts...
+Reading the dispatcher hook now.
+Let me check the existing tests too.
+Now writing the plan.
+
+---
+plan_state: complete
+target_developer: core
+foundational_invariant: "x"
+state_location: "y"
+failure_modes_considered: []
+prior_plans_consulted: []
+decisions_referenced: []
+estimated_complexity: small
+out_of_scope: []
+open_questions: []
+---
+
+# Interpretation
+
+The actual plan body.
+`;
+    const result = parsePlanResult(body);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (result.frontmatter.plan_state === "complete") {
+      expect(result.frontmatter.target_developer).toBe("core");
+    }
+    expect(result.body).toContain("# Interpretation");
+    expect(result.body).toContain("The actual plan body");
+    expect(result.body).not.toContain("Let me read the codebase");
+  });
+
+  it("tolerates a yaml code fence wrapping the frontmatter", () => {
+    const body = [
+      "Some narration first.",
+      "",
+      "```yaml",
+      "---",
+      "plan_state: complete",
+      "target_developer: tools",
+      'foundational_invariant: "x"',
+      'state_location: "y"',
+      "failure_modes_considered: []",
+      "prior_plans_consulted: []",
+      "decisions_referenced: []",
+      "estimated_complexity: medium",
+      "out_of_scope: []",
+      "open_questions: []",
+      "---",
+      "",
+      "# Interpretation",
+      "",
+      "fenced plan body content",
+      "```",
+      "",
+      "trailing notes outside the fence",
+    ].join("\n");
+
+    const result = parsePlanResult(body);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (result.frontmatter.plan_state === "complete") {
+      expect(result.frontmatter.target_developer).toBe("tools");
+    }
+    expect(result.body).toContain("# Interpretation");
+    expect(result.body).toContain("fenced plan body content");
+    expect(result.body).toContain("trailing notes outside the fence");
+    expect(result.body).not.toContain("```");
+  });
+
+  it("still rejects input with no frontmatter delimiter at all", () => {
+    const body = `# Just markdown
+
+No frontmatter here, just prose. Nothing for the parser to anchor on.
+`;
+    const result = parsePlanResult(body);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("missing required YAML frontmatter");
+  });
 });
 
 // ── Group B: accept_plan state transitions ──────────────────────

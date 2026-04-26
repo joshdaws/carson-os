@@ -53,11 +53,32 @@ export type ParsePlanResult =
  * gray-matter pulls the YAML block; zod validates the discriminated union.
  * Anything that doesn't match — missing fields, wrong types, no frontmatter
  * at all — returns ok:false with a human-readable error.
+ *
+ * Two narrow tolerances on input shape, both grounded in real failure modes:
+ *   1. The SDK adapter concatenates tool-use narration ("Let me read the
+ *      codebase…") in front of the structured plan output. We strip
+ *      everything before the first '---' on its own line.
+ *   2. The Planner sometimes mimics the template literally and wraps the
+ *      frontmatter in a ```yaml code fence. If a fence opener immediately
+ *      precedes the first '---', we strip it and also strip the matching
+ *      closing fence line from the body after parsing.
+ *
+ * These tolerances widen "what counts as parseable input" — they do not
+ * weaken schema validation. Missing required fields still fail.
  */
 export function parsePlanResult(taskBody: string): ParsePlanResult {
+  const lines = taskBody.split("\n");
+  const fmStart = lines.findIndex((l) => l === "---");
+  if (fmStart === -1) {
+    return { ok: false, error: "plan is missing required YAML frontmatter" };
+  }
+  const hadFenceOpener =
+    fmStart > 0 && /^```ya?ml\s*$/i.test(lines[fmStart - 1]);
+  const reconstructed = lines.slice(fmStart).join("\n");
+
   let parsed: { data: Record<string, unknown>; content: string };
   try {
-    parsed = matter(taskBody);
+    parsed = matter(reconstructed);
   } catch (err) {
     return {
       ok: false,
@@ -77,5 +98,18 @@ export function parsePlanResult(taskBody: string): ParsePlanResult {
     return { ok: false, error: `frontmatter validation failed: ${issues}` };
   }
 
-  return { ok: true, frontmatter: validation.data, body: parsed.content };
+  let body = parsed.content;
+  if (hadFenceOpener) {
+    // Strip the corresponding closing triple-backtick line if present.
+    // Anything after the closer stays in the body (the LLM occasionally
+    // appends final notes outside the fence).
+    const bodyLines = body.split("\n");
+    const closerIdx = bodyLines.findIndex((l) => /^```\s*$/.test(l));
+    if (closerIdx !== -1) {
+      bodyLines.splice(closerIdx, 1);
+      body = bodyLines.join("\n");
+    }
+  }
+
+  return { ok: true, frontmatter: validation.data, body };
 }
