@@ -98,19 +98,23 @@ export const staffAssignments = sqliteTable(
 
 // ── 5. constitutions ────────────────────────────────────────────────
 
-export const constitutions = sqliteTable("constitutions", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  householdId: text("household_id")
-    .notNull()
-    .references(() => households.id),
-  version: integer("version").notNull().default(1),
-  document: text("document").notNull().default(""),
-  interviewTranscript: text("interview_transcript", { mode: "json" }),
-  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
-  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
-});
+export const constitutions = sqliteTable(
+  "constitutions",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id),
+    version: integer("version").notNull().default(1),
+    document: text("document").notNull().default(""),
+    interviewTranscript: text("interview_transcript", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  },
+  (t) => [index("constitutions_household_active_idx").on(t.householdId, t.isActive)]
+);
 
 // ── 6. constitutionClauses ──────────────────────────────────────────
 
@@ -287,6 +291,13 @@ export const conversations = sqliteTable(
   (t) => [
     index("conversations_agent_idx").on(t.agentId),
     index("conversations_member_idx").on(t.memberId),
+    index("conversations_chat_lookup_idx").on(
+      t.agentId,
+      t.memberId,
+      t.householdId,
+      t.channel,
+      t.lastMessageAt,
+    ),
   ]
 );
 

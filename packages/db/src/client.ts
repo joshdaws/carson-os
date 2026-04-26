@@ -12,8 +12,11 @@ export type PreMigrationHook = (reason: string) => void;
 export function createDb(dbPath: string, preMigrationHook?: PreMigrationHook) {
   const sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("synchronous = NORMAL");
+  sqlite.pragma("busy_timeout = 5000");
 
   ensureTables(sqlite, preMigrationHook);
+  ensurePerformanceIndexes(sqlite);
 
   return drizzle({ client: sqlite, schema });
 }
@@ -98,6 +101,7 @@ CREATE TABLE constitutions (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   is_active INTEGER NOT NULL DEFAULT 1
 );
+CREATE INDEX constitutions_household_active_idx ON constitutions(household_id, is_active);
 
 CREATE TABLE constitution_clauses (
   id TEXT PRIMARY KEY,
@@ -221,6 +225,7 @@ CREATE TABLE conversations (
 );
 CREATE INDEX conversations_agent_idx ON conversations(agent_id);
 CREATE INDEX conversations_member_idx ON conversations(member_id);
+CREATE INDEX conversations_chat_lookup_idx ON conversations(agent_id, member_id, household_id, channel, last_message_at);
 
 CREATE TABLE messages (
   id TEXT PRIMARY KEY,
@@ -363,6 +368,11 @@ CREATE INDEX delegation_notifications_task_idx ON delegation_notifications(task_
 
   transaction();
   console.log("[db] Tables created (v11 schema — 20 tables, v0.4 delegation)");
+}
+
+function ensurePerformanceIndexes(sqlite: Database.Database) {
+  sqlite.prepare("CREATE INDEX IF NOT EXISTS constitutions_household_active_idx ON constitutions(household_id, is_active)").run();
+  sqlite.prepare("CREATE INDEX IF NOT EXISTS conversations_chat_lookup_idx ON conversations(agent_id, member_id, household_id, channel, last_message_at)").run();
 }
 
 /** Additive upgrade path: applies new columns + tables to an existing DB. Current target: v11. */
