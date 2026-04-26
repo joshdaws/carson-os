@@ -4,6 +4,28 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.1.0] - 2026-04-25
+
+### Performance
+
+- **Resumed chat turns now send only the new user message to the Agent SDK.** The DB transcript remains the source of truth for dashboard/history, but resumed Claude sessions no longer replay the last 50 messages on every Telegram turn. Fresh sessions still get recent history, now selected as the newest 50 messages rather than the oldest 50.
+- **Lean resumed prompts are available as an opt-in experiment.** Set `CARSONOS_LEAN_RESUME=true` to send a compact resume prompt when the constitution/profile/tool context signature is unchanged. Runtime MCP tool registration still refreshes every turn, so tool additions and grant changes are not hidden from the SDK.
+- **Telegram text debounce is adaptive and faster for normal messages.** Single short messages now flush after 150ms, while multi-message paste bursts still get the 1.5s buffering window.
+- **Telegram typing indicators no longer block model startup.** Chat actions are fired in the background so the engine can start compiling context and calling the Agent SDK immediately.
+- **Telegram work queues are scoped by agent + member.** One member's long turn no longer blocks another member talking to the same agent bot. Delegation wake turns serialize through the same agent/member queue as user traffic.
+- **Tool access is resolved once per turn.** Built-in tools, enabled skills, and MCP tool definitions share one DB/grant resolution pass instead of repeating agent/grant lookups during prompt and executor setup.
+- **Google Calendar/Gmail/Drive handlers are request-scoped.** Parallel conversations can no longer overwrite the shared registry's member-specific Google handlers.
+- **Telegram streaming now coalesces stale edits.** The first delta still sends immediately, but later partial responses collapse to the newest snapshot instead of queueing every intermediate `editMessageText` call behind Telegram latency.
+- **Lightweight latency tracing.** Telegram, engine, and adapter logs now share a per-turn trace id with timings for debounce, history loading, context/prompt build, tool resolution, Agent SDK duration, first model delta, first Telegram edit, edit count, prompt/message sizes, context/tool signatures, actual SDK init tool/MCP counts, and token usage when the SDK reports it.
+- **QMD memory scope searches run in parallel.** `search_memory` still uses the same thorough QMD path, but the default personal + household search no longer waits for those two scopes sequentially.
+- **Telegram member/assignment checks use a short in-memory cache.** Normal repeat messages avoid redundant identity/assignment DB reads while keeping the cache TTL to 60 seconds.
+- **SQLite is tuned for the chat hot path.** DB startup now sets WAL + `synchronous=NORMAL` + `busy_timeout=5000`, and creates chat/constitution lookup indexes for both fresh and existing databases.
+
+### Notes
+
+- QMD memory search quality is unchanged. CarsonOS continues to use the thorough hybrid `qmd query` path for memory lookups; only independent scopes are parallelized.
+- No explicit acknowledge/progress tool was added in this release; streaming remains the primary perceived-latency improvement.
+
 ## [0.4.0.0] - 2026-04-23
 
 ## **Carson can hire specialists now. You text Carson, Carson proposes a hire, you tap Approve on Telegram, a Developer shows up on staff and starts working. Results come back when they're done.**
