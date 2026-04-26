@@ -21,6 +21,5 @@ dist/
 # Local test/smoke-test scripts
 scripts/test-*.ts
 
-# Marketing video renders (source lives in marketing/src/, outputs don't)
-marketing/out/
-marketing/.remotion-cache/
+# Marketing/launch video project (Remotion, separate scope from server/ui)
+marketing/
