@@ -194,7 +194,7 @@ export class DelegationService {
    * so a wake turn can't interleave with an in-flight Telegram message on
    * the same Agent SDK session. When unavailable (tests / partial boot), we
    * skip the queue and rely on the single-threaded Node event loop. */
-  private enqueueAgentWork: ((agentId: string, fn: () => Promise<void>) => Promise<void>) | null = null;
+  private enqueueAgentWork: ((agentId: string, memberId: string | null, fn: () => Promise<void>) => Promise<void>) | null = null;
 
   constructor(
     config: DelegationServiceConfig,
@@ -1148,7 +1148,7 @@ export class DelegationService {
 
     try {
       if (this.enqueueAgentWork) {
-        await this.enqueueAgentWork(delegator.id, work);
+        await this.enqueueAgentWork(delegator.id, member.id, work);
       } else {
         await work();
       }

@@ -50,13 +50,21 @@ interface DebounceBuffer {
   ctx: Context;
   /** Multimodal attachments collected from any buffered photo turns. */
   attachments: import("@carsonos/shared").MediaAttachment[];
+  createdAt: number;
+}
+
+interface TelegramAccessCacheEntry {
+  member: typeof familyMembers.$inferSelect;
+  expiresAt: number;
 }
 
 // ── Constants ───────────────────────────────────────────────────────
 
 const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 5 * 60 * 1000;
-const DEBOUNCE_MS = 1500; // Upgraded from 500ms for paste buffering
+const QUICK_DEBOUNCE_MS = 150;
+const PASTE_DEBOUNCE_MS = 1500;
+const TELEGRAM_ACCESS_CACHE_TTL_MS = 60_000;
 const MAX_DEBOUNCE_PARTS = 12;
 const MAX_DEBOUNCE_CHARS = 50_000;
 const MEMORY_LOG_INTERVAL_MS = 5 * 60 * 1000;
@@ -151,6 +159,7 @@ export class MultiRelayManager {
   private bots = new Map<string, ManagedBot>();
   private rateLimiter = new SharedRateLimiter();
   private debounceBuffers = new Map<string, DebounceBuffer>();
+  private telegramAccessCache = new Map<string, TelegramAccessCacheEntry>();
   private agentQueues = new Map<string, Promise<void>>();
   private events = new EventEmitter();
   private memoryLogInterval: ReturnType<typeof setInterval> | null = null;
@@ -604,35 +613,49 @@ export class MultiRelayManager {
       return;
     }
 
-    // Identify family member
-    const [member] = await this.db
-      .select()
-      .from(familyMembers)
-      .where(eq(familyMembers.telegramUserId, telegramUserId))
-      .limit(1);
+    const cacheKey = `${agentId}:${telegramUserId}`;
+    const cachedAccess = this.telegramAccessCache.get(cacheKey);
+    let member = cachedAccess && cachedAccess.expiresAt > Date.now()
+      ? cachedAccess.member
+      : null;
 
     if (!member) {
-      await ctx.reply(
-        "I don't recognize your account. Ask your family admin to add you in the CarsonOS dashboard.",
-      );
-      return;
-    }
+      // Identify family member
+      const [dbMember] = await this.db
+        .select()
+        .from(familyMembers)
+        .where(eq(familyMembers.telegramUserId, telegramUserId))
+        .limit(1);
 
-    // Verify assignment
-    const [assignment] = await this.db
-      .select()
-      .from(staffAssignments)
-      .where(
-        and(
-          eq(staffAssignments.agentId, agentId),
-          eq(staffAssignments.memberId, member.id),
-        ),
-      )
-      .limit(1);
+      if (!dbMember) {
+        await ctx.reply(
+          "I don't recognize your account. Ask your family admin to add you in the CarsonOS dashboard.",
+        );
+        return;
+      }
 
-    if (!assignment) {
-      await ctx.reply("I'm not your assigned agent. Contact your household admin.");
-      return;
+      // Verify assignment
+      const [assignment] = await this.db
+        .select()
+        .from(staffAssignments)
+        .where(
+          and(
+            eq(staffAssignments.agentId, agentId),
+            eq(staffAssignments.memberId, dbMember.id),
+          ),
+        )
+        .limit(1);
+
+      if (!assignment) {
+        await ctx.reply("I'm not your assigned agent. Contact your household admin.");
+        return;
+      }
+
+      member = dbMember;
+      this.telegramAccessCache.set(cacheKey, {
+        member,
+        expiresAt: Date.now() + TELEGRAM_ACCESS_CACHE_TTL_MS,
+      });
     }
 
     // Rate limit
@@ -641,7 +664,8 @@ export class MultiRelayManager {
       return;
     }
 
-    // Debounce (paste buffering: 1500ms, max 12 parts, 50K chars)
+    // Adaptive debounce: quick single-message turns, longer window once a
+    // paste burst starts (max 12 parts, 50K chars).
     const bufferKey = `${agentId}:${member.id}`;
     const existingBuf = this.debounceBuffers.get(bufferKey);
 
@@ -654,7 +678,7 @@ export class MultiRelayManager {
         if (attachments) existingBuf.attachments.push(...attachments);
         existingBuf.timer = setTimeout(
           () => this.flushBuffer(bufferKey, agentId, agentName, member),
-          DEBOUNCE_MS,
+          PASTE_DEBOUNCE_MS,
         );
       } else {
         // Buffer full, flush now then start new buffer
@@ -663,9 +687,10 @@ export class MultiRelayManager {
           messages: [text],
           ctx,
           attachments: attachments ? [...attachments] : [],
+          createdAt: Date.now(),
           timer: setTimeout(
             () => this.flushBuffer(bufferKey, agentId, agentName, member),
-            DEBOUNCE_MS,
+            QUICK_DEBOUNCE_MS,
           ),
         });
       }
@@ -674,9 +699,10 @@ export class MultiRelayManager {
         messages: [text],
         ctx,
         attachments: attachments ? [...attachments] : [],
+        createdAt: Date.now(),
         timer: setTimeout(
           () => this.flushBuffer(bufferKey, agentId, agentName, member),
-          DEBOUNCE_MS,
+          QUICK_DEBOUNCE_MS,
         ),
       });
     }
@@ -696,11 +722,13 @@ export class MultiRelayManager {
     const combinedMessage = buffer.messages.join("\n");
     const ctx = buffer.ctx;
     const attachments = buffer.attachments.length > 0 ? buffer.attachments : undefined;
+    const traceId = crypto.randomUUID();
+    const debounceMs = Date.now() - buffer.createdAt;
+    console.log(`[perf:${traceId}] telegram debounce=${debounceMs}ms parts=${buffer.messages.length}`);
 
-    const previousWork = this.agentQueues.get(agentId) ?? Promise.resolve();
-    const currentWork = previousWork.then(async () => {
+    void this.enqueueAgentWork(agentId, member.id, async () => {
       try {
-        await this.processMessage(ctx, agentId, agentName, member, combinedMessage, attachments);
+        await this.processMessage(ctx, agentId, agentName, member, combinedMessage, attachments, traceId);
       } catch (err) {
         console.error(`[multi-relay:${agentName}] Error in processMessage:`, err);
         try {
@@ -710,8 +738,6 @@ export class MultiRelayManager {
         }
       }
     });
-
-    this.agentQueues.set(agentId, currentWork);
   }
 
   private async processMessage(
@@ -721,19 +747,18 @@ export class MultiRelayManager {
     member: typeof familyMembers.$inferSelect,
     message: string,
     attachments?: import("@carsonos/shared").MediaAttachment[],
+    traceId = crypto.randomUUID(),
   ): Promise<void> {
     // Typing indicator until first delta arrives
     let typingInterval: ReturnType<typeof setInterval> | null = null;
-    try {
-      await ctx.replyWithChatAction("typing");
-      typingInterval = setInterval(async () => {
-        try { await ctx.replyWithChatAction("typing"); } catch { /* swallow */ }
-      }, 4000);
-    } catch { /* swallow */ }
+    void ctx.replyWithChatAction("typing").catch(() => {});
+    typingInterval = setInterval(async () => {
+      try { await ctx.replyWithChatAction("typing"); } catch { /* swallow */ }
+    }, 4000);
 
     // Set up streaming — edits Telegram message in real-time as tokens arrive
     // Keep typing indicator running throughout (covers tool call gaps)
-    const stream = createTelegramStream(ctx);
+    const stream = createTelegramStream(ctx, { traceId });
 
     // 1. Constitution engine with streaming
     let engineResult;
@@ -746,6 +771,7 @@ export class MultiRelayManager {
         channel: "telegram",
         onTextDelta: stream.onDelta,
         attachments,
+        traceId,
       });
     } catch (err) {
       if (typingInterval) { clearInterval(typingInterval); typingInterval = null; }
@@ -977,21 +1003,27 @@ export class MultiRelayManager {
     }
   }
 
-  /** Serialize an async operation behind the agent's in-flight user turn,
-   * if any. Used by the v0.4 back-channel wake so a task-completion turn
+  /** Serialize an async operation behind the agent/member's in-flight user
+   * turn, if any. Used by the v0.4 back-channel wake so a task-completion turn
    * doesn't race a real user message on the same Agent SDK session.
    *
    * Chain is shared with `flushBuffer`'s queue — user messages + wakes are
-   * merged into one per-agent ordered stream. Returns a promise that
+   * merged into one per-conversation ordered stream. Returns a promise that
    * resolves when the enqueued work finishes (success or failure). */
-  async enqueueAgentWork(agentId: string, fn: () => Promise<void>): Promise<void> {
-    const previousWork = this.agentQueues.get(agentId) ?? Promise.resolve();
+  async enqueueAgentWork(agentId: string, memberId: string | null, fn: () => Promise<void>): Promise<void> {
+    const queueKey = memberId ? `${agentId}:${memberId}` : agentId;
+    const previousWork = this.agentQueues.get(queueKey) ?? Promise.resolve();
     const currentWork = previousWork
       .catch(() => {
         // Previous work failed; shouldn't block this one.
       })
       .then(fn);
-    this.agentQueues.set(agentId, currentWork);
+    this.agentQueues.set(queueKey, currentWork);
+    currentWork.finally(() => {
+      if (this.agentQueues.get(queueKey) === currentWork) {
+        this.agentQueues.delete(queueKey);
+      }
+    }).catch(() => {});
     await currentWork;
   }
 

@@ -717,7 +717,7 @@ describe("DelegationService — wakeDelegator (v0.4 back-channel)", () => {
     // The wake used to have its own mutex; PR3 review (Codex) flagged that
     // the mutex only serialized wake-vs-wake, not wake-vs-real-user-turn.
     // The fix is to route wake work through the MultiRelayManager's
-    // per-agent queue so user messages and wakes share one ordered stream.
+    // per-agent/member queue so user messages and wakes share one ordered stream.
     const { svc } = makeService(db);
 
     const order: string[] = [];
@@ -734,10 +734,11 @@ describe("DelegationService — wakeDelegator (v0.4 back-channel)", () => {
 
     // Test-bind a minimal agent-queue primitive: one chained promise per agent.
     const queues = new Map<string, Promise<void>>();
-    const enqueue = async (agentId: string, fn: () => Promise<void>) => {
-      const prev = queues.get(agentId) ?? Promise.resolve();
+    const enqueue = async (agentId: string, memberId: string | null, fn: () => Promise<void>) => {
+      const key = memberId ? `${agentId}:${memberId}` : agentId;
+      const prev = queues.get(key) ?? Promise.resolve();
       const next = prev.catch(() => {}).then(fn);
-      queues.set(agentId, next);
+      queues.set(key, next);
       await next;
     };
 

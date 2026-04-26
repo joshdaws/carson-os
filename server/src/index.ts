@@ -351,7 +351,7 @@ async function main() {
   orchestrator.setSenderForWake((agentId, telegramUserId, text) =>
     multiRelay.sendMessage(agentId, telegramUserId, text),
   );
-  orchestrator.setAgentQueueForWake((agentId, fn) => multiRelay.enqueueAgentWork(agentId, fn));
+  orchestrator.setAgentQueueForWake((agentId, memberId, fn) => multiRelay.enqueueAgentWork(agentId, memberId, fn));
 
   // 7b. Signal relay (agents with signal_account + signal_daemon_port set)
   const signalRelay = new SignalRelayManager({
