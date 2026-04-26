@@ -10,6 +10,7 @@
  *   6. Record conversation, broadcast events
  */
 
+import { createHash } from "node:crypto";
 import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
@@ -31,7 +32,7 @@ import type {
   PolicyEventType,
 } from "@carsonos/shared";
 
-import type { MemoryProvider } from "@carsonos/shared";
+import type { MemoryProvider, ToolDefinition, ToolExecutor } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
 import type { BroadcastFn } from "./event-bus.js";
 import {
@@ -79,6 +80,8 @@ export interface ProcessMessageParams {
    * the image inline — no Haiku pre-describe round-trip.
    */
   attachments?: import("@carsonos/shared").MediaAttachment[];
+  /** Stable trace id for correlating transport, engine, adapter, and tool logs. */
+  traceId?: string;
 }
 
 export interface ProcessMessageResult {
@@ -126,6 +129,7 @@ interface CachedConstitution {
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_HISTORY_MESSAGES = 50;
+const GAP_THRESHOLD_MS = 30 * 60 * 1000;
 
 function formatGap(ms: number): string {
   const totalMin = Math.round(ms / 60000);
@@ -233,6 +237,52 @@ interface SessionCacheEntry {
   sessionId: string;
   lastActivity: number;
   toolCallNames: string[];
+  contextSignature?: string;
+}
+
+function hashPayload(payload: unknown): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
+}
+
+function formatNowForLeanPrompt(): string {
+  const now = new Date();
+  const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const clock = now.toLocaleString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const tzShort = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+    .formatToParts(now)
+    .find((p) => p.type === "timeZoneName")?.value ?? "";
+  const tzLong = new Intl.DateTimeFormat("en-US", { timeZoneName: "long" })
+    .formatToParts(now)
+    .find((p) => p.type === "timeZoneName")?.value ?? "";
+  return `${clock} ${tzShort}\nTime zone: ${tzLong} (${tzShort}, IANA ${tzName})`;
+}
+
+function buildLeanResumePrompt(): string {
+  return [
+    "# Current Time",
+    "",
+    formatNowForLeanPrompt(),
+    "",
+    "# Resumed CarsonOS Session",
+    "",
+    "Continue this existing CarsonOS conversation under the same family constitution, role, personality, operating instructions, memory rules, profile context, delegation guidance, and tool policies already established earlier in this resumed session.",
+    "",
+    "The runtime tool wiring for this turn has been refreshed by CarsonOS. Use only tools that are actually available in the current tool list. If a tool is unavailable, say so plainly and continue with the best available approach.",
+    "",
+    "Treat the user's latest message as the current task. Use earlier context only when the user refers to it or it is clearly relevant.",
+  ].join("\n");
+}
+
+function leanResumeEnabled(): boolean {
+  return process.env.CARSONOS_LEAN_RESUME === "true";
 }
 
 export class ConstitutionEngine {
@@ -289,9 +339,24 @@ export class ConstitutionEngine {
     params: ProcessMessageParams,
   ): Promise<ProcessMessageResult> {
     const { agentId, memberId, householdId, message, channel } = params;
+    const traceId = params.traceId ?? crypto.randomUUID();
+    const perf = {
+      start: Date.now(),
+      contextMs: 0,
+      clausesMs: 0,
+      delegationMs: 0,
+      conversationMs: 0,
+      historyMs: 0,
+      toolResolveMs: 0,
+      executorMs: 0,
+      promptMs: 0,
+      preSdkMs: 0,
+      adapterMs: 0,
+    };
     const collectedEvents: PolicyEvent[] = [];
 
     // -- 1. Load agent + member + household info ----------------------
+    const contextStart = Date.now();
     const [agent, member, household, allMembers] = await Promise.all([
       this.db
         .select()
@@ -313,6 +378,7 @@ export class ConstitutionEngine {
         .from(familyMembers)
         .where(eq(familyMembers.householdId, householdId)),
     ]);
+    perf.contextMs = Date.now() - contextStart;
 
     if (!agent || !member) {
       return {
@@ -334,7 +400,9 @@ export class ConstitutionEngine {
     // -- 2. Load constitution clauses (cached) -----------------------
     let cached: CachedConstitution;
     try {
+      const clausesStart = Date.now();
       cached = await this.loadClauses(householdId);
+      perf.clausesMs = Date.now() - clausesStart;
     } catch (err) {
       // Fail closed: if we can't load clauses, block the message
       console.error("[engine] Failed to load constitution clauses:", err);
@@ -436,24 +504,29 @@ export class ConstitutionEngine {
     // Pulls from delegation_edges (who can this agent delegate to?) and joins
     // on staff_agents for the specialty/role labels. Short-circuits to null
     // when there are no outbound edges (nothing to list).
+    const delegationStart = Date.now();
     const delegationInstr: string | null = await this.composeDelegationInstructions(
       agentId,
       householdId,
     );
+    perf.delegationMs = Date.now() - delegationStart;
 
     // -- 5. Load conversation history + session state -----------------
-    const conversationId = await this.getOrCreateConversation(
+    const conversationStart = Date.now();
+    const conversationContext = await this.getOrCreateConversation(
       agentId,
       memberId,
       householdId,
       channel,
     );
+    const conversationId = conversationContext.id;
 
     // Try to resume existing Agent SDK session (check cache first, then DB)
     let resumeSessionId = this.getSessionId(conversationId);
     if (!resumeSessionId) {
       resumeSessionId = await this.loadSessionFromDb(conversationId);
     }
+    const previousContextSignature = this.sessionCache.get(conversationId)?.contextSignature ?? null;
 
     // Persist the user message BEFORE loading history so:
     //   (a) tools invoked during this turn (e.g. redact_recent_user_message)
@@ -470,8 +543,17 @@ export class ConstitutionEngine {
       .update(conversations)
       .set({ lastMessageAt: new Date().toISOString() })
       .where(eq(conversations.id, conversationId));
+    perf.conversationMs = Date.now() - conversationStart;
 
-    const history = await this.getConversationHistory(conversationId);
+    const currentTurnForLlm = this.formatCurrentTurnForLlm(
+      message,
+      conversationContext.previousLastMessageAt,
+    );
+    const historyStart = Date.now();
+    const history = resumeSessionId
+      ? []
+      : await this.getConversationHistory(conversationId);
+    perf.historyMs = Date.now() - historyStart;
 
     // Detect first-contact onboarding: no profile + member is not a parent
     const hasProfile = !!(member.profileContent && member.profileContent.trim());
@@ -488,12 +570,17 @@ export class ConstitutionEngine {
     // Resolve trust level builtins + enabled skills (needed for both prompt and adapter)
     let builtinTools: string[] | undefined;
     let enabledSkills: string[] | undefined;
+    let preResolvedTools: import("@carsonos/shared").ToolDefinition[] | undefined;
     if (this.toolRegistry) {
-      builtinTools = await this.toolRegistry.getAgentBuiltins(agentId);
-      const skills = await this.toolRegistry.getAgentSkills(agentId);
-      enabledSkills = skills.length > 0 ? skills : undefined;
+      const toolAccessStart = Date.now();
+      const access = await this.toolRegistry.resolveAgentAccess(agentId);
+      perf.toolResolveMs += Date.now() - toolAccessStart;
+      builtinTools = access.builtinTools;
+      preResolvedTools = access.toolDefinitions;
+      enabledSkills = access.enabledSkills.length > 0 ? access.enabledSkills : undefined;
     }
 
+    const promptStart = Date.now();
     const systemPrompt = compileSystemPrompt({
       mode: "chat",
       roleContent: agent.roleContent ?? "",
@@ -515,39 +602,16 @@ export class ConstitutionEngine {
       householdName: household?.name ?? null,
       householdMembers: allMembers ?? null,
     });
+    perf.promptMs = Date.now() - promptStart;
 
     // -- Build tools for the adapter (registry-based) ----------------
-    let tools = undefined;
-    let toolExecutor = undefined;
+    let tools: ToolDefinition[] | undefined = undefined;
+    let toolExecutor: ToolExecutor | undefined = undefined;
     let toolCallLog: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> | undefined;
-    let refreshToolsForAdapter: (() => Promise<{ tools: import("@carsonos/shared").ToolDefinition[]; toolExecutor: import("@carsonos/shared").ToolExecutor }>) | undefined;
+    let refreshToolsForAdapter: (() => Promise<{ tools: ToolDefinition[]; toolExecutor: ToolExecutor }>) | undefined;
 
     if (this.toolRegistry) {
       const memberSlug = member.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-
-      // Bind per-member Google handlers for this conversation
-      if (this.calendarProvider) {
-        const calHandler = createCalendarToolHandler(this.calendarProvider, memberSlug);
-        for (const toolName of ["list_calendar_events", "create_calendar_event", "get_calendar_event"]) {
-          if (this.toolRegistry.get(toolName)) {
-            this.toolRegistry.handlers.set(toolName, calHandler);
-          }
-        }
-
-        const gmailHandler = createGmailToolHandler(this.calendarProvider, memberSlug);
-        for (const toolName of ["gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search"]) {
-          if (this.toolRegistry.get(toolName)) {
-            this.toolRegistry.handlers.set(toolName, gmailHandler);
-          }
-        }
-
-        const driveHandler = createDriveToolHandler(this.calendarProvider, memberSlug);
-        for (const toolName of ["drive_search", "drive_list"]) {
-          if (this.toolRegistry.get(toolName)) {
-            this.toolRegistry.handlers.set(toolName, driveHandler);
-          }
-        }
-      }
 
       // -- Memory scoping based on agent role ---
       const isChiefOfStaff = agent.isHeadButler || agent.staffRole === "head_butler";
@@ -583,6 +647,7 @@ export class ConstitutionEngine {
         isChiefOfStaff,
         allMemberCollections,
         allowedCollections,
+        preResolvedTools,
         multiRelay: this.multiRelay ?? undefined,
         delegationService: this.delegationService ?? undefined,
         oversight: this.oversight ?? undefined,
@@ -590,12 +655,16 @@ export class ConstitutionEngine {
         // path (Lane E) sets it when running tool calls inside a child task.
       };
 
+      const executorStart = Date.now();
       const built = await this.toolRegistry.buildExecutor(executorCtx);
+      perf.executorMs += Date.now() - executorStart;
 
       if (built) {
         tools = built.tools;
         toolExecutor = built.executor;
         toolCallLog = built.calls;
+
+        toolExecutor = this.wrapMemberProviders(toolExecutor, memberSlug, toolCallLog);
 
         // Wrap executor to resolve CalDAV credentials per-member at dispatch
         // time — avoids mutating the shared ToolRegistry handler map.
@@ -604,7 +673,11 @@ export class ConstitutionEngine {
           const caldavToolNames = new Set(["list_calendar_events", "create_calendar_event", "get_calendar_event"]);
           const base = toolExecutor;
           toolExecutor = async (name: string, input: Record<string, unknown>) => {
-            if (caldavToolNames.has(name)) return caldavHandler(name, input);
+            if (caldavToolNames.has(name)) {
+              const result = await caldavHandler(name, input);
+              toolCallLog?.push({ name, input, result });
+              return result;
+            }
             return base(name, input);
           };
         }
@@ -615,7 +688,11 @@ export class ConstitutionEngine {
           const imapToolNames = new Set(["imap_triage", "imap_read", "imap_search"]);
           const base = toolExecutor;
           toolExecutor = async (name: string, input: Record<string, unknown>) => {
-            if (imapToolNames.has(name)) return imapHandler(name, input);
+            if (imapToolNames.has(name)) {
+              const result = await imapHandler(name, input);
+              toolCallLog?.push({ name, input, result });
+              return result;
+            }
             return base(name, input);
           };
         }
@@ -624,9 +701,12 @@ export class ConstitutionEngine {
       // Expose a refresh callback to the adapter so mid-session custom tool
       // registrations get re-pushed into the model's tool list via setMcpServers.
       refreshToolsForAdapter = async () => {
-        const rebuilt = await this.toolRegistry!.buildExecutor(executorCtx);
+        const rebuilt = await this.toolRegistry!.buildExecutor({
+          ...executorCtx,
+          preResolvedTools: undefined,
+        });
         if (!rebuilt) return { tools: [], toolExecutor: async () => ({ content: "no tools", is_error: true }) };
-        let refreshedExecutor = rebuilt.executor;
+        let refreshedExecutor = this.wrapMemberProviders(rebuilt.executor, memberSlug);
         if (this.caldavProvider && this.caldavProvider.getAuthStatus(memberSlug).authenticated) {
           const caldavHandler = createCalDavCalendarToolHandler(this.caldavProvider, memberSlug);
           const caldavToolNames = new Set(["list_calendar_events", "create_calendar_event", "get_calendar_event"]);
@@ -649,14 +729,56 @@ export class ConstitutionEngine {
       };
     }
 
-    // Add the current user message to history for the LLM call
-    const messagesForLlm = history;
+    // Resumed Agent SDK sessions already have their prior transcript. Replaying
+    // recent DB history on top of `resume` duplicates context and adds token
+    // latency. Fresh sessions still need the bounded recent history.
+    const sortedHouseholdMembers = [...(allMembers ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    const toolSignature = hashPayload({
+      tools: (tools ?? []).map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.input_schema,
+      })).sort((a, b) => a.name.localeCompare(b.name)),
+      builtinTools: [...(builtinTools ?? [])].sort(),
+      enabledSkills: [...(enabledSkills ?? [])].sort(),
+    });
+    const contextSignature = hashPayload({
+      constitution: cached.constitutionDocument,
+      softRulePrompt,
+      roleContent: agent.roleContent ?? "",
+      soulContent: agent.soulContent ?? null,
+      operatingInstructions: agent.operatingInstructions ?? null,
+      member: {
+        name: member.name,
+        role: member.role,
+        age: member.age,
+        profile: member.profileContent ?? null,
+      },
+      household: {
+        name: household?.name ?? null,
+        members: sortedHouseholdMembers,
+      },
+      delegationInstr,
+      memorySchemaInstructions,
+      trustLevel: agent.trustLevel,
+      toolSignature,
+    });
+    const contextUnchanged = !!resumeSessionId && previousContextSignature === contextSignature;
+    const useLeanResume = !!resumeSessionId && contextUnchanged && leanResumeEnabled();
+    const effectiveSystemPrompt = useLeanResume ? buildLeanResumePrompt() : systemPrompt;
+
+    const messagesForLlm = resumeSessionId
+      ? [{ role: "user", content: currentTurnForLlm }]
+      : history;
+    const messagesForLlmChars = messagesForLlm.reduce((sum, m) => sum + m.content.length, 0);
+    perf.preSdkMs = Date.now() - perf.start;
 
     let llmResponse: string;
 
     try {
-      const result = await this.adapter.execute({
-        systemPrompt,
+      const adapterStart = Date.now();
+      const executeParams: Parameters<Adapter["execute"]>[0] & { traceId?: string } = {
+        systemPrompt: effectiveSystemPrompt,
         messages: messagesForLlm,
         model: agent.model,
         tools,
@@ -670,12 +792,15 @@ export class ConstitutionEngine {
         // is created/updated/disabled. The adapter uses this to call
         // setMcpServers so the new tool is immediately usable in this conv.
         refreshTools: refreshToolsForAdapter,
-      });
+        traceId,
+      };
+      const result = await this.adapter.execute(executeParams);
+      perf.adapterMs = Date.now() - adapterStart;
       llmResponse = result.content;
 
       // Save session ID for resume on next message
       if (result.sessionId) {
-        await this.saveSessionId(conversationId, result.sessionId, toolCallLog);
+        await this.saveSessionId(conversationId, result.sessionId, toolCallLog, contextSignature);
         console.log(`[engine] Session saved for conversation ${conversationId}: ${result.sessionId}`);
       }
 
@@ -796,6 +921,10 @@ export class ConstitutionEngine {
       },
     });
 
+    console.log(
+      `[perf:${traceId}] engine total=${Date.now() - perf.start}ms preSdk=${perf.preSdkMs}ms context=${perf.contextMs}ms clauses=${perf.clausesMs}ms delegation=${perf.delegationMs}ms conversation=${perf.conversationMs}ms history=${perf.historyMs}ms toolResolve=${perf.toolResolveMs}ms executor=${perf.executorMs}ms prompt=${perf.promptMs}ms adapter=${perf.adapterMs}ms tools=${toolCallLog?.length ?? 0} toolDefs=${tools?.length ?? 0} resume=${resumeSessionId ? "yes" : "no"} leanResume=${useLeanResume ? "yes" : "no"} contextChanged=${contextUnchanged ? "no" : "yes"} contextSig=${contextSignature} prevContextSig=${previousContextSignature ?? "none"} toolSig=${toolSignature} systemPromptChars=${effectiveSystemPrompt.length} fullSystemPromptChars=${systemPrompt.length} messagesChars=${messagesForLlmChars}`,
+    );
+
     return {
       response: llmResponse,
       blocked: false,
@@ -804,6 +933,47 @@ export class ConstitutionEngine {
   }
 
   // -- Private: clause loading ---------------------------------------
+
+  private wrapMemberProviders(
+    base: ToolExecutor,
+    memberSlug: string,
+    calls?: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }>,
+  ): ToolExecutor {
+    if (!this.calendarProvider) return base;
+
+    const calendarHandler = createCalendarToolHandler(this.calendarProvider, memberSlug);
+    const gmailHandler = createGmailToolHandler(this.calendarProvider, memberSlug);
+    const driveHandler = createDriveToolHandler(this.calendarProvider, memberSlug);
+
+    const calendarToolNames = new Set(["list_calendar_events", "create_calendar_event", "get_calendar_event"]);
+    const gmailToolNames = new Set([
+      "gmail_triage",
+      "gmail_read",
+      "gmail_compose",
+      "gmail_reply",
+      "gmail_update_draft",
+      "gmail_send_draft",
+      "gmail_search",
+    ]);
+    const driveToolNames = new Set(["drive_search", "drive_list"]);
+
+    return async (name: string, input: Record<string, unknown>) => {
+      let result: { content: string; is_error?: boolean } | null = null;
+      if (calendarToolNames.has(name)) {
+        result = await calendarHandler(name, input);
+      } else if (gmailToolNames.has(name)) {
+        result = await gmailHandler(name, input);
+      } else if (driveToolNames.has(name)) {
+        result = await driveHandler(name, input);
+      }
+
+      if (result) {
+        calls?.push({ name, input, result });
+        return result;
+      }
+      return base(name, input);
+    };
+  }
 
   /** Build the "Available specialists" prompt section from delegation_edges.
    *  Returns null when the agent has no outbound edges (nothing to list).
@@ -982,7 +1152,7 @@ export class ConstitutionEngine {
       })
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
-      .orderBy(messages.createdAt)
+      .orderBy(desc(messages.createdAt))
       .limit(MAX_HISTORY_MESSAGES);
 
     // Inject a time-gap marker when consecutive messages are >30 min apart.
@@ -990,10 +1160,9 @@ export class ConstitutionEngine {
     // mid-thread" from "this is a fresh session hours later." Carson was
     // re-quoting stale Hooktheory options to a 7am "what were we talking
     // about?" because the 8h gap was invisible to the LLM.
-    const GAP_THRESHOLD_MS = 30 * 60 * 1000;
     const out: Array<{ role: string; content: string }> = [];
     let prev: Date | null = null;
-    for (const r of rows) {
+    for (const r of rows.reverse()) {
       const current = r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt);
       if (prev) {
         const gapMs = current.getTime() - prev.getTime();
@@ -1015,7 +1184,7 @@ export class ConstitutionEngine {
     memberId: string,
     householdId: string,
     channel: string,
-  ): Promise<string> {
+  ): Promise<{ id: string; previousLastMessageAt: string | null }> {
     const existing = await this.db
       .select()
       .from(conversations)
@@ -1043,7 +1212,10 @@ export class ConstitutionEngine {
         : new Date(existing[0].startedAt);
       const idleMs = Date.now() - last.getTime();
       if (idleMs < CONVERSATION_IDLE_TIMEOUT_MS) {
-        return existing[0].id;
+        return {
+          id: existing[0].id,
+          previousLastMessageAt: existing[0].lastMessageAt ?? existing[0].startedAt,
+        };
       }
     }
 
@@ -1061,7 +1233,17 @@ export class ConstitutionEngine {
       lastMessageAt: now,
     });
 
-    return id;
+    return { id, previousLastMessageAt: null };
+  }
+
+  private formatCurrentTurnForLlm(
+    message: string,
+    previousLastMessageAt: string | null,
+  ): string {
+    if (!previousLastMessageAt) return message;
+    const gapMs = Date.now() - new Date(previousLastMessageAt).getTime();
+    if (gapMs <= GAP_THRESHOLD_MS) return message;
+    return `[time note: ${formatGap(gapMs)} since the previous message. Treat this as a continuation only if the user's new message references earlier context; otherwise orient to what they're asking now.]\n\n${message}`;
   }
 
   // -- Private: recording --------------------------------------------
@@ -1117,11 +1299,13 @@ export class ConstitutionEngine {
     conversationId: string,
     sessionId: string,
     toolCalls?: Array<{ name: string; input: Record<string, unknown> }>,
+    contextSignature?: string,
   ): Promise<void> {
     this.sessionCache.set(conversationId, {
       sessionId,
       lastActivity: Date.now(),
       toolCallNames: toolCalls?.map((t) => t.name) ?? [],
+      contextSignature,
     });
 
     // Persist to DB for durability across restarts
@@ -1132,6 +1316,7 @@ export class ConstitutionEngine {
           sessionId,
           lastActivity: new Date().toISOString(),
           toolCallNames: toolCalls?.map((t) => t.name) ?? [],
+          contextSignature,
         },
       })
       .where(eq(conversations.id, conversationId));
@@ -1161,6 +1346,7 @@ export class ConstitutionEngine {
       sessionId: ctx.sessionId,
       lastActivity: new Date(ctx.lastActivity).getTime(),
       toolCallNames: (ctx as { toolCallNames?: string[] }).toolCallNames ?? [],
+      contextSignature: (ctx as { contextSignature?: string }).contextSignature,
     });
 
     return ctx.sessionId;

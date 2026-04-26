@@ -94,6 +94,10 @@ function computeToolSignature(toolDefs: import("@carsonos/shared").ToolDefinitio
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
+function shortHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
 /**
  * Process-global cache of `tool()` return values keyed by tool name.
  *
@@ -443,6 +447,8 @@ class ClaudeAgentSdkAdapter implements Adapter {
 
   async execute(params: AdapterExecuteParams): Promise<AdapterExecuteResult> {
     const { systemPrompt, messages, tools, toolExecutor, model, attachments } = params;
+    const traceId = (params as AdapterExecuteParams & { traceId?: string }).traceId;
+    const tracePrefix = traceId ? `[adapter:${traceId}]` : "[adapter]";
 
     // Build the user prompt from the messages array
     const userPrompt = messages
@@ -515,7 +521,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
         uniqueDefs.push(t);
       }
       const mcpTools = uniqueDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
-      console.log(`[adapter] buildMcpServer server=${currentMcpServerName} tools=${uniqueDefs.length}${toolDefs.length !== uniqueDefs.length ? ` (deduped from ${toolDefs.length})` : ""}`);
+      console.log(`${tracePrefix} buildMcpServer server=${currentMcpServerName} tools=${uniqueDefs.length}${toolDefs.length !== uniqueDefs.length ? ` (deduped from ${toolDefs.length})` : ""}`);
       return createSdkMcpServer({
         name: currentMcpServerName,
         version: "1.0.0",
@@ -569,15 +575,16 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let capturedSessionId: string | null = null;
     let totalCost: number | null = null;
     let numTurns: number | null = null;
+    let firstDeltaMs: number | null = null;
 
-    // Build the full allowed tools list: MCP tools
-    // (Skills are enabled via "Skill" in the tools array + settingSources: ["user"],
-    // not via allowedTools — the SDK picks them up from ~/.claude/skills/ automatically)
     const allAllowedTools = [...allowedTools];
 
     const onTextDelta = params.onTextDelta;
 
     const isResume = !!params.resumeSessionId;
+    console.log(
+      `${tracePrefix} payload systemPromptChars=${systemPrompt.length} systemPromptHash=${shortHash(systemPrompt)} userPromptChars=${userPrompt.length} messages=${messages.length} mcpToolDefs=${tools?.length ?? 0} builtinTools=${params.builtinTools?.length ?? 0} allowedMcpTools=${allowedTools.length} resume=${isResume ? "yes" : "no"}`,
+    );
 
     // Trust-level enforcement via canUseTool callback.
     //
@@ -626,7 +633,15 @@ class ClaudeAgentSdkAdapter implements Adapter {
         model: sdkModel as "sonnet" | "opus" | "haiku",
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        settingSources: ["user"],
+        // Explicit empty array → SDK passes `--setting-sources=` to the CLI,
+        // which isolates the subprocess from ~/.claude/. Omitting the option
+        // entirely lets the CLI fall back to its user-loading default.
+        settingSources: [],
+        // Restrict MCP servers to only what we pass via `mcpServers` below.
+        // Without this, the CLI also loads claude.ai account-level connectors
+        // (Gmail/Drive/Calendar/Notion/Canva). CarsonOS has its own google/
+        // imap/caldav providers — those connectors are redundant.
+        strictMcpConfig: true,
         maxTurns: params.maxTurns ?? MAX_TURNS,
         ...(params.cwd ? { cwd: params.cwd } : {}),
         canUseTool: canUseToolCallback,
@@ -648,6 +663,9 @@ class ClaudeAgentSdkAdapter implements Adapter {
     let hasStreamedText = false;
     let hitTurnLimit = false;
     let sdkErrorMessage: string | null = null;
+    let initLogged = false;
+    let inputTokens: number | null = null;
+    let outputTokens: number | null = null;
 
     // Assign the refresh function now that `conversation` exists in scope.
     triggerRefresh = async (lastToolName: string) => {
@@ -665,9 +683,9 @@ class ClaudeAgentSdkAdapter implements Adapter {
         await conversation.setMcpServers({ [currentMcpServerName]: newServer });
         currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
         currentToolSignature = newSignature;
-        console.log(`[adapter] MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
+        console.log(`${tracePrefix} MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
       } catch (err) {
-        console.warn(`[adapter] Failed to refresh MCP tools after ${lastToolName}:`, err);
+        console.warn(`${tracePrefix} Failed to refresh MCP tools after ${lastToolName}:`, err);
       }
     };
 
@@ -678,6 +696,19 @@ class ClaudeAgentSdkAdapter implements Adapter {
           capturedSessionId = message.session_id;
         }
 
+        if (!initLogged && message.type === "system" && "subtype" in message && message.subtype === "init") {
+          const init = message as unknown as {
+            tools?: string[];
+            mcp_servers?: Array<{ name: string; status: string }>;
+            skills?: string[];
+            model?: string;
+          };
+          initLogged = true;
+          console.log(
+            `${tracePrefix} SDK init model=${init.model ?? "unknown"} tools=${init.tools?.length ?? 0} mcpServers=${(init.mcp_servers ?? []).map((s) => `${s.name}:${s.status}`).join(",") || "none"} skills=${init.skills?.length ?? 0}`,
+          );
+        }
+
         // Stream text deltas to the caller as they arrive
         if (onTextDelta && message.type === "stream_event") {
           const event = (message as Record<string, unknown>).event as Record<string, unknown> | undefined;
@@ -685,6 +716,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
             event?.type === "content_block_delta" &&
             (event?.delta as Record<string, unknown>)?.type === "text_delta"
           ) {
+            firstDeltaMs ??= Date.now() - t0;
             onTextDelta((event.delta as { text: string }).text);
             hasStreamedText = true;
           }
@@ -723,6 +755,21 @@ class ClaudeAgentSdkAdapter implements Adapter {
           if ("num_turns" in message && typeof message.num_turns === "number") {
             numTurns = message.num_turns;
           }
+          if ("usage" in message && message.usage && typeof message.usage === "object") {
+            const usage = message.usage as { input_tokens?: number; output_tokens?: number };
+            if (typeof usage.input_tokens === "number") inputTokens = usage.input_tokens;
+            if (typeof usage.output_tokens === "number") outputTokens = usage.output_tokens;
+          }
+          if ("modelUsage" in message && message.modelUsage && typeof message.modelUsage === "object") {
+            let inTotal = 0;
+            let outTotal = 0;
+            for (const usage of Object.values(message.modelUsage as Record<string, { inputTokens?: number; outputTokens?: number }>)) {
+              inTotal += usage.inputTokens ?? 0;
+              outTotal += usage.outputTokens ?? 0;
+            }
+            if (inTotal > 0) inputTokens = inTotal;
+            if (outTotal > 0) outputTokens = outTotal;
+          }
 
           if (message.subtype === "success") {
             const sdkResult = ("result" in message && typeof message.result === "string")
@@ -754,7 +801,7 @@ class ClaudeAgentSdkAdapter implements Adapter {
         hitTurnLimit = true;
       } else {
         sdkErrorMessage = err instanceof Error ? err.message : String(err);
-        console.error("[adapter] SDK error:", err);
+        console.error(`${tracePrefix} SDK error:`, err);
       }
     }
 
@@ -772,9 +819,9 @@ class ClaudeAgentSdkAdapter implements Adapter {
     }
 
     const totalMs = Date.now() - t0;
-    console.log(`[adapter] Agent SDK: ${totalMs}ms, ${numTurns} turns, ${allToolCalls.length} tool calls, resume=${isResume ? 'yes' : 'no'}, session=${capturedSessionId ?? 'none'}`);
+    console.log(`${tracePrefix} Agent SDK: ${totalMs}ms, firstDelta=${firstDeltaMs ?? "none"}ms, ${numTurns} turns, ${allToolCalls.length} tool calls, inputTokens=${inputTokens ?? "unknown"}, outputTokens=${outputTokens ?? "unknown"}, resume=${isResume ? 'yes' : 'no'}, session=${capturedSessionId ?? 'none'}`);
     if (totalCost != null) {
-      console.log(`[adapter] Cost: $${totalCost.toFixed(4)}`);
+      console.log(`${tracePrefix} Cost: $${totalCost.toFixed(4)}`);
     }
 
     return {
