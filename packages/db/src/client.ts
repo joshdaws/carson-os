@@ -162,6 +162,8 @@ CREATE TABLE tasks (
   notify_payload TEXT,
   notified_at INTEGER,
   notify_agent_id TEXT REFERENCES staff_agents(id),
+  plan_status TEXT,
+  parent_plan_task_id TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   completed_at INTEGER
@@ -397,7 +399,9 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // v0.4 delegation
     !taskCols.has("project_id") || !taskCols.has("notify_payload") ||
     !taskCols.has("notify_agent_id") ||
-    !tableExists("projects") || !tableExists("delegation_notifications");
+    !tableExists("projects") || !tableExists("delegation_notifications") ||
+    // Planner v2
+    !taskCols.has("plan_status") || !taskCols.has("parent_plan_task_id");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -713,6 +717,20 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       )`).run();
       sqlite.prepare("CREATE UNIQUE INDEX delegation_notifications_task_kind_unique ON delegation_notifications(task_id, kind)").run();
       sqlite.prepare("CREATE INDEX delegation_notifications_task_idx ON delegation_notifications(task_id)").run();
+      upgraded = true;
+    }
+
+    // Planner v2: tasks.plan_status + tasks.parent_plan_task_id. Both nullable
+    // because they only apply to Planner tasks; other specialties leave them
+    // null. parent_plan_task_id is a logical FK to tasks.id (self-ref) — kept
+    // un-enforced at the DB layer to match parent_task_id's pattern.
+    const taskColsPlanner = cols("tasks");
+    if (!taskColsPlanner.has("plan_status")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN plan_status TEXT").run();
+      upgraded = true;
+    }
+    if (!taskColsPlanner.has("parent_plan_task_id")) {
+      sqlite.prepare("ALTER TABLE tasks ADD COLUMN parent_plan_task_id TEXT").run();
       upgraded = true;
     }
 
