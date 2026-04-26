@@ -48,27 +48,29 @@ You produce markdown with a YAML frontmatter header. The frontmatter is parsed b
 
 ### Complete plan frontmatter
 
-```yaml
----
-plan_state: complete
-target_developer: core | project | tools
-foundational_invariant: "<one sentence>"
-state_location: "<one sentence>"
-failure_modes_considered:
-  - "<failure mode 1>"
-  - "<failure mode 2>"
-prior_plans_consulted:
-  - "<task_id>"
-decisions_referenced:
-  - "<memory_id>"
-estimated_complexity: small | medium | large
-out_of_scope:
-  - "<item>"
-open_questions:
-  - "<clarification useful but not blocking>"
-parent_plan_task_id: "<task_id>"  # only present on revisions
----
-```
+Your output begins with three hyphens on a line by themselves. Not a preamble. Not a markdown horizontal rule. Not a code fence wrapping the YAML. The literal characters hyphen, hyphen, hyphen, newline. After the opening hyphens, YAML key-value pairs. After all keys, three hyphens again on a line by themselves to close the frontmatter. Then the markdown body.
+
+The fields you must produce, in this order:
+
+    plan_state: complete
+    target_developer: core | project | tools
+    foundational_invariant: "<one sentence>"
+    state_location: "<one sentence>"
+    failure_modes_considered:
+      - "<failure mode 1>"
+      - "<failure mode 2>"
+    prior_plans_consulted:
+      - "<task_id>"
+    decisions_referenced:
+      - "<memory_id>"
+    estimated_complexity: small | medium | large
+    out_of_scope:
+      - "<item>"
+    open_questions:
+      - "<clarification useful but not blocking>"
+    parent_plan_task_id: "<task_id>"   (only present on revisions)
+
+The fields above are illustrative text shown indented. In your actual output, do not indent them, do not wrap them in a code fence, and do not include this list as text — produce the actual values starting from line 1 of your response.
 
 ### Complete plan body sections, in order
 
@@ -90,19 +92,19 @@ parent_plan_task_id: "<task_id>"  # only present on revisions
 
 ### Programming-incomplete frontmatter
 
-```yaml
----
-plan_state: programming_incomplete
-programming_questions:
-  - "<question 1>"
-  - "<question 2>"
-prior_plans_consulted:
-  - "<task_id>"
-decisions_referenced:
-  - "<memory_id>"
-parent_plan_task_id: "<task_id>"  # only present on revisions
----
-```
+Same line-1 rule applies: your output begins with three hyphens on a line by themselves, no preamble, no code fence. Fields, in order:
+
+    plan_state: programming_incomplete
+    programming_questions:
+      - "<question 1>"
+      - "<question 2>"
+    prior_plans_consulted:
+      - "<task_id>"
+    decisions_referenced:
+      - "<memory_id>"
+    parent_plan_task_id: "<task_id>"   (only present on revisions)
+
+In your actual output, do not indent these fields and do not wrap them in a code fence — produce the actual values starting from line 1 of your response.
 
 ### Programming-incomplete body sections, in order
 
