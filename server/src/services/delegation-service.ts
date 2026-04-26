@@ -99,6 +99,11 @@ export interface HireProposalInput {
   /** Optional. User's original request, used to auto-delegate on approval so
    *  the user doesn't have to re-prompt. Absent for proactive hires. */
   originalUserRequest?: string;
+  /** Required for Developer specialties (tools/project/core). References a
+   *  Planner task whose plan_status is 'accepted'. The plan body becomes the
+   *  auto-delegation brief on hire.approved. Ignored for non-Developer
+   *  specialties even if supplied. */
+  planTaskId?: string;
 }
 
 export interface HireProposalResult {
@@ -109,6 +114,11 @@ export interface HireProposalResult {
 export interface HireProposalError {
   ok: false;
   error: string;
+  code?:
+    | "E_PLAN_REQUIRED"
+    | "E_PLAN_NOT_FOUND"
+    | "E_NOT_A_PLAN"
+    | "E_PLAN_NOT_ACCEPTED";
 }
 
 export interface AcceptPlanInput {
@@ -410,6 +420,50 @@ export class DelegationService {
       return { ok: false, error: "oversight not wired (server boot order)" };
     }
 
+    // Planner v2: Developer hires require an accepted plan_task_id. Non-
+    // Developer specialties ignore plan_task_id even if supplied — the
+    // architectural gate only applies to specialties that actually ship code.
+    const isDevHire = isDeveloperSpecialty(input.specialty);
+    let resolvedPlanTaskId: string | undefined;
+    if (isDevHire) {
+      if (!input.planTaskId) {
+        return {
+          ok: false,
+          error: `Developer hires (${input.specialty}) require plan_task_id from an accepted Planner task. Run accept_plan first.`,
+          code: "E_PLAN_REQUIRED",
+        };
+      }
+      const [planTask] = await this.db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.id, input.planTaskId))
+        .limit(1);
+      if (!planTask || planTask.householdId !== input.householdId) {
+        return {
+          ok: false,
+          error: `plan task ${input.planTaskId} not found`,
+          code: "E_PLAN_NOT_FOUND",
+        };
+      }
+      const plannerAgent = await this.loadAgent(planTask.agentId);
+      if (!plannerAgent || plannerAgent.specialty !== "planning") {
+        return {
+          ok: false,
+          error: `task ${input.planTaskId} is not a Planner task`,
+          code: "E_NOT_A_PLAN",
+        };
+      }
+      if (planTask.planStatus !== "accepted") {
+        return {
+          ok: false,
+          error: `plan ${input.planTaskId} is not accepted (current plan_status: ${planTask.planStatus ?? "null"})`,
+          code: "E_PLAN_NOT_ACCEPTED",
+        };
+      }
+      resolvedPlanTaskId = input.planTaskId;
+    }
+    // For non-Developer hires, plan_task_id is silently ignored.
+
     const review = await this.oversight.reviewHireProposal({
       householdId: input.householdId,
       proposedByAgentId: input.proposedByAgentId,
@@ -436,6 +490,7 @@ export class DelegationService {
         model: input.model,
         trustLevel: input.trustLevel,
         originalUserRequest: input.originalUserRequest,
+        planTaskId: resolvedPlanTaskId,
       }),
       requiresApproval: true,
       delegationDepth: 0,

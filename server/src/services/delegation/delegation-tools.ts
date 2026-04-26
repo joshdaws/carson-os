@@ -112,6 +112,10 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
           type: "string",
           description: "The user's original ask in their own words — what they want the new specialist to DO. If set, the system auto-delegates this to the specialist immediately on approval; the user doesn't have to re-prompt. Example: if the user said 'build me a Todoist tool', pass 'build me a Todoist tool' (or a clean-up of it). Omit only for proactive hires not tied to a specific task.",
         },
+        plan_task_id: {
+          type: "string",
+          description: "Required for Developer specialties (tools, project, core) — must reference a Planner task whose plan_status is 'accepted'. The plan body becomes the auto-delegation brief on approval. Non-Developer specialties (planning, research, etc.) ignore this field; supply it only when hiring a Developer to execute an accepted plan.",
+        },
       },
       required: ["role", "specialty", "reason"],
     },
@@ -285,6 +289,7 @@ async function handleProposeHire(
   const model = stringArg(input.model) ?? undefined;
   const trustLevel = stringArg(input.trustLevel) ?? undefined;
   const originalUserRequest = stringArg(input.originalUserRequest) ?? undefined;
+  const planTaskId = stringArg(input.plan_task_id) ?? undefined;
 
   if (!role) return toolError("propose_hire requires `role` (e.g., 'Developer', 'Researcher', 'Music specialist')");
   if (!specialty) return toolError("propose_hire requires `specialty` (kebab-case; e.g., 'tools', 'research', 'music')");
@@ -308,6 +313,7 @@ async function handleProposeHire(
     model,
     trustLevel: trustLevel as "full" | "standard" | "restricted" | undefined,
     originalUserRequest,
+    planTaskId,
   });
 
   if (!result.ok) return toolError(result.error);
