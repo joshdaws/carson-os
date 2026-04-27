@@ -157,6 +157,7 @@ export function createSignalStream(
   // with thinking-mode models).
   startTyping();
 
+
   const finish = async (): Promise<SignalStreamResult> => {
     finished = true;
     stopTyping();

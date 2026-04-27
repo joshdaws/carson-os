@@ -655,6 +655,7 @@ async function main() {
       // Now server.close() returns quickly because nothing is open.
       await new Promise<void>((resolve) => server.close(() => resolve()));
 
+
       console.log("[shutdown] done");
       process.exit(0);
     })();

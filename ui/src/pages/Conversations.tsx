@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Send, User, Bot, ArrowLeft } from "lucide-react";
+import { MessageSquare, Send, User, Bot, ArrowLeft, Plus, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -44,8 +44,9 @@ interface Conversation {
   memberId: string;
   memberName: string;
   channel: string;
-  lastMessage: string;
-  lastMessageAt: string;
+  lastMessage: string | null;
+  lastMessageAt: string | null;
+  startedAt: string;
   messageCount: number;
 }
 
@@ -86,6 +87,26 @@ function formatTime(dateStr: string): string {
   });
 }
 
+// ── Typing Bubble ─────────────────────────────────────────────────
+
+function TypingBubble() {
+  return (
+    <div className="flex justify-start mb-3">
+      <div className="rounded-lg px-3.5 py-2.5" style={{ background: "#f0ede6" }}>
+        <div className="flex gap-1 items-center" style={{ height: "16px" }}>
+          {[0, 150, 300].map((delay) => (
+            <div
+              key={delay}
+              className="w-1.5 h-1.5 rounded-full animate-bounce"
+              style={{ background: "#8a8070", animationDelay: `${delay}ms` }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Conversation Row ───────────────────────────────────────────────
 
 function ConversationRow({
@@ -122,11 +143,11 @@ function ConversationRow({
           </span>
         </div>
         <span className="text-[10px] shrink-0" style={{ color: "#a09080" }}>
-          {relativeTime(conversation.lastMessageAt)}
+          {relativeTime(conversation.lastMessageAt ?? conversation.startedAt)}
         </span>
       </div>
       <p className="text-xs truncate pl-9" style={{ color: "#8a8070" }}>
-        {conversation.lastMessage}
+        {conversation.lastMessage || "No messages yet"}
       </p>
     </button>
   );
@@ -238,7 +259,15 @@ export function ConversationsPage() {
   const [memberFilter, setMemberFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState("all");
   const [messageInput, setMessageInput] = useState("");
+  const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatMember, setNewChatMember] = useState("");
+  const [newChatAgent, setNewChatAgent] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Keep a stable ref to selectedId for WebSocket handler (avoids reconnect on every selection)
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   // Fetch household
   const { data: householdData } = useQuery<HouseholdData>({
@@ -277,32 +306,92 @@ export function ConversationsPage() {
     enabled: !!selectedId,
   });
 
-  // Send message mutation
+  // Send message mutation — optimistic send with typing bubble
   const sendMutation = useMutation({
     mutationFn: (content: string) =>
-      api.post(`/conversations/${selectedId}/messages`, { content, role: "user" }),
+      api.post(`/conversations/${selectedId}/messages`, { message: content }),
+    onMutate: (content: string) => {
+      setPendingUserMsg(content);
+      setMessageInput("");
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["messages", selectedId] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      setMessageInput("");
+    },
+    onError: (_err, content) => {
+      // Restore the message so the user can try again
+      setMessageInput(content);
+      setPendingUserMsg(null);
     },
   });
 
-  // Auto-scroll to bottom when messages change
+  // Clear optimistic message once the real message lands
+  const messages = messagesData?.messages || [];
+  useEffect(() => {
+    if (pendingUserMsg && messages.some((m) => m.role === "user" && m.content === pendingUserMsg)) {
+      setPendingUserMsg(null);
+    }
+  }, [messages, pendingUserMsg]);
+
+  // Create conversation mutation
+  const newChatMutation = useMutation({
+    mutationFn: ({ agentId, memberId }: { agentId: string; memberId: string }) =>
+      api.post("/conversations", { agentId, memberId }) as Promise<{ conversation: Conversation }>,
+    onSuccess: (data: { conversation: Conversation }) => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      setSelectedId(data.conversation.id);
+      setShowNewChat(false);
+      setNewChatMember("");
+      setNewChatAgent("");
+    },
+  });
+
+  // WebSocket — connect once on mount; invalidate queries on incoming events
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+
+    ws.onmessage = (evt) => {
+      try {
+        const event = JSON.parse(evt.data) as { type: string; data?: { conversationId?: string } };
+        if (event.type === "conversation.message") {
+          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          const convId = event.data?.conversationId;
+          if (convId && convId === selectedIdRef.current) {
+            queryClient.invalidateQueries({ queryKey: ["messages", convId] });
+          }
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-scroll to bottom when messages or pending msg changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messagesData]);
+  }, [messagesData, pendingUserMsg, sendMutation.isPending]);
 
   const conversations = convsData?.conversations || [];
-  const messages = messagesData?.messages || [];
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
   const selectedConv = conversations.find((c) => c.id === selectedId);
 
   function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!messageInput.trim() || !selectedId) return;
+    if (!messageInput.trim() || !selectedId || sendMutation.isPending) return;
     sendMutation.mutate(messageInput.trim());
+  }
+
+  function handleNewChat(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newChatMember || !newChatAgent) return;
+    newChatMutation.mutate({ agentId: newChatAgent, memberId: newChatMember });
   }
 
   return (
@@ -334,20 +423,32 @@ export function ConversationsPage() {
           )}
           style={{ borderColor: "#ddd5c8" }}
         >
-          {/* Filters */}
+          {/* Filters + New Chat button */}
           <div className="p-3 border-b space-y-2" style={{ borderColor: "#eee8dd" }}>
-            <Select value={memberFilter} onValueChange={setMemberFilter}>
-              <SelectTrigger className="h-8 text-xs" style={{ borderColor: "#ddd5c8" }}>
-                <User className="h-3 w-3 mr-1.5" style={{ color: "#8a8070" }} />
-                <SelectValue placeholder="All members" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All members</SelectItem>
-                {members.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex gap-1.5">
+              <Select value={memberFilter} onValueChange={setMemberFilter}>
+                <SelectTrigger className="h-8 text-xs flex-1" style={{ borderColor: "#ddd5c8" }}>
+                  <User className="h-3 w-3 mr-1.5" style={{ color: "#8a8070" }} />
+                  <SelectValue placeholder="All members" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All members</SelectItem>
+                  {members.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 w-8 p-0 shrink-0"
+                style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+                title="New conversation"
+                onClick={() => setShowNewChat((v) => !v)}
+              >
+                {showNewChat ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
             <Select value={staffFilter} onValueChange={setStaffFilter}>
               <SelectTrigger className="h-8 text-xs" style={{ borderColor: "#ddd5c8" }}>
                 <Bot className="h-3 w-3 mr-1.5" style={{ color: "#8a8070" }} />
@@ -360,6 +461,41 @@ export function ConversationsPage() {
                 ))}
               </SelectContent>
             </Select>
+
+            {/* Inline new-chat form */}
+            {showNewChat && (
+              <form onSubmit={handleNewChat} className="space-y-1.5 pt-1">
+                <Select value={newChatMember} onValueChange={setNewChatMember}>
+                  <SelectTrigger className="h-8 text-xs" style={{ borderColor: "#ddd5c8" }}>
+                    <SelectValue placeholder="Member…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {members.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={newChatAgent} onValueChange={setNewChatAgent}>
+                  <SelectTrigger className="h-8 text-xs" style={{ borderColor: "#ddd5c8" }}>
+                    <SelectValue placeholder="Agent…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {staff.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="submit"
+                  size="sm"
+                  className="w-full h-8 text-xs"
+                  disabled={!newChatMember || !newChatAgent || newChatMutation.isPending}
+                  style={{ background: "#1a1f2e", color: "#e8dfd0" }}
+                >
+                  {newChatMutation.isPending ? "Creating…" : "Start conversation"}
+                </Button>
+              </form>
+            )}
           </div>
 
           {/* Conversation list */}
@@ -429,8 +565,8 @@ export function ConversationsPage() {
                   </p>
                   <p className="text-[11px]" style={{ color: "#8a8070" }}>
                     {selectedConv?.agentName || "Unknown agent"} &middot;{" "}
-                    {selectedConv?.messageCount} message
-                    {selectedConv?.messageCount !== 1 ? "s" : ""} &middot;{" "}
+                    {selectedConv?.messageCount ?? 0} message
+                    {(selectedConv?.messageCount ?? 0) !== 1 ? "s" : ""} &middot;{" "}
                     {selectedConv?.channel}
                   </p>
                 </div>
@@ -445,16 +581,30 @@ export function ConversationsPage() {
                     <Skeleton className="h-10 w-3/5" />
                   </div>
                 )}
-                {!loadingMessages && messages.length === 0 && (
+                {!loadingMessages && messages.length === 0 && !pendingUserMsg && (
                   <div className="flex items-center justify-center h-32">
                     <p className="text-sm" style={{ color: "#8a8070" }}>
-                      No messages in this conversation.
+                      No messages yet. Say hello!
                     </p>
                   </div>
                 )}
                 {messages.map((m) => (
                   <MessageBubble key={m.id} message={m} />
                 ))}
+                {/* Optimistic user message */}
+                {pendingUserMsg && (
+                  <MessageBubble
+                    message={{
+                      id: "__pending__",
+                      conversationId: selectedId,
+                      role: "user",
+                      content: pendingUserMsg,
+                      createdAt: new Date().toISOString(),
+                    }}
+                  />
+                )}
+                {/* Typing indicator while awaiting response */}
+                {sendMutation.isPending && <TypingBubble />}
                 <div ref={messagesEndRef} />
               </div>
 
@@ -467,7 +617,7 @@ export function ConversationsPage() {
                 <Input
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
-                  placeholder="Type a message..."
+                  placeholder="Type a message…"
                   className="flex-1 text-sm"
                   style={{ borderColor: "#ddd5c8" }}
                   disabled={sendMutation.isPending}
