@@ -4,6 +4,19 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.2.1] - 2026-04-27
+
+### Added
+
+- **`gmail_read` now handles HTML-only emails.** Marketing newsletters and similar messages without a `text/plain` part used to come back with an empty body. The tool now re-fetches with `--html`, converts to readable text, and surfaces all extracted links so the agent can answer "what's the unsubscribe URL" or summarize the prose.
+- **`delegate_task` now takes an explicit `workspace` per task** (`'tools' | 'project'`). The calling agent picks where the Developer works on a per-task basis. `'tools'` provisions a sandbox at `~/.carsonos/sandbox/{runId}/` for building a new custom tool from scratch. `'project'` provisions a fresh git worktree of the registered project specified by `projectId` — this is the right answer for ANY fix to existing code in a registered codebase, including CarsonOS itself. If the calling agent omits `workspace`, the call falls back to the specialist's hired specialty (back-compat).
+- **Operating contract is now per-task, not per-hire.** When a Developer is given a task whose workspace differs from their hired specialty (e.g., a tools-Dev assigned a `'project'` task to fix carson-os), the dispatcher loads the operating contract that matches the task's workspace, not the one stored at hire time. Stops the "you build new tools in a sandbox" instructions from being sent to a Dev who's actually editing a worktree.
+- **Failure notifications now feed Carson the actual reason.** Successes already routed through the parent agent's voice; failures used the same path but with a thin trigger that didn't carry the error. The trigger now includes the failure reason verbatim (the SDK error message, or "host restart during run" for tasks killed by a dev-server reload), plus a guidance note for the host-restart case telling the agent to suggest re-running with `workspace='project'` so the next attempt happens in a worktree where it won't trip the file watcher.
+
+### Why this matters
+
+Yesterday's failed Gmail-fix Dev runs all hit the same loop: Carson delegated to Dev with the default `tools` workspace → Dev got an empty sandbox → Dev couldn't find `gmail-tools.ts` there → Dev edited the live source via absolute paths → tsx watch saw the change → server restarted → in-progress task killed by `recoverStuckTasks` → Carson received a thin "Tool build failed" card and wrote generic prose. With per-task `workspace='project'` + `projectId=<carson-os>`, the same task runs in a git worktree where tsx watch doesn't see the edits, the work survives the run, and produces a reviewable PR. With richer failure context, Carson can explain what actually went wrong instead of echoing a deterministic card.
+
 ## [0.4.2.0] - 2026-04-27
 
 ### Fixed
