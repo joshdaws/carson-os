@@ -501,10 +501,32 @@ export class Dispatcher {
       return;
     }
 
-    const specialty = (agent.specialty ?? "tools") as DeveloperSpecialty;
+    // Workspace selection: the calling agent's per-task choice (written to
+    // task.workspaceKind by delegation-service) wins. Fall back to the
+    // specialist's hired specialty for direct-creation paths and old rows
+    // that pre-date per-task workspace selection.
+    const requestedKind = task.workspaceKind === "tool_sandbox" || task.workspaceKind === "worktree"
+      ? task.workspaceKind
+      : null;
+    const fallbackSpecialty = (agent.specialty ?? "tools") as DeveloperSpecialty;
+    const workspaceKindResolved: "tool_sandbox" | "worktree" =
+      requestedKind ?? (fallbackSpecialty === "tools" ? "tool_sandbox" : "worktree");
+
+    // The card-rendering specialty is derived from the chosen workspace kind
+    // and projectId so the user sees "Tool work" vs "Core update" vs "Project
+    // work" based on what the task actually was, not the specialist's hire-
+    // time tag. carson-os projectId → "core"; any other project → "project";
+    // sandbox → "tools".
+    const carsonOsProjectId = await this.findCarsonOsProjectId(agent.householdId);
+    const specialty: DeveloperSpecialty =
+      workspaceKindResolved === "tool_sandbox"
+        ? "tools"
+        : task.projectId && task.projectId === carsonOsProjectId
+          ? "core"
+          : "project";
     this.running.set(slotKey, { taskId, queue: this.running.get(slotKey)?.queue ?? [] });
 
-    // -- 1. Resolve project (for project/core) -----------------------
+    // -- 1. Resolve project (for worktree workspaces) ----------------
     let project: {
       id: string;
       name: string;
@@ -513,7 +535,7 @@ export class Dispatcher {
       testCmd: string | null;
       repoUrl: string | null;
     } | null = null;
-    if ((specialty === "project" || specialty === "core") && task.projectId) {
+    if (workspaceKindResolved === "worktree" && task.projectId) {
       const [row] = await this.db
         .select()
         .from(projects)
@@ -521,12 +543,12 @@ export class Dispatcher {
         .limit(1);
       if (row) project = row;
     }
-    if ((specialty === "project" || specialty === "core") && !project) {
+    if (workspaceKindResolved === "worktree" && !project) {
       await this.failDeveloperTask(
         task,
         agent,
         specialty,
-        `${specialty} specialty requires a registered project (task.projectId=${task.projectId ?? "null"})`,
+        `worktree workspace requires a registered project (task.projectId=${task.projectId ?? "null"}). Re-delegate with workspace='project' and a valid projectId.`,
       );
       return;
     }
@@ -544,7 +566,7 @@ export class Dispatcher {
 
     let workspace: ProvisionedWorkspace;
     try {
-      if (specialty === "tools") {
+      if (workspaceKindResolved === "tool_sandbox") {
         workspace = await this.workspace.provision({
           kind: "tool_sandbox",
           runId: taskId,
@@ -826,10 +848,17 @@ export class Dispatcher {
     // their operating_instructions populated via composeGenericSpecialistInstructions
     // or customInstructions at hire time, so the fallback here is only for
     // pre-v0.4 rows that legitimately don't have one.
+    // Operating contract is per-task. The agent has stored operating_instructions
+    // templated to its hired specialty (often "tools"), but the calling agent
+    // can pick a different workspace per-task — e.g., a tools-Dev assigned a
+    // "project" task to fix carson-os. In that case the hired-time instructions
+    // would tell Dev to build a new tool in the sandbox, which is wrong. Always
+    // load the template that matches THIS task's specialty; only fall back to
+    // the stored instructions if no template exists.
     parts.push("# Operating Contract\n");
     parts.push(
-      agent.operatingInstructions ??
-        templateForSpecialty(specialty) ??
+      templateForSpecialty(specialty) ??
+        agent.operatingInstructions ??
         `You are ${agent.name}, a ${specialty} specialist. Use your granted tools; keep responses self-contained.`,
     );
     parts.push("");
@@ -1503,6 +1532,26 @@ export class Dispatcher {
       .where(eq(tasks.id, taskId));
 
     return task ?? null;
+  }
+
+  /**
+   * Resolve the household's carson-os project id (if registered). Used to
+   * decide whether a worktree task is "core" (CarsonOS itself) vs "project"
+   * (any other registered codebase) for card labeling. Cached per household
+   * to avoid a DB hit every dispatch.
+   */
+  private carsonOsProjectIdCache = new Map<string, string | null>();
+  private async findCarsonOsProjectId(householdId: string): Promise<string | null> {
+    const cached = this.carsonOsProjectIdCache.get(householdId);
+    if (cached !== undefined) return cached;
+    const [row] = await this.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.householdId, householdId), eq(projects.name, "carson-os")))
+      .limit(1);
+    const id = row?.id ?? null;
+    this.carsonOsProjectIdCache.set(householdId, id);
+    return id;
   }
 
   private async loadAgent(agentId: string) {
