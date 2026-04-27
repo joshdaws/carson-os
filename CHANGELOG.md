@@ -4,6 +4,13 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.2.0] - 2026-04-27
+
+### Fixed
+
+- **Telegram relay watchdog no longer false-positives on quiet bots.** The previous stall watchdog interpreted "5 minutes with no incoming Telegram messages" as a wedged bot and force-restarted it. Family bots have natural quiet periods (overnight, school, work), so this fired ~1700+ times per day per bot, churning connections for no reason. The watchdog now checks `runner.isRunning()` directly: if the grammy runner thinks it's polling, it is. A genuine stall is when we believe a bot is running but the runner has stopped underneath us.
+- **Failed restarts no longer evict the bot from the running set.** The old restart path called `stopBot()` (which deletes from `this.bots`) and then `startBot()`. If the start failed (Telegram 409 from a fast restart cadence, network blip), the bot disappeared from the manager's map entirely and the watchdog had no record of it to retry. The bot stayed dead until the whole server process restarted. Restart-in-place keeps the entry alive across failures so the next watchdog tick can try again.
+
 ## [0.4.1.0] - 2026-04-25
 
 ### Performance
