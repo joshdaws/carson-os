@@ -42,6 +42,7 @@ import { createSettingsRoutes } from "./routes/settings.js";
 import { createProfileRoutes } from "./routes/profiles.js";
 import { createScheduledTaskRoutes } from "./routes/scheduled-tasks.js";
 import { createProjectRoutes } from "./routes/projects.js";
+import { getOrCreateDashboardToken } from "./services/auth.js";
 
 const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -73,6 +74,9 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     toolRegistry,
   } = deps;
   const app = express();
+
+  // Bootstrap dashboard access token (generated once, persisted in DB)
+  const dashboardToken = await getOrCreateDashboardToken(db);
 
   // --------------- middleware ---------------
 
@@ -112,6 +116,25 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   // Request logging (API only)
   app.use("/api", (req: Request, _res: Response, next: NextFunction) => {
     console.log(`[http] ${req.method} ${req.url}`);
+    next();
+  });
+
+  // Bootstrap token endpoint -- no auth required (loopback-only by server binding)
+  // The UI calls this once on first load to retrieve and cache the access token.
+  app.get("/api/bootstrap-token", (_req: Request, res: Response) => {
+    res.json({ token: dashboardToken });
+  });
+
+  // Bearer token auth -- protects all /api routes except /health and /bootstrap-token
+  app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+    if (req.path === "/health" || req.path.startsWith("/health/")) return next();
+    if (req.path === "/bootstrap-token") return next();
+
+    const auth = req.headers.authorization;
+    if (!auth || auth !== `Bearer ${dashboardToken}`) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
     next();
   });
 
