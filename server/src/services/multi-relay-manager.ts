@@ -71,7 +71,6 @@ const MEMORY_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_MESSAGE_LENGTH = 4096;
 const DEDUP_MAX_SIZE = 2000;
 const STALL_CHECK_INTERVAL_MS = 60_000;
-const STALL_THRESHOLD_MS = 300_000; // 5 min — SDK calls can take 30-60s with tool loops
 // Conflict backoff: short enough that hot-reload restarts don't sit silent for
 // long, long enough that the prior process has time to release its long-poll.
 const CONFLICT_BACKOFF_MS = 1_500;
@@ -576,20 +575,61 @@ export class MultiRelayManager {
 
   // ── Stall watchdog ───────────────────────────────────────────────
 
+  /**
+   * Detect bots whose grammy runner has died while we still believe they're
+   * running, and restart them in place.
+   *
+   * Earlier versions used `now - lastActivity > 5min` as the stall signal,
+   * but `lastActivity` is only bumped when an *incoming Telegram update*
+   * arrives — so a healthy idle bot looked identical to a wedged one.
+   * Family bots have long quiet periods (overnight, school hours), which
+   * triggered ~1700 false-positive restarts/day per bot.
+   *
+   * `runner.isRunning()` is the truth: if the runner thinks it's polling,
+   * it is. If it stopped without us asking, that's a real stall.
+   */
   private checkStalls(): void {
-    const now = Date.now();
     for (const [agentId, managed] of this.bots) {
-      if (!managed.running) continue;
-      const idle = now - managed.lastActivity;
-      if (idle > STALL_THRESHOLD_MS) {
-        console.warn(
-          `[multi-relay:${managed.agentName}] Stall detected (${Math.round(idle / 1000)}s idle). Restarting...`,
-        );
-        this.stopBot(agentId)
-          .then(() => this.startBot(agentId))
-          .catch((err) => console.error(`[multi-relay] Stall restart failed:`, err));
-      }
+      if (!managed.running || !managed.runner) continue;
+      if (managed.runner.isRunning()) continue;
+      console.warn(
+        `[multi-relay:${managed.agentName}] Runner stopped unexpectedly. Restarting in place...`,
+      );
+      this.restartInPlace(agentId).catch((err) =>
+        console.error(`[multi-relay:${managed.agentName}] Restart-in-place failed:`, err),
+      );
     }
+  }
+
+  /**
+   * Restart a bot WITHOUT removing it from `this.bots`. The previous
+   * `stopBot(...).then(() => startBot(...))` pattern called `bots.delete()`
+   * mid-cycle — if `startBot()` failed for any reason (Telegram 409 from a
+   * too-fast restart cadence, network blip), the agent disappeared from the
+   * map and the watchdog had no record of it to retry. Bot stayed dead
+   * until the whole process restarted.
+   *
+   * Restart-in-place keeps the entry alive across the failure so the next
+   * watchdog tick can try again.
+   */
+  private async restartInPlace(agentId: string): Promise<void> {
+    const managed = this.bots.get(agentId);
+    if (!managed) return;
+    if (managed.runner && managed.runner.isRunning()) {
+      const stopPromise = managed.runner.stop();
+      await Promise.race([
+        stopPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)),
+      ]);
+    }
+    managed.running = false;
+    // Brief backoff so Telegram releases the prior long-poll before the
+    // new runner tries to claim it (otherwise we get 409 conflicts).
+    await new Promise((resolve) => setTimeout(resolve, CONFLICT_BACKOFF_MS));
+    // startBot's `if (existing?.running) return` short-circuit doesn't fire
+    // because `running` is false; it builds a fresh ManagedBot and overwrites
+    // the entry, which is what we want.
+    await this.startBot(agentId);
   }
 
   // ── Message handling ──────────────────────────────────────────────
