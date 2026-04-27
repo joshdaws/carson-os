@@ -188,7 +188,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         signalAccount: req.body.signal_account ?? null,
         signalDaemonPort: req.body.signal_daemon_port ?? null,
         model: model ?? "claude-sonnet-4-6",
-        trustLevel: trustLevel ?? "restricted",
+        trustLevel: trustLevel ?? (isHeadButler ? "full" : "restricted"),
         isHeadButler: isHeadButler ?? false,
         autonomyLevel: autonomyLevel ?? "supervised",
       })
