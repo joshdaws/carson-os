@@ -167,6 +167,113 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
   },
 ];
 
+// ── Helpers ────────────────────────────────────────────────────────
+
+/**
+ * Extract a single balanced JSON value (object or array) from `s` starting at
+ * index `start`. The `gws` CLI sometimes appends non-JSON content (e.g. a
+ * keyring backend status line) after its JSON output, which causes
+ * `JSON.parse` to choke on the trailing garbage. Walking the string with
+ * bracket/string-aware depth tracking lets us slice off exactly the JSON
+ * portion regardless of what follows it.
+ */
+function extractBalancedJson(s: string, start: number): string {
+  const open = s[start];
+  const close = open === "[" ? "]" : open === "{" ? "}" : "";
+  if (!close) return s.slice(start);
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) {
+      depth++;
+    } else if (ch === close) {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return s.slice(start);
+}
+
+/**
+ * Convert HTML email body to readable plain text. Marketing emails come back
+ * HTML-only when the sender doesn't include a `text/plain` part; the agent
+ * needs something readable to summarize from. This is intentionally simple —
+ * strip <script>/<style> blocks entirely, drop tags, decode common HTML
+ * entities, and collapse whitespace. Not a full HTML→text engine; just
+ * enough to make a marketing email's prose legible.
+ */
+function htmlToText(html: string): string {
+  if (!html) return "";
+  let s = html;
+  // Drop script/style blocks (case-insensitive, multi-line) before tag stripping.
+  s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+  // Treat <br> and block-level tag boundaries as line breaks so paragraphs
+  // don't collapse into a single run.
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<\/(p|div|h[1-6]|li|tr|table)>/gi, "\n");
+  // Strip remaining tags.
+  s = s.replace(/<[^>]+>/g, "");
+  // Decode the entity set we actually see in marketing email.
+  s = s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+  // Collapse runs of blank lines and trim each line.
+  s = s
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter((line, i, arr) => !(line === "" && arr[i - 1] === ""))
+    .join("\n")
+    .trim();
+  return s;
+}
+
+/**
+ * Pull all <a href="…"> targets out of an HTML body, paired with their visible
+ * link text. Used so agents can surface unsubscribe / call-to-action URLs from
+ * marketing emails even when the rendered text doesn't show them.
+ */
+function extractLinks(html: string): Array<{ text: string; href: string }> {
+  if (!html) return [];
+  const links: Array<{ text: string; href: string }> = [];
+  const seen = new Set<string>();
+  const pattern = /<a\b[^>]*?href\s*=\s*(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(pattern)) {
+    const href = match[2].trim();
+    if (!href || href.startsWith("#") || href.startsWith("mailto:")) continue;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    const text = htmlToText(match[3]).replace(/\s+/g, " ").trim();
+    links.push({ text, href });
+  }
+  return links;
+}
+
 // ── Handler ────────────────────────────────────────────────────────
 
 export function createGmailToolHandler(
@@ -185,7 +292,7 @@ export function createGmailToolHandler(
           const stdout = await provider.gws(memberSlug, args);
           const jsonStart = stdout.indexOf("[");
           if (jsonStart < 0) return { content: "No emails found." };
-          const messages = JSON.parse(stdout.slice(jsonStart));
+          const messages = JSON.parse(extractBalancedJson(stdout, jsonStart));
 
           if (!Array.isArray(messages) || messages.length === 0) {
             return { content: "No emails found." };
@@ -201,10 +308,11 @@ export function createGmailToolHandler(
         }
 
         case "gmail_read": {
-          const args = ["gmail", "+read", "--id", input.id as string, "--headers", "--format", "json"];
+          const id = input.id as string;
+          const args = ["gmail", "+read", "--id", id, "--headers", "--format", "json"];
           const stdout = await provider.gws(memberSlug, args);
           const jsonStart = stdout.indexOf("{");
-          const msg = JSON.parse(jsonStart >= 0 ? stdout.slice(jsonStart) : stdout);
+          const msg = JSON.parse(jsonStart >= 0 ? extractBalancedJson(stdout, jsonStart) : stdout);
 
           const parts = [];
           if (msg.from) parts.push(`From: ${msg.from}`);
@@ -212,7 +320,51 @@ export function createGmailToolHandler(
           if (msg.subject) parts.push(`Subject: ${msg.subject}`);
           if (msg.date) parts.push(`Date: ${msg.date}`);
           parts.push("");
-          parts.push(msg.body ?? msg.text ?? "(empty)");
+
+          // Pull the plain-text body. The CLI normally auto-converts HTML-only
+          // messages, but marketing emails (e.g. Printful newsletters) sometimes
+          // come back empty. Detect that and re-fetch with --html so we still
+          // surface the content (and any links/unsubscribe URLs).
+          const plain =
+            (msg.body as string | undefined)?.trim() ||
+            (msg.text as string | undefined)?.trim() ||
+            "";
+
+          if (plain) {
+            parts.push(plain);
+          } else {
+            const htmlArgs = ["gmail", "+read", "--id", id, "--html", "--format", "json"];
+            try {
+              const htmlOut = await provider.gws(memberSlug, htmlArgs);
+              const htmlStart = htmlOut.indexOf("{");
+              const htmlMsg = JSON.parse(
+                htmlStart >= 0 ? extractBalancedJson(htmlOut, htmlStart) : htmlOut,
+              );
+              const html =
+                (htmlMsg.body as string | undefined) ??
+                (htmlMsg.html as string | undefined) ??
+                "";
+
+              if (html.trim()) {
+                const text = htmlToText(html);
+                const links = extractLinks(html);
+                parts.push("(HTML-only email — converted to text below)");
+                parts.push("");
+                parts.push(text || "(no readable text)");
+                if (links.length > 0) {
+                  parts.push("");
+                  parts.push("Links:");
+                  for (const { text: linkText, href } of links) {
+                    parts.push(linkText ? `- ${linkText}: ${href}` : `- ${href}`);
+                  }
+                }
+              } else {
+                parts.push("(empty)");
+              }
+            } catch {
+              parts.push("(empty — could not retrieve HTML body)");
+            }
+          }
 
           return { content: parts.join("\n") };
         }

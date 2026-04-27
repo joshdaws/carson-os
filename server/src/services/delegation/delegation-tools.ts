@@ -59,14 +59,19 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "delegate_task",
     description:
-      "Hand a long-running task to a hired Developer specialist. Returns immediately with a runId; the Developer works in the background and messages back on completion. Use when the work would take more than a few turns (building a tool, fixing an external project, updating CarsonOS). The principal can cancel via 'kill <name>'s task'.",
+      "Hand a long-running task to a hired Developer specialist. Returns immediately with a runId; the Developer works in the background and messages back on completion. Use when the work would take more than a few turns (building a tool, fixing an external project, updating CarsonOS). The principal can cancel via 'kill <name>'s task'.\n\nPick `workspace` per task — it determines WHERE the Developer works:\n  - 'tools' → empty sandbox at ~/.carsonos/sandbox/{runId}/. Use ONLY when building a NEW custom tool/skill/script from scratch. No projectId.\n  - 'project' → fresh git worktree of a registered project. Use for any fix or feature in an existing codebase, INCLUDING CarsonOS itself. Requires projectId — resolve via list_projects. Output is a PR.\n\nIf the goal is 'fix the gmail tool' / 'edit the calendar provider' / 'update the relay code' / anything that touches existing code in a registered project: workspace='project' with the project's id. Worktrees keep the Developer's edits off the live source so the dev server isn't disrupted mid-run.\n\nIf workspace is omitted, falls back to the specialist's hired specialty.",
     input_schema: {
       type: "object",
       properties: {
         to: { type: "string", description: "Specialist name (e.g., 'Bob', 'Alice'). Must be a hired Developer on staff." },
         goal: { type: "string", description: "What the Developer should accomplish. Be specific — this becomes the task title." },
         context: { type: "string", description: "Background, references, examples. Optional. Shown to the Developer as the task description." },
-        projectId: { type: "string", description: "Required for project/core specialties. Omit for tools specialty. Resolve via list_projects if needed." },
+        workspace: {
+          type: "string",
+          enum: ["tools", "project"],
+          description: "Workspace kind for THIS task. 'tools' = sandbox for new tool/skill creation. 'project' = git worktree of a registered project, including CarsonOS itself for core fixes. Use 'project' for ANY fix to existing code in a registered codebase. Optional — defaults to the specialist's hired specialty.",
+        },
+        projectId: { type: "string", description: "Required when workspace='project'. The registered project to clone the worktree from. Resolve via list_projects if needed. For CarsonOS core fixes, use the carson-os project id." },
       },
       required: ["to", "goal"],
     },
@@ -231,6 +236,16 @@ async function handleDelegateTask(
   if (!to || !goal) return toolError("delegate_task requires `to` and `goal`");
   const projectId = stringArg(input.projectId) ?? undefined;
   const context = stringArg(input.context) ?? undefined;
+  const workspaceArg = stringArg(input.workspace) ?? undefined;
+  if (workspaceArg && workspaceArg !== "tools" && workspaceArg !== "project") {
+    return toolError(`workspace must be 'tools' or 'project', got '${workspaceArg}'`);
+  }
+  if (workspaceArg === "project" && !projectId) {
+    return toolError("workspace='project' requires projectId. Resolve the target codebase via list_projects.");
+  }
+  if (workspaceArg === "tools" && projectId) {
+    return toolError("workspace='tools' is for NEW tool creation in a sandbox; don't pass projectId. Use workspace='project' to edit existing code in a registered project.");
+  }
 
   const result = await ctx.delegationService.handleDelegateTaskCall({
     fromAgentId: ctx.agentId,
@@ -239,6 +254,7 @@ async function handleDelegateTask(
     goal,
     context,
     projectId,
+    workspace: workspaceArg as "tools" | "project" | undefined,
     requestedByMember: ctx.memberId,
     callerTaskId: ctx.callerTaskId,
   });
