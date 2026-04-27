@@ -260,6 +260,9 @@ export function ConversationsPage() {
   const [staffFilter, setStaffFilter] = useState("all");
   const [messageInput, setMessageInput] = useState("");
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatMember, setNewChatMember] = useState("");
   const [newChatAgent, setNewChatAgent] = useState("");
@@ -304,25 +307,6 @@ export function ConversationsPage() {
     queryKey: ["messages", selectedId],
     queryFn: () => api.get(`/conversations/${selectedId}/messages`),
     enabled: !!selectedId,
-  });
-
-  // Send message mutation — optimistic send with typing bubble
-  const sendMutation = useMutation({
-    mutationFn: (content: string) =>
-      api.post(`/conversations/${selectedId}/messages`, { message: content }),
-    onMutate: (content: string) => {
-      setPendingUserMsg(content);
-      setMessageInput("");
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["messages", selectedId] });
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    },
-    onError: (_err, content) => {
-      // Restore the message so the user can try again
-      setMessageInput(content);
-      setPendingUserMsg(null);
-    },
   });
 
   // Clear optimistic message once the real message lands
@@ -372,20 +356,80 @@ export function ConversationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll to bottom when messages or pending msg changes
+  // Auto-scroll to bottom when messages or streaming content changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messagesData, pendingUserMsg, sendMutation.isPending]);
+  }, [messagesData, pendingUserMsg, streamingContent]);
 
   const conversations = convsData?.conversations || [];
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
   const selectedConv = conversations.find((c) => c.id === selectedId);
 
-  function handleSend(e: React.FormEvent) {
+  async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!messageInput.trim() || !selectedId || sendMutation.isPending) return;
-    sendMutation.mutate(messageInput.trim());
+    if (!messageInput.trim() || !selectedId || isStreaming) return;
+
+    const content = messageInput.trim();
+    setPendingUserMsg(content);
+    setMessageInput("");
+    setIsStreaming(true);
+    setStreamingContent("");
+
+    const abort = new AbortController();
+    streamAbortRef.current = abort;
+
+    try {
+      const token = localStorage.getItem("dashboard_token");
+      const res = await fetch(`/api/conversations/${selectedId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message: content }),
+        signal: abort.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6)) as { type: string; text?: string };
+            if (event.type === "delta" && event.text) {
+              accumulated += event.text;
+              setStreamingContent(accumulated);
+            } else if (event.type === "done") {
+              setStreamingContent(null);
+              setPendingUserMsg(null);
+              setIsStreaming(false);
+              queryClient.invalidateQueries({ queryKey: ["messages", selectedId] });
+              queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            }
+          } catch {
+            // skip malformed frames
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as { name?: string }).name !== "AbortError") {
+        setMessageInput(content);
+        setPendingUserMsg(null);
+      }
+      setStreamingContent(null);
+      setIsStreaming(false);
+    }
   }
 
   function handleNewChat(e: React.FormEvent) {
@@ -603,8 +647,22 @@ export function ConversationsPage() {
                     }}
                   />
                 )}
-                {/* Typing indicator while awaiting response */}
-                {sendMutation.isPending && <TypingBubble />}
+                {/* Streaming assistant response */}
+                {streamingContent !== null && (
+                  streamingContent === "" ? (
+                    <TypingBubble />
+                  ) : (
+                    <MessageBubble
+                      message={{
+                        id: "__streaming__",
+                        conversationId: selectedId,
+                        role: "assistant",
+                        content: streamingContent,
+                        createdAt: new Date().toISOString(),
+                      }}
+                    />
+                  )
+                )}
                 <div ref={messagesEndRef} />
               </div>
 
@@ -620,12 +678,12 @@ export function ConversationsPage() {
                   placeholder="Type a message…"
                   className="flex-1 text-sm"
                   style={{ borderColor: "#ddd5c8" }}
-                  disabled={sendMutation.isPending}
+                  disabled={isStreaming}
                 />
                 <Button
                   type="submit"
                   size="sm"
-                  disabled={!messageInput.trim() || sendMutation.isPending}
+                  disabled={!messageInput.trim() || isStreaming}
                   style={{ background: "#1a1f2e", color: "#e8dfd0" }}
                 >
                   <Send className="h-3.5 w-3.5" />
