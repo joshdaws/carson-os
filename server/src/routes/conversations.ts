@@ -117,19 +117,32 @@ export function createConversationRoutes(
     // Use the memberId from the conversation if not provided
     const effectiveMemberId = memberId ?? conversation.memberId;
 
+    // SSE — headers must be committed before any write
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    let closed = false;
+    req.on("close", () => { closed = true; });
+
     const result = await constitutionEngine.processMessage({
       agentId: conversation.agentId,
       memberId: effectiveMemberId,
       householdId: conversation.householdId,
       message,
       channel: "web",
+      onTextDelta: (text) => {
+        if (!closed) {
+          res.write(`data: ${JSON.stringify({ type: "delta", text })}\n\n`);
+        }
+      },
     });
 
-    res.json({
-      response: result.response,
-      blocked: result.blocked,
-      policyEvents: result.policyEvents,
-    });
+    if (!closed) {
+      res.write(`data: ${JSON.stringify({ type: "done", blocked: result.blocked, policyEvents: result.policyEvents })}\n\n`);
+      res.end();
+    }
   });
 
   return router;

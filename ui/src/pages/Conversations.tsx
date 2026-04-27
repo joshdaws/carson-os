@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Send, User, Bot, ArrowLeft } from "lucide-react";
+import { MessageSquare, Send, User, Bot, ArrowLeft, Plus, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -84,6 +84,25 @@ function formatTime(dateStr: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+// ── Typing indicator ───────────────────────────────────────────────
+
+function TypingBubble() {
+  return (
+    <div className="flex mb-3 justify-start">
+      <div className="max-w-[75%]">
+        <div
+          className="rounded-lg px-3.5 py-2.5 text-sm leading-relaxed flex items-center gap-1"
+          style={{ background: "#f0ede6", color: "#2c2c2c" }}
+        >
+          <span className="animate-bounce" style={{ animationDelay: "0ms" }}>·</span>
+          <span className="animate-bounce" style={{ animationDelay: "150ms" }}>·</span>
+          <span className="animate-bounce" style={{ animationDelay: "300ms" }}>·</span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Conversation Row ───────────────────────────────────────────────
@@ -238,7 +257,20 @@ export function ConversationsPage() {
   const [memberFilter, setMemberFilter] = useState("all");
   const [staffFilter, setStaffFilter] = useState("all");
   const [messageInput, setMessageInput] = useState("");
+  const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatMember, setNewChatMember] = useState("");
+  const [newChatAgent, setNewChatAgent] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const selectedIdRef = useRef<string | null>(null);
+
+  // Keep ref in sync so the WebSocket handler can read it without stale closure
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   // Fetch household
   const { data: householdData } = useQuery<HouseholdData>({
@@ -277,32 +309,127 @@ export function ConversationsPage() {
     enabled: !!selectedId,
   });
 
-  // Send message mutation
-  const sendMutation = useMutation({
-    mutationFn: (content: string) =>
-      api.post(`/conversations/${selectedId}/messages`, { content, role: "user" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["messages", selectedId] });
+  // Clear optimistic message once the real message lands
+  const messages = messagesData?.messages || [];
+  useEffect(() => {
+    if (pendingUserMsg && messages.some((m) => m.role === "user" && m.content === pendingUserMsg)) {
+      setPendingUserMsg(null);
+    }
+  }, [messages, pendingUserMsg]);
+
+  // Create conversation mutation
+  const newChatMutation = useMutation({
+    mutationFn: ({ agentId, memberId }: { agentId: string; memberId: string }) =>
+      api.post("/conversations", { agentId, memberId }) as Promise<{ conversation: Conversation }>,
+    onSuccess: (data: { conversation: Conversation }) => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      setMessageInput("");
+      setSelectedId(data.conversation.id);
+      setShowNewChat(false);
+      setNewChatMember("");
+      setNewChatAgent("");
     },
   });
 
-  // Auto-scroll to bottom when messages change
+  // WebSocket — connect once on mount; invalidate queries on incoming events
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+
+    ws.onmessage = (evt) => {
+      try {
+        const event = JSON.parse(evt.data) as { type: string; data?: { conversationId?: string } };
+        if (event.type === "conversation.message") {
+          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          const convId = event.data?.conversationId;
+          if (convId && convId === selectedIdRef.current) {
+            queryClient.invalidateQueries({ queryKey: ["messages", convId] });
+          }
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-scroll to bottom when messages or streaming content changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messagesData]);
+  }, [messagesData, pendingUserMsg, streamingContent]);
 
   const conversations = convsData?.conversations || [];
-  const messages = messagesData?.messages || [];
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
   const selectedConv = conversations.find((c) => c.id === selectedId);
 
-  function handleSend(e: React.FormEvent) {
+  async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!messageInput.trim() || !selectedId) return;
-    sendMutation.mutate(messageInput.trim());
+    if (!messageInput.trim() || !selectedId || isStreaming) return;
+
+    const content = messageInput.trim();
+    setPendingUserMsg(content);
+    setMessageInput("");
+    setIsStreaming(true);
+    setStreamingContent("");
+
+    const abort = new AbortController();
+    streamAbortRef.current = abort;
+
+    try {
+      const token = localStorage.getItem("dashboard_token");
+      const res = await fetch(`/api/conversations/${selectedId}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message: content }),
+        signal: abort.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6)) as { type: string; text?: string };
+            if (event.type === "delta" && event.text) {
+              accumulated += event.text;
+              setStreamingContent(accumulated);
+            } else if (event.type === "done") {
+              setStreamingContent(null);
+              setPendingUserMsg(null);
+              setIsStreaming(false);
+              queryClient.invalidateQueries({ queryKey: ["messages", selectedId] });
+              queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            }
+          } catch {
+            // skip malformed frames
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as { name?: string }).name !== "AbortError") {
+        setMessageInput(content);
+        setPendingUserMsg(null);
+      }
+      setStreamingContent(null);
+      setIsStreaming(false);
+    }
   }
 
   return (
@@ -455,6 +582,34 @@ export function ConversationsPage() {
                 {messages.map((m) => (
                   <MessageBubble key={m.id} message={m} />
                 ))}
+                {/* Optimistic user message */}
+                {pendingUserMsg && (
+                  <MessageBubble
+                    message={{
+                      id: "__pending__",
+                      conversationId: selectedId,
+                      role: "user",
+                      content: pendingUserMsg,
+                      createdAt: new Date().toISOString(),
+                    }}
+                  />
+                )}
+                {/* Streaming assistant response */}
+                {streamingContent !== null && (
+                  streamingContent === "" ? (
+                    <TypingBubble />
+                  ) : (
+                    <MessageBubble
+                      message={{
+                        id: "__streaming__",
+                        conversationId: selectedId,
+                        role: "assistant",
+                        content: streamingContent,
+                        createdAt: new Date().toISOString(),
+                      }}
+                    />
+                  )
+                )}
                 <div ref={messagesEndRef} />
               </div>
 
@@ -470,12 +625,12 @@ export function ConversationsPage() {
                   placeholder="Type a message..."
                   className="flex-1 text-sm"
                   style={{ borderColor: "#ddd5c8" }}
-                  disabled={sendMutation.isPending}
+                  disabled={isStreaming}
                 />
                 <Button
                   type="submit"
                   size="sm"
-                  disabled={!messageInput.trim() || sendMutation.isPending}
+                  disabled={!messageInput.trim() || isStreaming}
                   style={{ background: "#1a1f2e", color: "#e8dfd0" }}
                 >
                   <Send className="h-3.5 w-3.5" />

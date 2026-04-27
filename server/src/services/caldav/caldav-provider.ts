@@ -32,7 +32,7 @@ export interface CalDavAuthStatus {
 }
 
 /** A single parsed VEVENT block, used internally before building CalendarEvent. */
-interface ParsedVEvent {
+export interface ParsedVEvent {
   /** Raw iCal DTSTART value (e.g. "20260415T140000Z") — used as the occurrence ID fragment. */
   rawDtstart: string;
   /** Raw RECURRENCE-ID value, present only on exception/override instances. */
@@ -394,7 +394,7 @@ function getCalendarName(cal: DAVCalendar): string {
  *
  * Handles CRLF/LF line endings and RFC 5545 line folding (continuation lines).
  */
-function parseAllVEvents(ical: string): ParsedVEvent[] {
+export function parseAllVEvents(ical: string): ParsedVEvent[] {
   // Unfold: CRLF/LF followed by whitespace is a continuation
   const unfolded = ical.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
   const lines = unfolded.split(/\r\n|\n/);
@@ -447,7 +447,7 @@ function parseAllVEvents(ical: string): ParsedVEvent[] {
 }
 
 /** Convert an iCal date/datetime value to an ISO 8601 string. */
-function parseICalDate(value: string): string {
+export function parseICalDate(value: string): string {
   // All-day: YYYYMMDD
   if (/^\d{8}$/.test(value)) {
     return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
@@ -471,7 +471,7 @@ function parseICalDate(value: string): string {
 }
 
 /** Decode iCal text escaping (\\n → newline, \\, → comma, etc.). */
-function decodeICalText(value: string): string {
+export function decodeICalText(value: string): string {
   return value
     .replace(/\\n/gi, "\n")
     .replace(/\\,/g, ",")
@@ -480,7 +480,7 @@ function decodeICalText(value: string): string {
 }
 
 /** Encode a plain string for use as an iCal text property value. */
-function encodeICalText(value: string): string {
+export function encodeICalText(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
@@ -535,7 +535,7 @@ function buildVEvent(opts: {
  * Fold a single iCal content line at 75 octets (RFC 5545 §3.1).
  * Continuation lines begin with a single space.
  */
-function foldLine(line: string): string {
+export function foldLine(line: string): string {
   if (line.length <= 75) return line;
   const chunks: string[] = [];
   chunks.push(line.slice(0, 75));
