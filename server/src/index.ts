@@ -633,6 +633,7 @@ async function main() {
         memoryRoot: config.memory.rootDir,
       });
       console.log("[enrichment-worker] Ready");
+      constitutionEngine.setEnrichmentWorker(enrichmentWorker);
     } catch (err) {
       console.warn("[enrichment-worker] Boot failed (non-fatal):", err);
     }
@@ -651,6 +652,9 @@ async function main() {
         memoryRoot: config.memory.rootDir,
       });
       console.log("[compilation-agent] Ready (3am nightly)");
+      // Cross-wire: enrichment worker marks an entity dirty after each
+      // atom append so the next nightly tick recompiles its view.
+      enrichmentWorker?.setCompilationAgent(compilationAgent);
     } catch (err) {
       console.warn("[compilation-agent] Boot failed (non-fatal):", err);
     }

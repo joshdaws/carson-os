@@ -307,6 +307,7 @@ export class ConstitutionEngine {
   private imapProvider: ImapProvider | null;
   private hardEvaluatorsEnabled: boolean;
   private dataDir: string | null;
+  private enrichmentWorker: import("./memory/enrichment-worker.js").EnrichmentWorker | null = null;
   private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
   private delegationService: import("./delegation-service.js").DelegationService | null = null;
   private oversight: import("./carson-oversight.js").CarsonOversight | null = null;
@@ -328,6 +329,11 @@ export class ConstitutionEngine {
   /** Set the multi-relay manager (called after construction because of circular dependency). */
   setMultiRelay(relay: import("./multi-relay-manager.js").MultiRelayManager): void {
     this.multiRelay = relay;
+  }
+
+  /** Late-bind the v0.5 enrichment worker. Engine queues turns through it after each reply. */
+  setEnrichmentWorker(worker: import("./memory/enrichment-worker.js").EnrichmentWorker): void {
+    this.enrichmentWorker = worker;
   }
 
   /** Late-bind the v0.4 delegation service + oversight (boot order: constitution → tasks → oversight → dispatcher → service). */
@@ -929,6 +935,37 @@ export class ConstitutionEngine {
 
     // -- 8. Record conversation --------------------------------------
     await this.recordMessages(conversationId, message, llmResponse);
+
+    // v0.5: signal interactive activity + enqueue the turn for the
+    // background enrichment worker. Best-effort — failures don't break
+    // the conversation flow.
+    try {
+      const { markInteractiveActivity } = await import("./memory/enrichment-worker.js");
+      markInteractiveActivity();
+    } catch {
+      /* worker not built — fine */
+    }
+    if (this.enrichmentWorker) {
+      const today = new Date().toISOString().slice(0, 10);
+      this.enrichmentWorker
+        .enqueueTurn({
+          householdId,
+          memberId,
+          agentId,
+          payload: {
+            channel: channel as "telegram" | "web",
+            conversationId,
+            capturedAt: today,
+            capturedBy: slugifyName(agent.name),
+            member: member.name,
+            userMessage: message,
+            agentReply: llmResponse,
+          },
+        })
+        .catch((err) => {
+          console.warn("[enrichment-worker] enqueueTurn failed (non-fatal):", err);
+        });
+    }
 
     // Broadcast the new message
     this.broadcast({

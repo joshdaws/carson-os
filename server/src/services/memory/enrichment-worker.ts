@@ -126,6 +126,9 @@ export interface EnrichmentWorkerOptions {
   lockTtlMs?: number;
   /** Override the model passed to the adapter. */
   model?: string;
+  /** Optional compilation agent — when set, the worker marks an entity dirty
+   *  after appending an atom so the next nightly compilation regenerates its view. */
+  compilationAgent?: import("./compilation-agent.js").CompilationAgent;
 }
 
 export class EnrichmentWorker {
@@ -140,6 +143,7 @@ export class EnrichmentWorker {
   private consecutiveFailures = 0;
   /** When set to a future timestamp, the worker is paused until then. Set after quota-exhaustion-style failures. */
   private pausedUntil = 0;
+  private compilationAgent: import("./compilation-agent.js").CompilationAgent | null;
 
   constructor(opts: EnrichmentWorkerOptions) {
     this.db = opts.db;
@@ -150,6 +154,12 @@ export class EnrichmentWorker {
     this.budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
     this.lockTtlMs = opts.lockTtlMs ?? DEFAULT_LOCK_TTL_MS;
     this.model = opts.model ?? "claude-haiku-4-5-20251001";
+    this.compilationAgent = opts.compilationAgent ?? null;
+  }
+
+  /** Late-bind the compilation agent (boot order: enrichment worker → compilation agent). */
+  setCompilationAgent(agent: import("./compilation-agent.js").CompilationAgent): void {
+    this.compilationAgent = agent;
   }
 
   /**
@@ -400,6 +410,23 @@ export class EnrichmentWorker {
           last_atom_added_at: source.capturedAt,
         },
       });
+    }
+
+    // Mark the entity dirty for the next compilation pass — only meaningful
+    // for entity types (compilation agent ignores non-entity types). The
+    // compilation agent's COMPILABLE_TYPES gate filters anyway, but
+    // checking here avoids a no-op write to compilation_state.
+    if (
+      this.compilationAgent &&
+      ["person", "project", "place", "media", "relationship", "commitment", "goal", "concept"].includes(
+        atom.entity_type,
+      )
+    ) {
+      try {
+        await this.compilationAgent.markDirty(atom.entity_slug, atom.collection);
+      } catch (err) {
+        console.warn("[enrichment-worker] markDirty failed (non-fatal):", err);
+      }
     }
   }
 
