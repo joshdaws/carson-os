@@ -592,3 +592,36 @@ export const toolSecrets = sqliteTable(
     uniqueIndex("tool_secrets_household_key_unique").on(t.householdId, t.keyName),
   ]
 );
+
+// ── 19. memoryLinks ─────────────────────────────────────────────────
+
+/**
+ * Cache of `[[slug]]` wikilinks extracted from memory bodies. Backs
+ * the `get_backlinks` MCP tool and the search-ranking backlink boost.
+ * Source-scoped reconciliation: only `source='markdown'` rows are
+ * touched on save/update, so manual `add_link` calls survive a
+ * `qmd reindex`. Rebuildable by re-walking the memory dir.
+ *
+ * New in v0.5.0 (Phase 2 of v5 memory).
+ */
+export const memoryLinks = sqliteTable(
+  "memory_links",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    fromSlug: text("from_slug").notNull(),       // slug of the memory containing the link
+    fromCollection: text("from_collection").notNull(),
+    toSlug: text("to_slug").notNull(),           // slug being linked to
+    toCollection: text("to_collection"),         // optional — unknown until reconciliation
+    linkType: text("link_type").notNull().default("references"),
+    /** `markdown` | `manual` | `inferred`. Reconciliation only touches `markdown`. */
+    source: text("source").notNull().default("markdown"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("memory_links_to_slug_idx").on(t.toSlug),
+    index("memory_links_from_idx").on(t.fromSlug, t.fromCollection),
+    index("memory_links_source_idx").on(t.source),
+  ]
+);

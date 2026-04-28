@@ -20,7 +20,7 @@ export async function bootMemory(
   db: Db,
   config: MemoryConfig,
 ): Promise<QmdMemoryProvider> {
-  const provider = new QmdMemoryProvider(config.rootDir);
+  const provider = new QmdMemoryProvider(config.rootDir, db);
 
   // Find all households (typically just one)
   const allHouseholds = await db.select().from(households);

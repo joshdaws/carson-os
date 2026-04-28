@@ -353,6 +353,20 @@ CREATE TABLE delegation_notifications (
 );
 CREATE UNIQUE INDEX delegation_notifications_task_kind_unique ON delegation_notifications(task_id, kind);
 CREATE INDEX delegation_notifications_task_idx ON delegation_notifications(task_id);
+
+CREATE TABLE memory_links (
+  id TEXT PRIMARY KEY,
+  from_slug TEXT NOT NULL,
+  from_collection TEXT NOT NULL,
+  to_slug TEXT NOT NULL,
+  to_collection TEXT,
+  link_type TEXT NOT NULL DEFAULT 'references',
+  source TEXT NOT NULL DEFAULT 'markdown',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX memory_links_to_slug_idx ON memory_links(to_slug);
+CREATE INDEX memory_links_from_idx ON memory_links(from_slug, from_collection);
+CREATE INDEX memory_links_source_idx ON memory_links(source);
   `;
 
   const transaction = sqlite.transaction(() => {
@@ -407,7 +421,9 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // v0.4 delegation
     !taskCols.has("project_id") || !taskCols.has("notify_payload") ||
     !taskCols.has("notify_agent_id") ||
-    !tableExists("projects") || !tableExists("delegation_notifications");
+    !tableExists("projects") || !tableExists("delegation_notifications") ||
+    // v0.5 memory
+    !tableExists("memory_links");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -726,8 +742,26 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // v0.5 memory: memory_links table for [[wikilink]] graph cache
+    if (!tableExists("memory_links")) {
+      sqlite.prepare(`CREATE TABLE memory_links (
+        id TEXT PRIMARY KEY,
+        from_slug TEXT NOT NULL,
+        from_collection TEXT NOT NULL,
+        to_slug TEXT NOT NULL,
+        to_collection TEXT,
+        link_type TEXT NOT NULL DEFAULT 'references',
+        source TEXT NOT NULL DEFAULT 'markdown',
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE INDEX memory_links_to_slug_idx ON memory_links(to_slug)").run();
+      sqlite.prepare("CREATE INDEX memory_links_from_idx ON memory_links(from_slug, from_collection)").run();
+      sqlite.prepare("CREATE INDEX memory_links_source_idx ON memory_links(source)").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded (v11 — v0.4 delegation: projects, tasks workspace/notifier, delegation_notifications)");
+      console.log("[db] Schema upgraded (v12 — v0.5 memory: memory_links table)");
     }
   });
 

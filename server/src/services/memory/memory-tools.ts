@@ -162,6 +162,22 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: "get_backlinks",
+    description:
+      "List the memories that reference a given slug via `[[wikilink]]` syntax. Useful when answering 'who/what is connected to X?' or surfacing context the user didn't explicitly ask for. Returns up to 20 backlinks with the type of relationship (parent, spouse, friend, lives_at, works_at, attends_school, likes, or generic 'references').",
+    input_schema: {
+      type: "object",
+      properties: {
+        slug: {
+          type: "string",
+          description:
+            "The memory slug to find backlinks for (e.g., 'grant-daws', 'lincoln-elementary'). Slug format: kebab-case lowercase, no slashes/dots/underscores.",
+        },
+      },
+      required: ["slug"],
+    },
+  },
+  {
     name: "correct_memory",
     description:
       "Append a correction to an existing memory. Use when you learn that a prior atom was wrong (a date misheard, a name wrong, a fact superseded). The correction lands as a high-importance atom (importance: 10) at the bottom of the entity's Timeline section (entity types) or the bottom of the body (flat types), with `source: correction` and a `corrects:` reference. The original entry stays in place — corrections are additive, not destructive, so a future reader still sees the historical record. Pairs with the v5 atoms-canonical principle.",
@@ -247,6 +263,9 @@ export function buildToolExecutor(
           break;
         case "correct_memory":
           result = await handleCorrectMemory(ctx, input);
+          break;
+        case "get_backlinks":
+          result = await handleGetBacklinks(ctx, input);
           break;
         default:
           result = { content: `Unknown tool: ${name}`, is_error: true };
@@ -423,6 +442,34 @@ async function handleReadMemory(
 
   return {
     content: `[${collection}] ${entry.title} (id: ${entry.id})\n\n--- frontmatter ---\n${fmLines}\n\n--- content ---\n${entry.content}`,
+  };
+}
+
+/** List memories that reference a given slug via [[wikilink]]. */
+async function handleGetBacklinks(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const slug = input.slug as string;
+  if (!slug || slug.trim().length === 0) {
+    return { content: "Slug cannot be empty.", is_error: true };
+  }
+
+  const { getBacklinks } = await import("./memory-links.js");
+  const backlinks = await getBacklinks(ctx.db, slug);
+
+  if (backlinks.length === 0) {
+    return { content: `No backlinks found for "${slug}".` };
+  }
+
+  const limited = backlinks.slice(0, 20);
+  const lines = limited.map(
+    (b) => `- [${b.fromCollection}] ${b.fromSlug} (${b.linkType}${b.source !== "markdown" ? `, source: ${b.source}` : ""})`,
+  );
+  const more = backlinks.length > 20 ? `\n\n(${backlinks.length - 20} more not shown)` : "";
+
+  return {
+    content: `${backlinks.length} memory/memories link to "${slug}":\n\n${lines.join("\n")}${more}`,
   };
 }
 

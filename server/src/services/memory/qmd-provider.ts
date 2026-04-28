@@ -61,9 +61,17 @@ export class QmdMemoryProvider implements MemoryProvider {
    * 2026-04-27.
    */
   private fileLocks = new Map<string, Promise<unknown>>();
+  /**
+   * Optional DB handle. When set, save/update reconcile the
+   * memory_links table from `[[wikilink]]` patterns in the body.
+   * Optional during the v0.5.0 transition; tests construct providers
+   * without a DB.
+   */
+  private db: import("@carsonos/db").Db | null = null;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, db?: import("@carsonos/db").Db) {
     this.rootDir = rootDir;
+    this.db = db ?? null;
     mkdirSync(rootDir, { recursive: true });
   }
 
@@ -207,16 +215,41 @@ export class QmdMemoryProvider implements MemoryProvider {
         snippet: string;
       }>;
 
-      return {
-        entries: results.slice(0, limit).map((r) => ({
-          id: extractIdFromFile(r.file),
-          title: r.title,
-          snippet: cleanSnippet(r.snippet),
-          score: r.score,
-          file: r.file,
-          collection,
-        })),
-      };
+      const sliced = results.slice(0, limit);
+      const entries = sliced.map((r) => ({
+        id: extractIdFromFile(r.file),
+        title: r.title,
+        snippet: cleanSnippet(r.snippet),
+        score: r.score,
+        file: r.file,
+        collection,
+      }));
+
+      // Backlink boost: score *= 1 + 0.05 * log(1 + backlink_count). Cheap,
+      // bounded, and gives a small lift to highly-connected pages without
+      // dominating relevance. Best-effort — skipped silently if db is
+      // unavailable. New in v0.5.0.
+      if (this.db && entries.length > 0) {
+        try {
+          const { memoryLinks } = await import("@carsonos/db");
+          const { eq, sql } = await import("drizzle-orm");
+          for (const e of entries) {
+            const [{ cnt }] = await this.db
+              .select({ cnt: sql<number>`COUNT(*)` })
+              .from(memoryLinks)
+              .where(eq(memoryLinks.toSlug, e.id));
+            if (cnt > 0) {
+              e.score = e.score * (1 + 0.05 * Math.log(1 + cnt));
+            }
+          }
+          // Re-sort after boost so stable ordering reflects the new scores.
+          entries.sort((a, b) => b.score - a.score);
+        } catch {
+          // Silent — boost is non-critical.
+        }
+      }
+
+      return { entries };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Empty results for missing collections or no matches
@@ -273,6 +306,15 @@ export class QmdMemoryProvider implements MemoryProvider {
 
       const fileContent = `---\n${yaml}\n---\n\n# ${entry.title}\n\n${cleanContent}\n`;
       writeFileSync(filePath, fileContent, "utf-8");
+
+      // Reconcile the [[wikilink]] graph cache. Best-effort — failures
+      // don't fail the save.
+      if (this.db) {
+        const { reconcileMemoryLinks } = await import("./memory-links.js");
+        reconcileMemoryLinks(this.db, id, collection, cleanContent).catch((err) => {
+          console.warn("[memory-links] reconcile failed on save:", err);
+        });
+      }
 
       // Trigger QMD reindex in the background (don't block on it)
       this.reindex().catch((err) => {
@@ -334,6 +376,14 @@ export class QmdMemoryProvider implements MemoryProvider {
       const cleanContent = stripLeadingHeading(content);
       const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${cleanContent}\n`;
       writeFileSync(filePath, fileContent, "utf-8");
+
+      // Reconcile the [[wikilink]] graph cache. Best-effort.
+      if (this.db) {
+        const { reconcileMemoryLinks } = await import("./memory-links.js");
+        reconcileMemoryLinks(this.db, id, collection, cleanContent).catch((err) => {
+          console.warn("[memory-links] reconcile failed on update:", err);
+        });
+      }
 
       // Trigger QMD reindex in the background
       this.reindex().catch((err) => {
