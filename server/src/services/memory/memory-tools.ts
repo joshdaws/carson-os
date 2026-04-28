@@ -161,6 +161,34 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
       required: ["id", "collection"],
     },
   },
+  {
+    name: "correct_memory",
+    description:
+      "Append a correction to an existing memory. Use when you learn that a prior atom was wrong (a date misheard, a name wrong, a fact superseded). The correction lands as a high-importance atom (importance: 10) at the bottom of the entity's Timeline section (entity types) or the bottom of the body (flat types), with `source: correction` and a `corrects:` reference. The original entry stays in place — corrections are additive, not destructive, so a future reader still sees the historical record. Pairs with the v5 atoms-canonical principle.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to correct (from search results).",
+        },
+        collection: {
+          type: "string",
+          description: "Which collection the memory is in.",
+        },
+        correction: {
+          type: "string",
+          description:
+            "The corrected content — what's actually true. Be specific about what was wrong and what's right.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional. Brief reason for the correction (e.g., 'parent verified', 'date double-checked').",
+        },
+      },
+      required: ["id", "collection", "correction"],
+    },
+  },
 ];
 
 // ── Tool context ───────────────────────────────────────────────────
@@ -216,6 +244,9 @@ export function buildToolExecutor(
           break;
         case "read_memory":
           result = await handleReadMemory(ctx, input);
+          break;
+        case "correct_memory":
+          result = await handleCorrectMemory(ctx, input);
           break;
         default:
           result = { content: `Unknown tool: ${name}`, is_error: true };
@@ -392,5 +423,73 @@ async function handleReadMemory(
 
   return {
     content: `[${collection}] ${entry.title} (id: ${entry.id})\n\n--- frontmatter ---\n${fmLines}\n\n--- content ---\n${entry.content}`,
+  };
+}
+
+/**
+ * Append a correction atom to an existing memory. Atoms-canonical:
+ * the prior content stays where it is; the correction lands at the
+ * bottom as a new high-importance entry. Entity-type memories get the
+ * correction inside their `## Timeline` section; flat-type memories
+ * get it appended to the body.
+ *
+ * Frontmatter on the original gains `last_corrected_at` so search can
+ * surface recently-corrected entries. The `corrects: <atom-id>` field
+ * documented in the design doc is deferred until atoms have explicit
+ * IDs (v0.6+).
+ */
+async function handleCorrectMemory(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const id = input.id as string;
+  const collection = input.collection as string;
+  const correction = input.correction as string;
+  const reason = input.reason as string | undefined;
+
+  if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
+    return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
+  }
+
+  if (!correction || correction.trim().length === 0) {
+    return { content: "Correction text cannot be empty.", is_error: true };
+  }
+
+  const existing = await ctx.memoryProvider.read(collection, id);
+  if (!existing) {
+    return { content: `Memory "${id}" not found in collection "${collection}".`, is_error: true };
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const atomHeader = `### ${today} | source: correction | by: ${ctx.memberCollection ?? "agent"} | importance: 10`;
+  const reasonLine = reason ? `\n_Reason:_ ${reason}\n` : "";
+  const correctionBlock = `\n\n${atomHeader}\n${reasonLine}\n${correction.trim()}\n`;
+
+  // Detect entity-type pages: they have a `---` body separator + a
+  // `## Timeline` section. We append below the existing timeline; flat
+  // memories just append to the body.
+  const body = existing.content;
+  const hasTimeline = /^## Timeline$/m.test(body) && /^---$/m.test(body);
+
+  let newBody: string;
+  if (hasTimeline) {
+    // Append after the existing timeline content (i.e., at end of body).
+    newBody = body.replace(/\s*$/, "") + correctionBlock;
+  } else {
+    newBody = body.replace(/\s*$/, "") + correctionBlock;
+  }
+
+  const newFrontmatter = {
+    ...existing.frontmatter,
+    last_corrected_at: today,
+  };
+
+  await ctx.memoryProvider.update(collection, id, {
+    content: newBody,
+    frontmatter: newFrontmatter,
+  });
+
+  return {
+    content: `Correction appended to "${existing.title}" (id: ${id}). Original content preserved; correction added at the bottom as importance: 10. last_corrected_at set to ${today}.`,
   };
 }
