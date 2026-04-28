@@ -18,6 +18,23 @@ export interface ConversationRouteDeps {
   constitutionEngine: ConstitutionEngine;
 }
 
+// ── Validators (exported for unit tests) ──────────────────────────
+
+export type CreateConversationBody = { agentId?: unknown; memberId?: unknown };
+
+export function validateCreateConversation(
+  body: CreateConversationBody,
+): { valid: true } | { valid: false; error: string } {
+  if (!body.agentId || !body.memberId) {
+    return { valid: false, error: "agentId and memberId are required" };
+  }
+  return { valid: true };
+}
+
+export function validateSendMessage(body: { message?: unknown }): boolean {
+  return typeof body.message === "string" && body.message.length > 0;
+}
+
 export function createConversationRoutes(
   deps: ConversationRouteDeps,
 ): Router {
@@ -66,12 +83,12 @@ export function createConversationRoutes(
 
   // POST / -- create a new web conversation
   router.post("/", async (req, res) => {
-    const { agentId, memberId } = req.body;
-
-    if (!agentId || !memberId) {
-      res.status(400).json({ error: "agentId and memberId are required" });
+    const validation = validateCreateConversation(req.body);
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error });
       return;
     }
+    const { agentId, memberId } = req.body;
 
     const member = await db
       .select({ id: familyMembers.id, householdId: familyMembers.householdId })
@@ -143,12 +160,11 @@ export function createConversationRoutes(
 
   // POST /:id/messages -- send a message via web chat
   router.post("/:id/messages", async (req, res) => {
-    const { message, memberId } = req.body;
-
-    if (!message || typeof message !== "string") {
+    if (!validateSendMessage(req.body)) {
       res.status(400).json({ error: "message is required" });
       return;
     }
+    const { message, memberId } = req.body as { message: string; memberId?: string };
 
     const conversation = await db
       .select()
