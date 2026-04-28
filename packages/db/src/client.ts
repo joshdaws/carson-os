@@ -38,6 +38,10 @@ CREATE TABLE households (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   timezone TEXT NOT NULL DEFAULT 'America/New_York',
+  enrichment_enabled INTEGER NOT NULL DEFAULT 1,
+  compilation_enabled INTEGER NOT NULL DEFAULT 1,
+  compilation_batch_size_per_tick INTEGER NOT NULL DEFAULT 20,
+  background_yield_threshold_seconds INTEGER NOT NULL DEFAULT 90,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -367,6 +371,37 @@ CREATE TABLE memory_links (
 CREATE INDEX memory_links_to_slug_idx ON memory_links(to_slug);
 CREATE INDEX memory_links_from_idx ON memory_links(from_slug, from_collection);
 CREATE INDEX memory_links_source_idx ON memory_links(source);
+
+CREATE TABLE enrichment_queue (
+  id TEXT PRIMARY KEY,
+  household_id TEXT NOT NULL REFERENCES households(id),
+  member_id TEXT REFERENCES family_members(id),
+  agent_id TEXT REFERENCES staff_agents(id),
+  content_fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  lock_token TEXT,
+  lock_until INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  processed_at INTEGER
+);
+CREATE INDEX enrichment_queue_status_idx ON enrichment_queue(status);
+CREATE UNIQUE INDEX enrichment_queue_fingerprint_unique ON enrichment_queue(content_fingerprint);
+CREATE INDEX enrichment_queue_household_idx ON enrichment_queue(household_id);
+
+CREATE TABLE compilation_state (
+  id TEXT PRIMARY KEY,
+  entity_slug TEXT NOT NULL,
+  entity_collection TEXT NOT NULL,
+  dirty_at INTEGER,
+  last_compiled_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE UNIQUE INDEX compilation_state_entity_unique ON compilation_state(entity_slug, entity_collection);
+CREATE INDEX compilation_state_dirty_idx ON compilation_state(dirty_at);
   `;
 
   const transaction = sqlite.transaction(() => {
@@ -423,7 +458,7 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     !taskCols.has("notify_agent_id") ||
     !tableExists("projects") || !tableExists("delegation_notifications") ||
     // v0.5 memory
-    !tableExists("memory_links");
+    !tableExists("memory_links") || !tableExists("enrichment_queue") || !tableExists("compilation_state");
 
   if (needsUpgrade && preMigrationHook) {
     preMigrationHook("schema-upgrade");
@@ -760,8 +795,65 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
       upgraded = true;
     }
 
+    // v0.5 memory: enrichment queue + compilation state
+    if (!tableExists("enrichment_queue")) {
+      sqlite.prepare(`CREATE TABLE enrichment_queue (
+        id TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL REFERENCES households(id),
+        member_id TEXT REFERENCES family_members(id),
+        agent_id TEXT REFERENCES staff_agents(id),
+        content_fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        lock_token TEXT,
+        lock_until INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        processed_at INTEGER
+      )`).run();
+      sqlite.prepare("CREATE INDEX enrichment_queue_status_idx ON enrichment_queue(status)").run();
+      sqlite.prepare("CREATE UNIQUE INDEX enrichment_queue_fingerprint_unique ON enrichment_queue(content_fingerprint)").run();
+      sqlite.prepare("CREATE INDEX enrichment_queue_household_idx ON enrichment_queue(household_id)").run();
+      upgraded = true;
+    }
+
+    if (!tableExists("compilation_state")) {
+      sqlite.prepare(`CREATE TABLE compilation_state (
+        id TEXT PRIMARY KEY,
+        entity_slug TEXT NOT NULL,
+        entity_collection TEXT NOT NULL,
+        dirty_at INTEGER,
+        last_compiled_at INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )`).run();
+      sqlite.prepare("CREATE UNIQUE INDEX compilation_state_entity_unique ON compilation_state(entity_slug, entity_collection)").run();
+      sqlite.prepare("CREATE INDEX compilation_state_dirty_idx ON compilation_state(dirty_at)").run();
+      upgraded = true;
+    }
+
+    // v0.5 memory: per-household enrichment + compilation flags
+    const householdCols = cols("households");
+    if (!householdCols.has("enrichment_enabled")) {
+      sqlite.prepare("ALTER TABLE households ADD COLUMN enrichment_enabled INTEGER NOT NULL DEFAULT 1").run();
+      upgraded = true;
+    }
+    if (!householdCols.has("compilation_enabled")) {
+      sqlite.prepare("ALTER TABLE households ADD COLUMN compilation_enabled INTEGER NOT NULL DEFAULT 1").run();
+      upgraded = true;
+    }
+    if (!householdCols.has("compilation_batch_size_per_tick")) {
+      sqlite.prepare("ALTER TABLE households ADD COLUMN compilation_batch_size_per_tick INTEGER NOT NULL DEFAULT 20").run();
+      upgraded = true;
+    }
+    if (!householdCols.has("background_yield_threshold_seconds")) {
+      sqlite.prepare("ALTER TABLE households ADD COLUMN background_yield_threshold_seconds INTEGER NOT NULL DEFAULT 90").run();
+      upgraded = true;
+    }
+
     if (upgraded) {
-      console.log("[db] Schema upgraded (v12 — v0.5 memory: memory_links table)");
+      console.log("[db] Schema upgraded (v12 — v0.5 memory: links/queue/compilation_state + household flags)");
     }
   });
 

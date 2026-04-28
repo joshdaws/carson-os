@@ -619,12 +619,32 @@ async function main() {
     });
   }, APPROVAL_SWEEP_INTERVAL_MS);
 
+  // 10b. Enrichment worker (v0.5). Ticked alongside scheduled tasks.
+  // Disabled when CARSONOS_DISABLE_ENRICHMENT_WORKER=1 or the household
+  // flag is off. The worker reads its own per-household config on tick.
+  let enrichmentWorker: import("./services/memory/enrichment-worker.js").EnrichmentWorker | undefined;
+  if (memoryProvider && process.env.CARSONOS_DISABLE_ENRICHMENT_WORKER !== "1") {
+    try {
+      const { EnrichmentWorker } = await import("./services/memory/enrichment-worker.js");
+      enrichmentWorker = new EnrichmentWorker({
+        db,
+        memoryProvider,
+        adapter,
+        memoryRoot: config.memory.rootDir,
+      });
+      console.log("[enrichment-worker] Ready");
+    } catch (err) {
+      console.warn("[enrichment-worker] Boot failed (non-fatal):", err);
+    }
+  }
+
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
     db,
     engine: constitutionEngine,
     multiRelay,
     memoryProvider,
+    enrichmentWorker,
   });
   scheduler.start();
 

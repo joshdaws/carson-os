@@ -155,6 +155,8 @@ export interface SchedulerDeps {
   engine: ConstitutionEngine;
   multiRelay?: MultiRelayManager;
   memoryProvider?: MemoryProvider;
+  /** v0.5: optional enrichment worker. Ticked alongside scheduled tasks. */
+  enrichmentWorker?: import("./memory/enrichment-worker.js").EnrichmentWorker;
 }
 
 export class Scheduler {
@@ -162,6 +164,7 @@ export class Scheduler {
   private engine: ConstitutionEngine;
   private multiRelay?: MultiRelayManager;
   private memoryProvider?: MemoryProvider;
+  private enrichmentWorker?: import("./memory/enrichment-worker.js").EnrichmentWorker;
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -170,6 +173,7 @@ export class Scheduler {
     this.engine = deps.engine;
     this.multiRelay = deps.multiRelay;
     this.memoryProvider = deps.memoryProvider;
+    this.enrichmentWorker = deps.enrichmentWorker;
   }
 
   /** Start the ticker. */
@@ -212,6 +216,21 @@ export class Scheduler {
 
       for (const task of dueTasks) {
         await this.executeTask(task);
+      }
+
+      // v0.5: enrichment worker tick. Runs after scheduled tasks so the
+      // worker yields to anything that wants user-visible output.
+      if (this.enrichmentWorker) {
+        try {
+          const r = await this.enrichmentWorker.tick();
+          if (r.processed > 0 || r.failed > 0) {
+            console.log(
+              `[enrichment-worker] tick: processed=${r.processed} failed=${r.failed}`,
+            );
+          }
+        } catch (err) {
+          console.warn("[enrichment-worker] tick error:", err);
+        }
       }
     } catch (err) {
       console.error("[scheduler] Tick error:", err);
