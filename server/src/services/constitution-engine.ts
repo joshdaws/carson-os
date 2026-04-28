@@ -44,6 +44,7 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
+import { loadUserMd, loadPersonalityMd, slugifyName } from "./identity-files.js";
 import { activityLog, toolSecrets } from "@carsonos/db";
 import { decryptSecret, redactSecrets } from "./custom-tools/secrets.js";
 import {
@@ -100,6 +101,13 @@ export interface EngineConfig {
   caldavProvider?: CalDavProvider;
   imapProvider?: ImapProvider;
   multiRelay?: import("./multi-relay-manager.js").MultiRelayManager;
+  /**
+   * Data dir root (e.g. `~/.carsonos`). Used to locate USER.md and
+   * PERSONALITY.md files for prompt assembly. Optional during the
+   * v0.5.0 transition window — when omitted, identity content falls
+   * back to the DB columns.
+   */
+  dataDir?: string;
   /** Feature flags — v1.0 ships with hardEvaluators OFF */
   featureFlags?: {
     hardEvaluators?: boolean;
@@ -298,6 +306,7 @@ export class ConstitutionEngine {
   private caldavProvider: CalDavProvider | null;
   private imapProvider: ImapProvider | null;
   private hardEvaluatorsEnabled: boolean;
+  private dataDir: string | null;
   private multiRelay: import("./multi-relay-manager.js").MultiRelayManager | null;
   private delegationService: import("./delegation-service.js").DelegationService | null = null;
   private oversight: import("./carson-oversight.js").CarsonOversight | null = null;
@@ -313,6 +322,7 @@ export class ConstitutionEngine {
     this.imapProvider = config.imapProvider ?? null;
     this.multiRelay = config.multiRelay ?? null;
     this.hardEvaluatorsEnabled = config.featureFlags?.hardEvaluators ?? false;
+    this.dataDir = config.dataDir ?? null;
   }
 
   /** Set the multi-relay manager (called after construction because of circular dependency). */
@@ -581,16 +591,24 @@ export class ConstitutionEngine {
     }
 
     const promptStart = Date.now();
+    // Prefer USER.md / PERSONALITY.md from disk; fall back to DB columns
+    // during the v0.5.0 transition window. v0.5.x will deprecate the
+    // DB columns once all instances have been migrated.
+    const memberSlug = slugifyName(member.name);
+    const agentSlug = slugifyName(agent.name);
+    const userMdContent = this.dataDir ? loadUserMd(this.dataDir, memberSlug) : null;
+    const personalityMdContent = this.dataDir ? loadPersonalityMd(this.dataDir, agentSlug) : null;
+
     const systemPrompt = compileSystemPrompt({
       mode: "chat",
       roleContent: agent.roleContent ?? "",
-      soulContent: agent.soulContent ?? null,
+      soulContent: personalityMdContent ?? agent.soulContent ?? null,
       softRules: softRulePrompt,
       constitutionDocument: cached.constitutionDocument,
       memberName: member.name,
       memberRole: member.role,
       memberAge: member.age,
-      memberProfile: member.profileContent ?? null,
+      memberProfile: userMdContent ?? member.profileContent ?? null,
       firstContact: isFirstContact,
       conversationTurnCount: assistantTurnCount,
       delegationInstructions: delegationInstr,
@@ -651,6 +669,7 @@ export class ConstitutionEngine {
         multiRelay: this.multiRelay ?? undefined,
         delegationService: this.delegationService ?? undefined,
         oversight: this.oversight ?? undefined,
+        dataDir: this.dataDir ?? undefined,
         // callerTaskId is not set for normal agent turns — only the Dispatcher
         // path (Lane E) sets it when running tool calls inside a child task.
       };
@@ -746,13 +765,15 @@ export class ConstitutionEngine {
       constitution: cached.constitutionDocument,
       softRulePrompt,
       roleContent: agent.roleContent ?? "",
-      soulContent: agent.soulContent ?? null,
+      // Match the resolved values used in compileSystemPrompt above so
+      // an edit to USER.md / PERSONALITY.md correctly busts the cache.
+      soulContent: personalityMdContent ?? agent.soulContent ?? null,
       operatingInstructions: agent.operatingInstructions ?? null,
       member: {
         name: member.name,
         role: member.role,
         age: member.age,
-        profile: member.profileContent ?? null,
+        profile: userMdContent ?? member.profileContent ?? null,
       },
       household: {
         name: household?.name ?? null,

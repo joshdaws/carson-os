@@ -135,6 +135,21 @@ async function main() {
   // pick up keys saved via the Settings UI without the operator editing files.
   await hydrateEnvFromSettings(db);
 
+  // 1c. Identity files: write any DB-resident profile_content / soul_content
+  // out to USER.md / PERSONALITY.md if the file doesn't exist yet. Idempotent
+  // — skips members/agents whose file already exists. v0.5.0 transition.
+  try {
+    const { migrateIdentityToFiles } = await import("./services/identity-files.js");
+    const idMigration = await migrateIdentityToFiles(db, config.dataDir);
+    if (idMigration.usersWritten > 0 || idMigration.personalitiesWritten > 0) {
+      console.log(
+        `[migrate-v50] Identity files written: ${idMigration.usersWritten} USER.md, ${idMigration.personalitiesWritten} PERSONALITY.md`,
+      );
+    }
+  } catch (err) {
+    console.warn("[migrate-v50] Identity file migration failed (non-fatal):", err);
+  }
+
   // 2. Create adapter
   const adapter = createAdapter(config.adapterType);
   const adapterHealthy = await adapter.healthCheck();
@@ -246,6 +261,7 @@ async function main() {
     calendarProvider: gwsHealthy ? calendarProvider : undefined,
     caldavProvider,
     imapProvider,
+    dataDir: config.dataDir,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
