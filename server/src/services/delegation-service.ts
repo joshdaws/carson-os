@@ -102,6 +102,11 @@ export interface HireProposalInput {
   /** Optional. User's original request, used to auto-delegate on approval so
    *  the user doesn't have to re-prompt. Absent for proactive hires. */
   originalUserRequest?: string;
+  /** Required for Developer specialties (tools/project/core). References a
+   *  Planner task whose plan_status is 'accepted'. The plan body becomes the
+   *  auto-delegation brief on hire.approved. Ignored for non-Developer
+   *  specialties even if supplied. */
+  planTaskId?: string;
 }
 
 export interface HireProposalResult {
@@ -112,7 +117,40 @@ export interface HireProposalResult {
 export interface HireProposalError {
   ok: false;
   error: string;
+  code?:
+    | "E_PLAN_REQUIRED"
+    | "E_PLAN_NOT_FOUND"
+    | "E_NOT_A_PLAN"
+    | "E_PLAN_NOT_ACCEPTED";
 }
+
+export interface AcceptPlanInput {
+  /** Agent calling accept_plan (the CoS, in practice). Used for household
+   * scoping; not currently used to gate ownership beyond the household. */
+  acceptingAgentId: string;
+  householdId: string;
+  /** The Planner task whose plan is being acted on. */
+  taskId: string;
+  decision: "accept" | "revise" | "replan";
+  /** Required when decision is `revise` or `replan`. */
+  notes?: string;
+}
+
+export type AcceptPlanResult =
+  | { ok: true; decision: "accept"; taskId: string }
+  | { ok: true; decision: "revise"; taskId: string; childTaskId: string }
+  | { ok: true; decision: "replan"; taskId: string };
+
+export type AcceptPlanError = {
+  ok: false;
+  error: string;
+  code:
+    | "E_TASK_NOT_FOUND"
+    | "E_WRONG_HOUSEHOLD"
+    | "E_NOT_A_PLAN"
+    | "E_PLAN_NOT_PENDING"
+    | "E_NOTES_REQUIRED";
+};
 
 export interface CancelTaskInput {
   householdId: string;
@@ -397,6 +435,50 @@ export class DelegationService {
       return { ok: false, error: "oversight not wired (server boot order)" };
     }
 
+    // Planner v2: Developer hires require an accepted plan_task_id. Non-
+    // Developer specialties ignore plan_task_id even if supplied — the
+    // architectural gate only applies to specialties that actually ship code.
+    const isDevHire = isDeveloperSpecialty(input.specialty);
+    let resolvedPlanTaskId: string | undefined;
+    if (isDevHire) {
+      if (!input.planTaskId) {
+        return {
+          ok: false,
+          error: `Developer hires (${input.specialty}) require plan_task_id from an accepted Planner task. Run accept_plan first.`,
+          code: "E_PLAN_REQUIRED",
+        };
+      }
+      const [planTask] = await this.db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.id, input.planTaskId))
+        .limit(1);
+      if (!planTask || planTask.householdId !== input.householdId) {
+        return {
+          ok: false,
+          error: `plan task ${input.planTaskId} not found`,
+          code: "E_PLAN_NOT_FOUND",
+        };
+      }
+      const plannerAgent = await this.loadAgent(planTask.agentId);
+      if (!plannerAgent || plannerAgent.specialty !== "planning") {
+        return {
+          ok: false,
+          error: `task ${input.planTaskId} is not a Planner task`,
+          code: "E_NOT_A_PLAN",
+        };
+      }
+      if (planTask.planStatus !== "accepted") {
+        return {
+          ok: false,
+          error: `plan ${input.planTaskId} is not accepted (current plan_status: ${planTask.planStatus ?? "null"})`,
+          code: "E_PLAN_NOT_ACCEPTED",
+        };
+      }
+      resolvedPlanTaskId = input.planTaskId;
+    }
+    // For non-Developer hires, plan_task_id is silently ignored.
+
     const review = await this.oversight.reviewHireProposal({
       householdId: input.householdId,
       proposedByAgentId: input.proposedByAgentId,
@@ -423,6 +505,7 @@ export class DelegationService {
         model: input.model,
         trustLevel: input.trustLevel,
         originalUserRequest: input.originalUserRequest,
+        planTaskId: resolvedPlanTaskId,
       }),
       requiresApproval: true,
       delegationDepth: 0,
@@ -770,6 +853,217 @@ export class DelegationService {
     });
 
     return { ok: true };
+  }
+
+  /**
+   * Planner v2 — accept, revise, or replan a Planner's output. The
+   * architectural gate that gates Developer hires: only an `accepted`
+   * plan_task_id is valid for propose_hire on a Developer specialty.
+   *
+   * Validation runs in order: task existence, household scope, planning
+   * specialty, plan_status=pending_approval, notes required for revise/replan.
+   *
+   * Behavior:
+   *   accept:  plan_status -> 'accepted'. Logs plan_accepted.
+   *   revise:  plan_status -> 'revise'. Inserts a child Planner task with
+   *            parent_plan_task_id linking back, dispatches it. Logs
+   *            plan_revised on parent and created on child.
+   *   replan:  plan_status -> 'replan'. Logs plan_replan with notes; no
+   *            child task — CoS must manually re-delegate.
+   *
+   * The status flip + event log + child task insert run in a sync
+   * better-sqlite3 transaction so partial state is impossible. Dispatch
+   * fires after the transaction commits.
+   */
+  async handleAcceptPlan(
+    input: AcceptPlanInput,
+  ): Promise<AcceptPlanResult | AcceptPlanError> {
+    // -- Validation --------------------------------------------------
+    const [task] = await this.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, input.taskId))
+      .limit(1);
+    if (!task) {
+      return { ok: false, error: `task ${input.taskId} not found`, code: "E_TASK_NOT_FOUND" };
+    }
+    if (task.householdId !== input.householdId) {
+      return { ok: false, error: `task ${input.taskId} not found`, code: "E_WRONG_HOUSEHOLD" };
+    }
+
+    const plannerAgent = await this.loadAgent(task.agentId);
+    if (!plannerAgent || plannerAgent.specialty !== "planning") {
+      return {
+        ok: false,
+        error: `task ${input.taskId} is not a Planner task`,
+        code: "E_NOT_A_PLAN",
+      };
+    }
+
+    if (task.planStatus !== "pending_approval") {
+      return {
+        ok: false,
+        error: `plan is not pending approval (current plan_status: ${task.planStatus ?? "null"})`,
+        code: "E_PLAN_NOT_PENDING",
+      };
+    }
+
+    const notes = input.notes?.trim();
+    if ((input.decision === "revise" || input.decision === "replan") && !notes) {
+      return {
+        ok: false,
+        error: `decision '${input.decision}' requires non-empty notes`,
+        code: "E_NOTES_REQUIRED",
+      };
+    }
+
+    // -- Transactional state mutation -------------------------------
+    // better-sqlite3 transactions are sync; use .run()/.get()/.all().
+    const now = new Date();
+    let childTaskId: string | undefined;
+
+    if (input.decision === "accept") {
+      this.db.transaction((tx) => {
+        tx.update(tasks)
+          .set({ planStatus: "accepted", updatedAt: now })
+          .where(eq(tasks.id, input.taskId))
+          .run();
+        tx.insert(taskEvents)
+          .values({
+            taskId: input.taskId,
+            agentId: input.acceptingAgentId,
+            eventType: "plan_accepted",
+            message: `Plan accepted by ${input.acceptingAgentId}`,
+            payload: { decision: "accept", acceptingAgentId: input.acceptingAgentId },
+            clauseIds: null,
+          })
+          .run();
+      });
+      this.broadcast({
+        type: "plan.accepted",
+        data: { taskId: input.taskId, householdId: input.householdId },
+      });
+      return { ok: true, decision: "accept", taskId: input.taskId };
+    }
+
+    if (input.decision === "replan") {
+      this.db.transaction((tx) => {
+        tx.update(tasks)
+          .set({ planStatus: "replan", updatedAt: now })
+          .where(eq(tasks.id, input.taskId))
+          .run();
+        tx.insert(taskEvents)
+          .values({
+            taskId: input.taskId,
+            agentId: input.acceptingAgentId,
+            eventType: "plan_replan",
+            message: `Plan flagged replan: ${notes}`,
+            payload: { decision: "replan", notes, acceptingAgentId: input.acceptingAgentId },
+            clauseIds: null,
+          })
+          .run();
+      });
+      this.broadcast({
+        type: "plan.replan",
+        data: { taskId: input.taskId, householdId: input.householdId },
+      });
+      return { ok: true, decision: "replan", taskId: input.taskId };
+    }
+
+    // -- revise: parent flip + child insert atomically --------------
+    const childTitle = `Revise plan: ${task.title}`.slice(0, 240);
+    const childDescription = [
+      `Revising plan from task ${task.id}.`,
+      ``,
+      `Chief of Staff's revision notes:`,
+      notes ?? "",
+      ``,
+      `The parent task's brief was:`,
+      task.title,
+      task.description ? `\n${task.description}` : "",
+    ].join("\n");
+
+    this.db.transaction((tx) => {
+      tx.update(tasks)
+        .set({ planStatus: "revise", updatedAt: now })
+        .where(eq(tasks.id, input.taskId))
+        .run();
+
+      const inserted = tx
+        .insert(tasks)
+        .values({
+          householdId: input.householdId,
+          agentId: plannerAgent.id,
+          parentTaskId: null,
+          requestedBy: task.requestedBy,
+          assignedToMembers: null,
+          title: childTitle,
+          description: childDescription,
+          requiresApproval: false,
+          delegationDepth: 1,
+          status: "pending",
+          notifyAgentId: input.acceptingAgentId,
+          parentPlanTaskId: input.taskId,
+          updatedAt: now,
+        })
+        .returning({ id: tasks.id })
+        .all();
+      const childId = inserted[0].id;
+      childTaskId = childId;
+
+      tx.insert(taskEvents)
+        .values({
+          taskId: input.taskId,
+          agentId: input.acceptingAgentId,
+          eventType: "plan_revised",
+          message: `Plan flagged for revision: ${notes}`,
+          payload: { decision: "revise", notes, childTaskId: childId, acceptingAgentId: input.acceptingAgentId },
+          clauseIds: null,
+        })
+        .run();
+
+      tx.insert(taskEvents)
+        .values({
+          taskId: childId,
+          agentId: input.acceptingAgentId,
+          eventType: "created",
+          message: `Revision plan created from ${input.taskId}`,
+          payload: { parentPlanTaskId: input.taskId, fromRevision: true, notes },
+          clauseIds: null,
+        })
+        .run();
+    });
+
+    if (!childTaskId) {
+      // The transaction throws on failure rather than producing this state, so
+      // hitting this branch means a defensive type-narrowing bailout. Surface
+      // it as an error rather than dispatching nothing.
+      return {
+        ok: false,
+        error: "internal: revise transaction did not return a child task id",
+        code: "E_TASK_NOT_FOUND",
+      };
+    }
+
+    this.broadcast({
+      type: "plan.revised",
+      data: { taskId: input.taskId, childTaskId, householdId: input.householdId },
+    });
+    this.broadcast({
+      type: "task.created",
+      data: { taskId: childTaskId, householdId: input.householdId, agentId: plannerAgent.id, title: childTitle },
+    });
+
+    // Dispatch the revision task. Fire-and-forget — same pattern as
+    // handleDelegateTaskCall. Errors are logged; the task row stays pending
+    // and recoverStuckTasks will catch it on next boot if dispatch never ran.
+    this.dispatcher
+      .handleTaskAssignment(childTaskId)
+      .catch((err) =>
+        console.error(`[delegation] dispatch for revision ${childTaskId} failed:`, err),
+      );
+
+    return { ok: true, decision: "revise", taskId: input.taskId, childTaskId };
   }
 
   /**

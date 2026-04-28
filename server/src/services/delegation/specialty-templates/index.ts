@@ -31,15 +31,27 @@ export type DeveloperSpecialty = keyof typeof SPECIALTY_TEMPLATES;
 
 export const COS_DELEGATION_PREAMBLE = load("cos-delegation-preamble");
 
+/** Planner v2 — non-Developer specialty with a curated architectural template.
+ *  Kept separate from SPECIALTY_TEMPLATES so downstream code that branches on
+ *  Developer-vs-other (Dispatcher.executeDeveloperTask, hire defaults) keeps
+ *  its existing semantics. */
+export const PLANNER_TEMPLATE = load("planner");
+
 export function isDeveloperSpecialty(specialty: string): specialty is DeveloperSpecialty {
   return specialty === "tools" || specialty === "project" || specialty === "core";
 }
 
-/** Returns the operating-instructions body for a Developer-specialty hire, or
- *  null if the specialty isn't one of the curated Developer kinds. Non-Developer
- *  specialists fall through to composeGenericSpecialistInstructions(). */
+/** Returns the operating-instructions body for a curated specialty (Developer
+ *  kinds + Planner), or null otherwise. Non-curated specialties fall through
+ *  to composeGenericSpecialistInstructions(). */
 export function templateForSpecialty(specialty: string): string | null {
-  return isDeveloperSpecialty(specialty) ? SPECIALTY_TEMPLATES[specialty] : null;
+  if (isDeveloperSpecialty(specialty)) {
+    return SPECIALTY_TEMPLATES[specialty];
+  }
+  if (specialty === "planning") {
+    return PLANNER_TEMPLATE;
+  }
+  return null;
 }
 
 /** Compose operating instructions for a non-Developer specialist. Used when

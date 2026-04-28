@@ -182,6 +182,12 @@ export const tasks = sqliteTable(
     notifyPayload: text("notify_payload", { mode: "json" }), // composed before send; flip-invariant with notified_at
     notifiedAt: integer("notified_at", { mode: "timestamp" }), // set only on successful delivery
     notifyAgentId: text("notify_agent_id").references(() => staffAgents.id), // completion routes here (kid's personal agent, not CoS)
+    // Planner v2: set automatically on Planner task completion when the plan
+    // parses successfully; mutated by accept_plan; gates Developer hires.
+    planStatus: text("plan_status").$type<
+      "pending_approval" | "accepted" | "revise" | "replan"
+    >(),
+    parentPlanTaskId: text("parent_plan_task_id"), // FK to tasks.id. NULL except on revision plans.
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
     completedAt: integer("completed_at", { mode: "timestamp" }),

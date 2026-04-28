@@ -147,6 +147,8 @@ const DELEGATION_GRANTS_FULL = [
   // v0.4 back-channel — everyone who can delegate needs to be able to read
   // the result on demand when the user follows up.
   "read_task_result",
+  // Planner v2 — CoS-only. The architectural gate before a Developer is hired.
+  "accept_plan",
 ];
 const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active_tasks", "read_task_result"];
 

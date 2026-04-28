@@ -465,21 +465,41 @@ async function main() {
           await multiRelay.editMessage(task.agentId, member.telegramUserId, notif.deliveredMessageId, stampedText).catch(() => {});
         }
 
-        // Pull originalUserRequest out of the hire-proposal metadata. If the
-        // proposer passed it, auto-delegate so the user doesn't have to
-        // re-prompt. If not (proactive hire), just tell the user the
-        // specialist is ready and wait.
+        // Pull originalUserRequest + planTaskId out of the hire-proposal
+        // metadata. If the proposer passed either, auto-delegate so the user
+        // doesn't have to re-prompt. Plan body (when present) becomes the
+        // authoritative brief; originalUserRequest is preserved as task
+        // context so the Developer sees what the user originally asked.
         let originalUserRequest: string | undefined;
+        let planTaskId: string | undefined;
         try {
           const meta = task.description ? JSON.parse(task.description) : null;
           if (meta && typeof meta.originalUserRequest === "string" && meta.originalUserRequest.trim()) {
             originalUserRequest = meta.originalUserRequest.trim();
           }
+          if (meta && typeof meta.planTaskId === "string" && meta.planTaskId.trim()) {
+            planTaskId = meta.planTaskId.trim();
+          }
         } catch {
           // malformed description — proceed as if no originalUserRequest
         }
 
-        if (!originalUserRequest) {
+        // Planner v2: when plan_task_id is set, load the plan body and use it
+        // as the auto-delegation brief. The plan is authoritative; the
+        // user's original ask rides along as task context for traceability.
+        let planBody: string | undefined;
+        if (planTaskId) {
+          const [planTask] = await db
+            .select({ result: tasksTable.result })
+            .from(tasksTable)
+            .where(eq(tasksTable.id, planTaskId))
+            .limit(1);
+          if (planTask?.result) {
+            planBody = planTask.result;
+          }
+        }
+
+        if (!originalUserRequest && !planBody) {
           const text =
             `✅ **${data.name}** is on staff — ${data.specialty} specialist.\n\n` +
             `Tell me what you want them to work on and I'll delegate it.`;
@@ -499,25 +519,47 @@ async function main() {
           return;
         }
 
-        // Auto-delegation path: run the original request through the
-        // delegation service as if the proposing agent had called
+        // Auto-delegation path: run the plan (if present) or original request
+        // through the delegation service as if the proposing agent had called
         // delegate_task directly. No LLM turn required; handleDelegateTaskCall
         // validates the edge (which we just created on approval), creates
         // the task row with correct depth + workspace kind, and hands it to
         // the dispatcher. User sees one concise status message, then the
         // specialist's completion notification when it finishes.
+        const goal = planBody ?? originalUserRequest!;
+        const delegationContext = planBody
+          ? [
+              originalUserRequest
+                ? `Original user request:\n${originalUserRequest}`
+                : null,
+              planTaskId ? `Authoritative plan from task ${planTaskId} (above).` : null,
+            ]
+              .filter((s): s is string => s !== null)
+              .join("\n\n")
+          : undefined;
+
         const delegated = await orchestrator.handleDelegateTaskCall({
           fromAgentId: task.agentId,
           householdId: data.householdId,
           toAgentName: data.name,
-          goal: originalUserRequest,
+          goal,
+          context: delegationContext,
           requestedByMember: member.id,
         });
+
+        // User-facing preview: the original ask wins when present (it's in
+        // the user's own words). When only a plan is in play (proactive plan
+        // → hire), fall back to a short reference to the plan task.
+        const userPreview = originalUserRequest
+          ? originalUserRequest.length > 120
+            ? `${originalUserRequest.slice(0, 120)}…`
+            : originalUserRequest
+          : `the accepted plan (${planTaskId})`;
 
         if (!delegated.ok) {
           const text =
             `✅ **${data.name}** is on staff.\n\n` +
-            `I tried to auto-delegate your request (_${originalUserRequest.slice(0, 120)}${originalUserRequest.length > 120 ? "…" : ""}_) but hit: ${delegated.error}\n\n` +
+            `I tried to auto-delegate your request (_${userPreview}_) but hit: ${delegated.error}\n\n` +
             `Just tell me what you want them to do and I'll retry.`;
           await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
           await threadHireAnnouncement(db, task.agentId, member.id, text, {
@@ -531,7 +573,7 @@ async function main() {
 
         const text =
           `✅ **${data.name}** is on staff — putting them on it now.\n\n` +
-          `_${originalUserRequest}_\n\n` +
+          `_${userPreview}_\n\n` +
           `I'll ping you when they're done. Say "kill ${data.name}'s task" to cancel.`;
         await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
         await threadHireAnnouncement(db, task.agentId, member.id, text, {

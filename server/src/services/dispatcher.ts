@@ -29,6 +29,7 @@ import { WorkspaceProvider, slugify, type ProvisionedWorkspace } from "./delegat
 import { DelegationNotifier, type NotifyPayload } from "./delegation/notifier.js";
 import { composeSummaryCard, renderSummaryCardText, type DeveloperSpecialty } from "./delegation/summary-card.js";
 import { templateForSpecialty } from "./delegation/specialty-templates/index.js";
+import { parsePlanResult } from "./delegation/plan-parser.js";
 import type { ToolRegistry } from "./tool-registry.js";
 import type { DelegationService } from "./delegation-service.js";
 import type { CarsonOversight } from "./carson-oversight.js";
@@ -1029,6 +1030,27 @@ export class Dispatcher {
       adapterError = err instanceof Error ? err.message : String(err);
     }
 
+    // Planner v2: when the Planner finishes successfully, validate the plan
+    // frontmatter and set tasks.plan_status. Malformed plans flip the task to
+    // failed with E_PLAN_MALFORMED so accept_plan only ever sees a plan that
+    // already cleared schema validation. Plan body is preserved unchanged.
+    let planStatusToSet:
+      | "pending_approval"
+      | null
+      | undefined = undefined;
+    let planMalformedReason: string | null = null;
+    if (specialty === "planning" && !adapterError && adapterResult?.content) {
+      const parsed = parsePlanResult(adapterResult.content);
+      if (!parsed.ok) {
+        planMalformedReason = parsed.error;
+        adapterError = `E_PLAN_MALFORMED: ${parsed.error}`;
+      } else if (parsed.frontmatter.plan_state === "complete") {
+        planStatusToSet = "pending_approval";
+      }
+      // programming_incomplete leaves plan_status null — task is complete but
+      // not eligible for accept_plan.
+    }
+
     const terminalStatus: "completed" | "failed" = adapterError ? "failed" : "completed";
 
     const card = composeSummaryCard({
@@ -1065,7 +1087,7 @@ export class Dispatcher {
       summaryCard: card,
     };
 
-    await this.finalizeTerminalTask({
+    const finalized = await this.finalizeTerminalTask({
       taskId,
       agent,
       task,
@@ -1077,6 +1099,27 @@ export class Dispatcher {
       payload,
       adapterErrorForLog: adapterError,
     });
+
+    // Planner v2: persist plan_status + log malformed-plan events. Gated on
+    // finalized.preparedUpdate so a cancel-sticky refusal can't write
+    // plan_status onto a cancelled row.
+    if (finalized.preparedUpdate && specialty === "planning") {
+      if (planMalformedReason) {
+        await this.logEvent(
+          taskId,
+          "failed",
+          agent.id,
+          `Plan rejected: malformed frontmatter`,
+          { code: "E_PLAN_MALFORMED", error: planMalformedReason },
+        );
+      } else if (planStatusToSet) {
+        await this.db
+          .update(tasks)
+          .set({ planStatus: planStatusToSet, updatedAt: new Date() })
+          .where(eq(tasks.id, taskId));
+      }
+    }
+
     // Specialist tasks don't currently support cancel-in-flight abort (future
     // work), so a refused preparedUpdate on this path is unreachable today.
     // drainSpecialistQueue always runs.

@@ -117,6 +117,10 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
           type: "string",
           description: "The user's original ask in their own words — what they want the new specialist to DO. If set, the system auto-delegates this to the specialist immediately on approval; the user doesn't have to re-prompt. Example: if the user said 'build me a Todoist tool', pass 'build me a Todoist tool' (or a clean-up of it). Omit only for proactive hires not tied to a specific task.",
         },
+        plan_task_id: {
+          type: "string",
+          description: "Required for Developer specialties (tools, project, core) — must reference a Planner task whose plan_status is 'accepted'. The plan body becomes the auto-delegation brief on approval. Non-Developer specialties (planning, research, etc.) ignore this field; supply it only when hiring a Developer to execute an accepted plan.",
+        },
       },
       required: ["role", "specialty", "reason"],
     },
@@ -178,6 +182,27 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: "accept_plan",
+    description:
+      "Accept, revise, or replan a Planner's output. Required before hiring a Developer — Developer hires must reference an accepted plan via plan_task_id. The Planner is the architect; you are the client. Use accept when the plan is correct as-is. Use revise when the plan needs adjustment but the interpretation is right (a child Planner task is auto-delegated with your notes). Use replan when the interpretation is wrong and the work must start over (no child task; you re-delegate manually).",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The Planner task whose plan is being acted on. Returned by delegate_task / surfaced when the Planner finished." },
+        decision: {
+          type: "string",
+          enum: ["accept", "revise", "replan"],
+          description: "accept = plan is good, hire a Developer next; revise = plan needs adjustment, auto-delegates a revision; replan = wrong interpretation, marks the plan replan and waits for you to re-delegate.",
+        },
+        notes: {
+          type: "string",
+          description: "Required when decision is revise or replan; explains what should change. Ignored when decision is accept.",
+        },
+      },
+      required: ["task_id", "decision"],
+    },
+  },
+  {
     name: "register_project",
     description:
       "Register a project so Developers can target it via projectId. Required before delegating project/core specialty work. Explicit registration only — folder-scan discovery is a v0.5 feature.",
@@ -216,6 +241,8 @@ export async function handleDelegationTool(
       return handleListActiveTasks(context);
     case "register_project":
       return handleRegisterProject(input, context);
+    case "accept_plan":
+      return handleAcceptPlan(input, context);
     case "read_task_result":
       return handleReadTaskResult(input, context);
     case "grant_delegation":
@@ -278,6 +305,7 @@ async function handleProposeHire(
   const model = stringArg(input.model) ?? undefined;
   const trustLevel = stringArg(input.trustLevel) ?? undefined;
   const originalUserRequest = stringArg(input.originalUserRequest) ?? undefined;
+  const planTaskId = stringArg(input.plan_task_id) ?? undefined;
 
   if (!role) return toolError("propose_hire requires `role` (e.g., 'Developer', 'Researcher', 'Music specialist')");
   if (!specialty) return toolError("propose_hire requires `specialty` (kebab-case; e.g., 'tools', 'research', 'music')");
@@ -301,6 +329,7 @@ async function handleProposeHire(
     model,
     trustLevel: trustLevel as "full" | "standard" | "restricted" | undefined,
     originalUserRequest,
+    planTaskId,
   });
 
   if (!result.ok) return toolError(result.error);
@@ -481,6 +510,45 @@ async function handleRegisterProject(
     }
     return toolError(`Failed to register project: ${msg}`);
   }
+}
+
+async function handleAcceptPlan(
+  input: Record<string, unknown>,
+  ctx: DelegationToolContext,
+): Promise<ToolResult> {
+  const taskId = stringArg(input.task_id);
+  const decision = stringArg(input.decision);
+  const notes = stringArg(input.notes) ?? undefined;
+  if (!taskId) return toolError("accept_plan requires `task_id`");
+  if (!decision || !["accept", "revise", "replan"].includes(decision)) {
+    return toolError("accept_plan requires `decision` of 'accept' | 'revise' | 'replan'");
+  }
+
+  const result = await ctx.delegationService.handleAcceptPlan({
+    acceptingAgentId: ctx.agentId,
+    householdId: ctx.householdId,
+    taskId,
+    decision: decision as "accept" | "revise" | "replan",
+    notes,
+  });
+
+  if (!result.ok) return toolError(result.error);
+  if (result.decision === "accept") {
+    return toolOk(
+      `Plan accepted. You can now propose_hire a Developer with plan_task_id="${result.taskId}".`,
+      { decision: "accept", taskId: result.taskId },
+    );
+  }
+  if (result.decision === "revise") {
+    return toolOk(
+      `Plan flagged for revision. A new Planner task is in flight; you'll be notified when the revised plan is ready.\nrevisionTaskId: ${result.childTaskId}`,
+      { decision: "revise", taskId: result.taskId, childTaskId: result.childTaskId },
+    );
+  }
+  return toolOk(
+    `Plan flagged replan. Re-delegate to the Planner with a clearer brief when ready.`,
+    { decision: "replan", taskId: result.taskId },
+  );
 }
 
 async function handleReadTaskResult(
