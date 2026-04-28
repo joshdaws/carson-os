@@ -171,6 +171,14 @@
 - **Context:** Complements the music-pack tools (above). Brother's version is all-subagent; CarsonOS benefits from the split.
 - **Depends on:** v0.4 delegation flow shipped. Music-pack tools (above) — Mozart wraps them in a specialist system prompt.
 
+## v5.X — HEARTBEAT.md per agent (deferred from v5 CEO review 2026-04-27)
+- **What:** Per-agent declarative cadence file at `~/.carsonos/agents/{slug}/HEARTBEAT.md` describing every-message hooks, daily/weekly tasks, quiet hours, schedule staggering. From gbrain's soul-audit pattern.
+- **Why:** Single auditable surface for "here's when this agent does what" instead of cadence scattered across cron, scheduler, and skill descriptions.
+- **Pros:** Auditable, version-controllable, fits the identity-files-on-disk story (USER.md / PERSONALITY.md / RESOLVER.md).
+- **Cons:** **Likely solves no problem.** The existing scheduled-tasks system already works as the source-of-truth for agent cadence; a declarative file adds drift surface without addressing a real need. Calibrated learning: prefer data-as-source-of-truth over config-file-as-source-of-truth when the data already exists.
+- **Context:** Deferred from v5 SELECTIVE EXPANSION cherry-pick #4. Revisit ONLY IF scheduled tasks prove insufficient for some specific cadence requirement that can't be expressed as a schedule entry. Probably never.
+- **Depends on:** scheduled-tasks system staying as-is and continuing to be the right primitive.
+
 ## Future — Suno integration
 - **What:** Direct Suno generation from within CarsonOS. Let the music agent generate a demo and deliver the MP3 back in Telegram.
 - **Why:** Suno-as-a-tool closes the "compose → generate → iterate" loop without leaving the chat.
