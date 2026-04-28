@@ -484,6 +484,194 @@ Body.
   });
 });
 
+// ── Type translation (gbrain → v5 mapping) ──────────────────────────
+
+describe("type translation", () => {
+  it("translates `contact` → `person` and adds 'contact' to topics", async () => {
+    const filePath = plantMemory(
+      "household",
+      "ad-robles.md",
+      `---
+id: ad-robles
+type: contact
+title: AD Robles
+created: 2026-04-21
+---
+
+# AD Robles
+
+YouTube personality, tech recruiter by day.
+`,
+    );
+
+    await migrate({ dataDir: tmpDataDir, log: silentLog() });
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/type:\s*person/);
+    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/^\s+- contact$/m);
+    // Translated to person → entity → two-layer split must appear.
+    expect(after).toMatch(/Compiled view — provisional/);
+    expect(after).toMatch(/^---$/m);
+    // Original body preserved as atom.
+    expect(after).toMatch(/YouTube personality/);
+  });
+
+  it("translates `meeting` → `event` and adds topic", async () => {
+    const filePath = plantMemory(
+      "household",
+      "2026-04-15-school-meeting.md",
+      `---
+id: 2026-04-15-school-meeting
+type: meeting
+title: School parent-teacher meeting
+created: 2026-04-15
+---
+
+# School parent-teacher meeting
+
+Notes from the meeting.
+`,
+    );
+
+    await migrate({ dataDir: tmpDataDir, log: silentLog() });
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/type:\s*event/);
+    expect(after).toMatch(/^\s+- meeting$/m);
+    // event is a flat type — no two-layer split.
+    expect(after).not.toMatch(/Compiled view — provisional/);
+  });
+
+  it("translates `insight` → `concept` and adds topic", async () => {
+    const filePath = plantMemory(
+      "household",
+      "trust-over-permissions.md",
+      `---
+id: trust-over-permissions
+type: insight
+title: Trust over permissions
+created: 2026-04-20
+---
+
+# Trust over permissions
+
+Govern via autonomy + operating instructions, not ACLs.
+`,
+    );
+
+    await migrate({ dataDir: tmpDataDir, log: silentLog() });
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/type:\s*concept/);
+    expect(after).toMatch(/^\s+- insight$/m);
+    expect(after).toMatch(/Compiled view — provisional/);
+  });
+
+  it("preserves existing topics when adding the translation tag", async () => {
+    const filePath = plantMemory(
+      "household",
+      "ad-robles.md",
+      `---
+id: ad-robles
+type: contact
+title: AD Robles
+created: 2026-04-21
+topics:
+  - tech-recruiter
+  - friend
+---
+
+# AD Robles
+
+Body.
+`,
+    );
+
+    await migrate({ dataDir: tmpDataDir, log: silentLog() });
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/^\s+- tech-recruiter$/m);
+    expect(after).toMatch(/^\s+- friend$/m);
+    expect(after).toMatch(/^\s+- contact$/m);
+  });
+
+  it("re-migrates a previously-migrated file when its type is now in the translation table", async () => {
+    // Simulate a file that went through an earlier conservative pass:
+    // already has `migration_version: 5.0` but type is still `contact`.
+    const filePath = plantMemory(
+      "household",
+      "old-contact.md",
+      `---
+id: old-contact
+type: contact
+title: Some contact
+created: 2026-04-21
+migration_version: "5.0"
+---
+
+# Some contact
+
+Body that was preserved by the earlier flat-treatment pass.
+`,
+    );
+
+    expect(migrateFile(filePath, false)).toBe("migrated");
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/type:\s*person/);
+    expect(after).toMatch(/^\s+- contact$/m);
+    // Body is preserved — we don't re-wrap an already-translated file.
+    expect(after).toMatch(/Body that was preserved/);
+  });
+
+  it("a v5-type file at migration_version 5.0 stays skipped (no false re-migration)", () => {
+    const filePath = plantMemory(
+      "household",
+      "stable-fact.md",
+      `---
+id: stable-fact
+type: fact
+title: Stable fact
+created: 2026-04-21
+migration_version: "5.0"
+---
+
+# Stable fact
+
+Body.
+`,
+    );
+
+    expect(migrateFile(filePath, false)).toBe("skipped");
+  });
+
+  it("untranslated unknown type stays as-is (flat treatment)", async () => {
+    const filePath = plantMemory(
+      "household",
+      "weird-type.md",
+      `---
+id: weird-type
+type: sweep
+title: Some sweep
+created: 2026-04-21
+---
+
+# Some sweep
+
+Body.
+`,
+    );
+
+    await migrate({ dataDir: tmpDataDir, log: silentLog() });
+    const after = readFileSync(filePath, "utf-8");
+
+    expect(after).toMatch(/type:\s*sweep/);
+    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).not.toMatch(/Compiled view — provisional/);
+  });
+});
+
 // ── Collection-scoped migration (SPIKE step 2) ──────────────────────
 
 describe("collection scoping", () => {

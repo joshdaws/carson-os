@@ -42,6 +42,29 @@ const ENTITY_TYPES = new Set<string>([
   "concept",
 ]);
 
+/**
+ * Folds gbrain-style and other external type vocabularies into v5's 14
+ * canonical types. The original type name is preserved as a `topics`
+ * entry so search/filter by the old name still works.
+ *
+ * Rationale: many external brains (gbrain, Obsidian-style vaults) use
+ * operational distinctions (`session` vs `meeting` vs `transcript`) or
+ * fine-grained semantic tags (`insight` vs `map` vs `concept`) that
+ * collapse cleanly into v5's coarser type system. Keeping 14 types
+ * preserves agent classification accuracy; preserving the old type name
+ * as a topic preserves filter precision. SPIKE finding 2026-04-28.
+ */
+const TYPE_TRANSLATIONS: Record<string, { to: string; topic: string }> = {
+  contact: { to: "person", topic: "contact" },
+  meeting: { to: "event", topic: "meeting" },
+  session: { to: "event", topic: "session" },
+  transcript: { to: "event", topic: "transcript" },
+  insight: { to: "concept", topic: "insight" },
+  map: { to: "concept", topic: "map" },
+  reference: { to: "media", topic: "reference" },
+  content: { to: "media", topic: "content" },
+};
+
 const PLACEHOLDER_COMPILED_VIEW = [
   "(Compiled view — provisional. The compilation agent will regenerate this",
   "from the atoms below in v5.1. Until then, treat the timeline below as",
@@ -54,11 +77,15 @@ interface MigrationManifest {
   phase: "pre-v5.0";
   dbFile: string;
   memoryDir: string;
+  /** Absolute path the memory dir lived at when the backup was taken. Set when `memoryDir` was overridden via CARSONOS_MEMORY_DIR or --memory-dir. Used by restore to put the dir back where it came from. */
+  memoryDirAbsPath?: string;
 }
 
 interface MigrateOptions {
   dataDir: string;
-  /** When set, only walk `${dataDir}/memory/${collection}` instead of every collection. SPIKE step 2 uses this to scope the live test to one family member. */
+  /** Absolute path to the memory root to walk. Defaults to `${dataDir}/memory`. Set this when CARSONOS_MEMORY_DIR is overridden (e.g., gbrain-style brains living at `~/projects/brain`). */
+  memoryDir?: string;
+  /** When set, only walk `${memoryDir}/${collection}` instead of every collection. SPIKE step 2 uses this to scope the live test to one family member. */
   collection?: string;
   dryRun?: boolean;
   log?: (msg: string) => void;
@@ -85,7 +112,8 @@ interface ParsedMemoryFile {
  */
 export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   const log = options.log ?? ((msg: string) => console.log(msg));
-  const memoryRoot = join(options.dataDir, "memory");
+  const memoryRoot = options.memoryDir ?? join(options.dataDir, "memory");
+  const memoryRootIsExternal = options.memoryDir !== undefined;
 
   if (!existsSync(memoryRoot)) {
     log(`[migrate-v50] No memory dir at ${memoryRoot} — nothing to migrate.`);
@@ -94,7 +122,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
 
   // Scope the walk: full tree by default, or a single collection when
   // `collection` is set. The pre-migration backup still captures the
-  // entire memory dir + DB regardless of scope — restore is all-or-nothing.
+  // entire memory root + DB regardless of scope — restore is all-or-nothing.
   const walkRoot = options.collection
     ? join(memoryRoot, options.collection)
     : memoryRoot;
@@ -108,7 +136,11 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   // backup itself writes to disk.
   let backupPath: string | null = null;
   if (!options.dryRun) {
-    backupPath = await createPreV50Backup(options.dataDir, log);
+    backupPath = await createPreV50Backup(
+      options.dataDir,
+      memoryRootIsExternal ? memoryRoot : undefined,
+      log,
+    );
   } else {
     log(`[migrate-v50] --dry-run: skipping backup`);
   }
@@ -158,6 +190,8 @@ export async function restoreFromBackup(
   options: {
     dataDir: string;
     currentVersion: string;
+    /** Override the memory dir destination. If omitted, uses the path stored in the backup's manifest (memoryDirAbsPath if external, else `${dataDir}/memory`). */
+    memoryDir?: string;
     forceVersionMismatch?: boolean;
     log?: (msg: string) => void;
   },
@@ -192,7 +226,8 @@ export async function restoreFromBackup(
 
   // Atomic swap: rename live → .bak, rename staging → live.
   const swapTimestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const liveMemoryDir = join(options.dataDir, "memory");
+  const liveMemoryDir =
+    options.memoryDir ?? manifest.memoryDirAbsPath ?? join(options.dataDir, "memory");
   const liveDbPath = join(options.dataDir, "carsonos.db");
 
   const stagedMemoryDir = join(stagingDir, "memory");
@@ -211,13 +246,14 @@ export async function restoreFromBackup(
   }
 
   rmSync(stagingDir, { recursive: true, force: true });
-  log(`[restore-v50] Restored from ${tarballPath}. Live state replaced; previous saved with .bak.${swapTimestamp} suffix.`);
+  log(`[restore-v50] Restored from ${tarballPath}. Memory at ${liveMemoryDir}; previous saved with .bak.${swapTimestamp} suffix.`);
 }
 
 // ── Backup creation ─────────────────────────────────────────────────
 
 async function createPreV50Backup(
   dataDir: string,
+  externalMemoryDir: string | undefined,
   log: (msg: string) => void,
 ): Promise<string> {
   const { copyFileSync, cpSync } = await import("node:fs");
@@ -238,6 +274,7 @@ async function createPreV50Backup(
       phase: "pre-v5.0",
       dbFile: "carsonos.db",
       memoryDir: "memory",
+      memoryDirAbsPath: externalMemoryDir,
     };
     writeFileSync(join(stageDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf-8");
 
@@ -246,9 +283,9 @@ async function createPreV50Backup(
       copyFileSync(dbPath, join(stageDir, "carsonos.db"));
     }
 
-    const memoryDir = join(dataDir, "memory");
-    if (existsSync(memoryDir)) {
-      cpSync(memoryDir, join(stageDir, "memory"), { recursive: true });
+    const memorySource = externalMemoryDir ?? join(dataDir, "memory");
+    if (existsSync(memorySource)) {
+      cpSync(memorySource, join(stageDir, "memory"), { recursive: true });
     }
 
     await tarCreate(
@@ -270,6 +307,11 @@ async function createPreV50Backup(
 /**
  * Migrate a single memory file in place. Returns "migrated" if the
  * file was rewritten, "skipped" if it was already at v5.0 or empty.
+ *
+ * A file at `migration_version: 5.0` is normally skipped, but is
+ * re-migrated when its `type` matches the TYPE_TRANSLATIONS table —
+ * that way an earlier conservative pass can be revisited as the
+ * translation rules expand.
  */
 export function migrateFile(filePath: string, dryRun: boolean): "migrated" | "skipped" {
   const raw = readFileSync(filePath, "utf-8");
@@ -286,31 +328,58 @@ export function migrateFile(filePath: string, dryRun: boolean): "migrated" | "sk
     return "skipped";
   }
 
-  // Idempotency check: migration_version field. Per eng review 1.4,
-  // we do NOT rely on a `---` heuristic — body content can legitimately
-  // contain `---` as a horizontal rule.
-  if (parsed.frontmatter.migration_version === TARGET_VERSION) {
+  const originalType = String(parsed.frontmatter.type ?? "");
+  const translation = TYPE_TRANSLATIONS[originalType];
+  const alreadyAtTarget = parsed.frontmatter.migration_version === TARGET_VERSION;
+
+  // Idempotency: skip if already at target AND type doesn't need translation.
+  // Per eng review 1.4, we do NOT rely on a `---` heuristic — body content
+  // can legitimately contain `---` as a horizontal rule.
+  if (alreadyAtTarget && !translation) {
     return "skipped";
   }
 
-  const type = String(parsed.frontmatter.type ?? "");
-  const isEntity = ENTITY_TYPES.has(type);
+  // Apply type translation if applicable: rewrite the type and add the
+  // original name as a topic for filter preservation.
+  const finalType = translation ? translation.to : originalType;
+  const isEntity = ENTITY_TYPES.has(finalType);
 
   // Build new frontmatter: preserve everything (including unknown keys),
-  // add migration_version + sensible defaults.
+  // apply translation if any, add migration_version + sensible defaults.
   const newFrontmatter: Record<string, unknown> = {
     ...parsed.frontmatter,
+    type: finalType,
     migration_version: TARGET_VERSION,
   };
+
+  if (translation) {
+    const existingTopics = Array.isArray(parsed.frontmatter.topics)
+      ? (parsed.frontmatter.topics as string[])
+      : typeof parsed.frontmatter.topics === "string"
+        ? [parsed.frontmatter.topics as string]
+        : [];
+    if (!existingTopics.includes(translation.topic)) {
+      newFrontmatter.topics = [...existingTopics, translation.topic];
+    }
+  }
+
   if (isEntity && newFrontmatter.aliases === undefined) {
     newFrontmatter.aliases = [];
   }
 
-  // Build new body.
+  // Build new body. If the file is already at target (re-migrating for
+  // type translation only), preserve the existing body shape — don't
+  // rebuild the two-layer split, since that would re-wrap an already-
+  // wrapped page. Translation alone is a frontmatter change.
   const title = String(parsed.frontmatter.title ?? basename(filePath, ".md"));
-  const newBody = isEntity
-    ? buildTwoLayerBody(title, parsed, newFrontmatter)
-    : buildFlatBody(title, parsed.body);
+  let newBody: string;
+  if (alreadyAtTarget) {
+    newBody = parsed.body.trim() + "\n";
+  } else if (isEntity) {
+    newBody = buildTwoLayerBody(title, parsed, newFrontmatter);
+  } else {
+    newBody = buildFlatBody(title, parsed.body);
+  }
 
   const newContent = serializeMemoryFile(newFrontmatter, newBody);
 
@@ -526,6 +595,12 @@ async function main(): Promise<void> {
       ? args[dataDirIdx + 1]
       : process.env.DATA_DIR ?? join(homedir(), ".carsonos");
 
+  const memoryDirIdx = args.indexOf("--memory-dir");
+  const memoryDir =
+    memoryDirIdx >= 0
+      ? args[memoryDirIdx + 1]
+      : process.env.CARSONOS_MEMORY_DIR;
+
   const restoreIdx = args.indexOf("--restore-from-backup");
   if (restoreIdx >= 0) {
     const tarballPath = args[restoreIdx + 1];
@@ -535,6 +610,7 @@ async function main(): Promise<void> {
     }
     await restoreFromBackup(tarballPath, {
       dataDir,
+      memoryDir,
       currentVersion: getCarsonosVersion(),
       forceVersionMismatch: args.includes("--force-version-mismatch"),
     });
@@ -547,6 +623,7 @@ async function main(): Promise<void> {
 
   const result = await migrate({
     dataDir,
+    memoryDir,
     collection,
     dryRun: args.includes("--dry-run"),
   });

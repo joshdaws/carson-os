@@ -235,7 +235,13 @@ export class QmdMemoryProvider implements MemoryProvider {
       })
       .join("\n");
 
-    const fileContent = `---\n${yaml}\n---\n\n# ${entry.title}\n\n${entry.content}\n`;
+    // Strip a leading `# heading` from incoming content. We always emit
+    // `# ${title}` ourselves below, so leaving an existing one in place
+    // produces a duplicate heading after the first round-trip through
+    // save → read → update → save. Surfaced 2026-04-28 via v5 SPIKE.
+    const cleanContent = stripLeadingHeading(entry.content);
+
+    const fileContent = `---\n${yaml}\n---\n\n# ${entry.title}\n\n${cleanContent}\n`;
     writeFileSync(filePath, fileContent, "utf-8");
 
     // Trigger QMD reindex in the background (don't block on it)
@@ -293,7 +299,8 @@ export class QmdMemoryProvider implements MemoryProvider {
       })
       .join("\n");
 
-    const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${content}\n`;
+    const cleanContent = stripLeadingHeading(content);
+    const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${cleanContent}\n`;
     writeFileSync(filePath, fileContent, "utf-8");
 
     // Trigger QMD reindex in the background
@@ -421,6 +428,17 @@ export class QmdMemoryProvider implements MemoryProvider {
 }
 
 // ── Pure helpers ───────────────────────────────────────────────────
+
+/**
+ * Strip a single leading `# heading` line from a body, plus any blank
+ * lines that follow. Used by save/update to prevent duplicate `# title`
+ * lines: we always emit `# ${title}` ourselves, so any leading heading
+ * in the incoming content (typically left over from the previous save's
+ * own emission) must be removed first.
+ */
+export function stripLeadingHeading(body: string): string {
+  return body.replace(/^\s*#\s+[^\n]*\n+/, "");
+}
 
 function generateMemoryId(title: string): string {
   const date = new Date().toISOString().slice(0, 10);
