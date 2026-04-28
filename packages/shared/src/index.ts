@@ -174,11 +174,12 @@ export type MemoryType =
   | "routine"
   | "relationship"
   | "goal"
-  | "skill";
+  | "skill"
+  | "concept";
 
 export interface MemorySchemaField {
   name: string;
-  type: "string" | "string[]" | "date" | "enum";
+  type: "string" | "string[]" | "date" | "enum" | "number";
   required?: boolean;
   enumValues?: string[];
   description?: string;
@@ -192,6 +193,12 @@ export interface MemorySchemaType {
 
 export interface MemorySchema {
   types: MemorySchemaType[];
+  /**
+   * Fields available on every memory regardless of type. Added in v5.0
+   * for atom-level provenance + correction tracking. Rendered separately
+   * in the prompt so the per-type field lists stay tight.
+   */
+  commonFields?: MemorySchemaField[];
 }
 
 export interface MemoryEntry {

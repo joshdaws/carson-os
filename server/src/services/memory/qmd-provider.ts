@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import matter from "gray-matter";
 import type {
   MemoryProvider,
   MemoryEntry,
@@ -52,10 +53,38 @@ export class QmdMemoryProvider implements MemoryProvider {
   private rootDir: string;
   private collections = new Map<string, string>(); // name → directory path
   private collectionAliases = new Map<string, string>(); // name → existing QMD collection name
+  /**
+   * Per-file write lock. Concurrent save/update/delete calls targeting
+   * the same memory file (e.g., 3 grammy bots in the same Node process
+   * appending to a shared entity page) serialize through this map.
+   * Different files do not block each other. Eng-review issue 1A,
+   * 2026-04-27.
+   */
+  private fileLocks = new Map<string, Promise<unknown>>();
 
   constructor(rootDir: string) {
     this.rootDir = rootDir;
     mkdirSync(rootDir, { recursive: true });
+  }
+
+  /**
+   * Run an async operation while holding an exclusive lock on the given
+   * file path. Other calls for the same path queue behind it FIFO. Locks
+   * for different paths run independently.
+   *
+   * Errors from earlier holders are swallowed at the lock layer (via
+   * `.catch`) so a failed save doesn't poison subsequent waiters. The
+   * actual error still propagates to the caller that triggered it.
+   *
+   * The map grows by one entry per unique file path ever written. For a
+   * family with N memories that's O(N) — bounded and small enough that
+   * explicit cleanup isn't worth the complexity.
+   */
+  private async withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.fileLocks.get(filePath) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(fn);
+    this.fileLocks.set(filePath, next.catch(() => undefined));
+    return next;
   }
 
   /** Resolve a collection name to its QMD collection name (follows aliases). */
@@ -217,39 +246,41 @@ export class QmdMemoryProvider implements MemoryProvider {
     const fileName = `${id}.md`;
     const filePath = join(dir, fileName);
 
-    // Build YAML frontmatter
-    const fm: Record<string, unknown> = {
-      id,
-      type: entry.type,
-      title: entry.title,
-      created: new Date().toISOString().slice(0, 10),
-      ...entry.frontmatter,
-    };
+    return this.withFileLock(filePath, async () => {
+      // Build YAML frontmatter
+      const fm: Record<string, unknown> = {
+        id,
+        type: entry.type,
+        title: entry.title,
+        created: new Date().toISOString().slice(0, 10),
+        ...entry.frontmatter,
+      };
 
-    const yaml = Object.entries(fm)
-      .map(([key, val]) => {
-        if (Array.isArray(val)) {
-          return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
-        }
-        return `${key}: ${val}`;
-      })
-      .join("\n");
+      const yaml = Object.entries(fm)
+        .map(([key, val]) => {
+          if (Array.isArray(val)) {
+            return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
+          }
+          return `${key}: ${val}`;
+        })
+        .join("\n");
 
-    // Strip a leading `# heading` from incoming content. We always emit
-    // `# ${title}` ourselves below, so leaving an existing one in place
-    // produces a duplicate heading after the first round-trip through
-    // save → read → update → save. Surfaced 2026-04-28 via v5 SPIKE.
-    const cleanContent = stripLeadingHeading(entry.content);
+      // Strip a leading `# heading` from incoming content. We always emit
+      // `# ${title}` ourselves below, so leaving an existing one in place
+      // produces a duplicate heading after the first round-trip through
+      // save → read → update → save. Surfaced 2026-04-28 via v5 SPIKE.
+      const cleanContent = stripLeadingHeading(entry.content);
 
-    const fileContent = `---\n${yaml}\n---\n\n# ${entry.title}\n\n${cleanContent}\n`;
-    writeFileSync(filePath, fileContent, "utf-8");
+      const fileContent = `---\n${yaml}\n---\n\n# ${entry.title}\n\n${cleanContent}\n`;
+      writeFileSync(filePath, fileContent, "utf-8");
 
-    // Trigger QMD reindex in the background (don't block on it)
-    this.reindex().catch((err) => {
-      console.warn("[memory] Background reindex failed:", err);
+      // Trigger QMD reindex in the background (don't block on it)
+      this.reindex().catch((err) => {
+        console.warn("[memory] Background reindex failed:", err);
+      });
+
+      return { id, filePath };
     });
-
-    return { id, filePath };
   }
 
   async update(
@@ -272,43 +303,45 @@ export class QmdMemoryProvider implements MemoryProvider {
       throw new Error(`Memory "${id}" not found in collection "${collection}"`);
     }
 
-    // Read existing file and parse frontmatter
-    const existing = readFileSync(filePath, "utf-8");
-    const parsed = parseMemoryFile(existing, filePath, collection);
-    if (!parsed) {
-      throw new Error(`Could not parse memory file: ${filePath}`);
-    }
+    return this.withFileLock(filePath, async () => {
+      // Read existing file and parse frontmatter
+      const existing = readFileSync(filePath, "utf-8");
+      const parsed = parseMemoryFile(existing, filePath, collection);
+      if (!parsed) {
+        throw new Error(`Could not parse memory file: ${filePath}`);
+      }
 
-    // Merge updates
-    const title = entry.title ?? parsed.title;
-    const content = entry.content ?? parsed.content;
-    const fm: Record<string, unknown> = {
-      ...parsed.frontmatter,
-      ...entry.frontmatter,
-      id,
-      title,
-      updated: new Date().toISOString().slice(0, 10),
-    };
+      // Merge updates
+      const title = entry.title ?? parsed.title;
+      const content = entry.content ?? parsed.content;
+      const fm: Record<string, unknown> = {
+        ...parsed.frontmatter,
+        ...entry.frontmatter,
+        id,
+        title,
+        updated: new Date().toISOString().slice(0, 10),
+      };
 
-    const yaml = Object.entries(fm)
-      .map(([key, val]) => {
-        if (Array.isArray(val)) {
-          return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
-        }
-        return `${key}: ${val}`;
-      })
-      .join("\n");
+      const yaml = Object.entries(fm)
+        .map(([key, val]) => {
+          if (Array.isArray(val)) {
+            return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
+          }
+          return `${key}: ${val}`;
+        })
+        .join("\n");
 
-    const cleanContent = stripLeadingHeading(content);
-    const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${cleanContent}\n`;
-    writeFileSync(filePath, fileContent, "utf-8");
+      const cleanContent = stripLeadingHeading(content);
+      const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${cleanContent}\n`;
+      writeFileSync(filePath, fileContent, "utf-8");
 
-    // Trigger QMD reindex in the background
-    this.reindex().catch((err) => {
-      console.warn("[memory] Background reindex failed:", err);
+      // Trigger QMD reindex in the background
+      this.reindex().catch((err) => {
+        console.warn("[memory] Background reindex failed:", err);
+      });
+
+      return { id, filePath };
     });
-
-    return { id, filePath };
   }
 
   /**
@@ -384,11 +417,14 @@ export class QmdMemoryProvider implements MemoryProvider {
     if (!filePath) {
       throw new Error(`Memory "${id}" not found in collection "${collection}"`);
     }
-    unlinkSync(filePath);
 
-    // Trigger QMD reindex in the background
-    this.reindex().catch((err) => {
-      console.warn("[memory] Background reindex failed:", err);
+    await this.withFileLock(filePath, async () => {
+      unlinkSync(filePath);
+
+      // Trigger QMD reindex in the background
+      this.reindex().catch((err) => {
+        console.warn("[memory] Background reindex failed:", err);
+      });
     });
   }
 
@@ -467,62 +503,49 @@ function cleanSnippet(snippet: string): string {
     .slice(0, 500);
 }
 
+/**
+ * Parse a memory file into its structured pieces. Backed by `gray-matter`
+ * since v0.5.0 — handles multi-line strings, nested arrays, escaped
+ * characters, and the variety of YAML shapes the v0.4 hand-rolled parser
+ * couldn't. Returns null when the file has no frontmatter (so non-memory
+ * markdown notes living in the dir are skipped, not corrupted).
+ */
 function parseMemoryFile(
   content: string,
   filePath: string,
   collection: string,
 ): MemoryEntry | null {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!fmMatch) return null;
-
-  const fmBlock = fmMatch[1];
-  const body = fmMatch[2].trim();
-
-  // Simple YAML parsing (good enough for our frontmatter)
-  const fm: Record<string, unknown> = {};
-  let currentKey = "";
-  let currentArray: string[] | null = null;
-
-  for (const line of fmBlock.split("\n")) {
-    const arrayItem = line.match(/^\s+-\s+(.+)$/);
-    if (arrayItem && currentKey) {
-      if (!currentArray) currentArray = [];
-      currentArray.push(arrayItem[1]);
-      fm[currentKey] = currentArray;
-      continue;
-    }
-
-    if (currentArray) {
-      currentArray = null;
-    }
-
-    const kv = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-    if (kv) {
-      currentKey = kv[1];
-      const val = kv[2].trim();
-      if (val) {
-        fm[currentKey] = val;
-      }
-      // If val is empty, it might be a list header — wait for array items
-      if (!val) {
-        currentArray = [];
-      }
-    }
+  // Skip files that don't begin with a frontmatter fence — we don't want
+  // to rewrite arbitrary markdown notes that happen to live in the dir.
+  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
+    return null;
   }
 
-  // Extract title from first heading or frontmatter
+  let parsed: matter.GrayMatterFile<string>;
+  try {
+    parsed = matter(content);
+  } catch {
+    return null;
+  }
+
+  const fm = parsed.data as Record<string, unknown>;
+  const body = parsed.content.trim();
+
+  // Extract title: prefer frontmatter, then first heading, then filename.
   const titleMatch = body.match(/^#\s+(.+)$/m);
   const title =
-    (fm.title as string) ?? titleMatch?.[1] ?? basename(filePath, ".md");
+    (typeof fm.title === "string" ? fm.title : undefined) ??
+    titleMatch?.[1] ??
+    basename(filePath, ".md");
 
   return {
-    id: (fm.id as string) ?? basename(filePath, ".md"),
-    type: (fm.type as MemoryType) ?? "fact",
+    id: (typeof fm.id === "string" ? fm.id : undefined) ?? basename(filePath, ".md"),
+    type: ((fm.type as MemoryType) ?? "fact") as MemoryType,
     title,
     content: body,
     frontmatter: fm,
     filePath,
     collection,
-    createdAt: fm.created as string | undefined,
+    createdAt: typeof fm.created === "string" ? fm.created : undefined,
   };
 }

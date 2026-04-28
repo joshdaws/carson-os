@@ -90,7 +90,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: "update_memory",
     description:
-      "Update an existing memory with new or corrected information. Use this instead of delete+save when a memory exists but needs to be enriched or corrected. Preserves the original entry and updates it in place — no data loss.",
+      "Update an existing memory with new or corrected information. Use this instead of delete+save when a memory exists but needs to be enriched or corrected. Preserves the original entry and updates it in place — no data loss. When the new content introduces concepts, people, or topics not already tagged, EXTEND the `topics` array via the `frontmatter` parameter so future searches and filters surface the connection. Read existing content before composing the update so you preserve sections you're not explicitly changing.",
     input_schema: {
       type: "object",
       properties: {
@@ -110,12 +110,12 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         content: {
           type: "string",
           description:
-            "New content (optional — keeps existing if not provided). Provide the full updated content, not just the diff.",
+            "New content (optional — keeps existing if not provided). Provide the full updated content, not just the diff. Do NOT include the title as a `# heading` line — the storage layer adds that automatically.",
         },
         frontmatter: {
           type: "object",
           description:
-            "Updated frontmatter fields to merge (optional). Only provided fields are changed.",
+            "Updated frontmatter fields to merge (optional). Only provided fields are changed. To extend topics: pass `{ topics: [...existing, 'new-tag'] }` — the merge is shallow so the array is replaced wholesale.",
         },
       },
       required: ["id", "collection"],

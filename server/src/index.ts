@@ -99,6 +99,31 @@ async function main() {
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");
 
+  // 0b. Run v0.4 → v5.0 memory migration. Idempotent (skips files
+  // already at migration_version: 5.0). Creates its own combined
+  // DB+memory tarball before mutating anything; --restore-from-backup
+  // reverts. Disable with CARSONOS_SKIP_V50_MIGRATION=1 during
+  // controlled rollouts.
+  if (process.env.CARSONOS_SKIP_V50_MIGRATION !== "1") {
+    try {
+      const { migrate } = await import("./services/memory/migrate-v04-to-v50.js");
+      const result = await migrate({
+        dataDir: config.dataDir,
+        memoryDir: config.memory.rootDir,
+      });
+      if (result.migrated > 0) {
+        console.log(
+          `[migrate-v50] Migrated ${result.migrated} memory file(s); ` +
+            `${result.skipped} already current. Backup at ${result.backupPath}`,
+        );
+      } else if (result.errors.length > 0) {
+        console.warn(`[migrate-v50] ${result.errors.length} error(s); see log above`);
+      }
+    } catch (err) {
+      console.warn("[migrate-v50] Migration failed (non-fatal):", err);
+    }
+  }
+
   // 1. Boot database (pre-migration hook creates another backup if schema changes)
   const db = createDb(dbPath, (reason) => {
     backupDatabase(dbPath, config.dataDir, reason);

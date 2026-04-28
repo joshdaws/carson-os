@@ -7,12 +7,12 @@
  * heuristics, which would false-trigger on memories that legitimately
  * use `---` as a horizontal rule in body content.
  *
- * Usage:
- *   tsx server/scripts/migrate_v04_to_v50.ts [--data-dir <path>] [--dry-run]
- *   tsx server/scripts/migrate_v04_to_v50.ts --restore-from-backup <tarball> [--data-dir <path>] [--force-version-mismatch]
+ * Usage as CLI:
+ *   tsx server/src/services/memory/migrate-v04-to-v50.ts [--data-dir <path>] [--memory-dir <path>] [--collection <name>] [--dry-run]
+ *   tsx server/src/services/memory/migrate-v04-to-v50.ts --restore-from-backup <tarball> [--data-dir <path>] [--memory-dir <path>] [--force-version-mismatch]
  *
- * Boot integration: invoked from server/src/index.ts after the
- * pre-migration auto-backup step. See design doc line 135.
+ * Boot integration: imported from server/src/index.ts and invoked after
+ * the pre-migration auto-backup step. Idempotent on subsequent boots.
  */
 
 import {
@@ -635,7 +635,7 @@ async function main(): Promise<void> {
 
 // Only run main when invoked directly (not when imported by boot or tests).
 const invokedDirectly =
-  process.argv[1] && process.argv[1].endsWith("migrate_v04_to_v50.ts");
+  process.argv[1] && process.argv[1].endsWith("migrate-v04-to-v50.ts");
 if (invokedDirectly) {
   main().catch((err) => {
     console.error("[migrate-v50] FATAL:", err);

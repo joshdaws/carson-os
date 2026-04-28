@@ -21,7 +21,7 @@ import {
   migrate,
   migrateFile,
   restoreFromBackup,
-} from "../migrate_v04_to_v50.js";
+} from "../migrate-v04-to-v50.js";
 
 let tmpDataDir: string;
 

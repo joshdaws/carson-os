@@ -1,11 +1,12 @@
 /**
- * Default memory schema — defines the 7 memory types agents can work with.
+ * Default memory schema — defines the 14 memory types agents can work with.
  *
  * Each type has a description (for the agent prompt) and frontmatter
- * fields (for structured YAML headers on markdown files).
+ * fields (for structured YAML headers on markdown files). v5.0 adds the
+ * `concept` type and a set of common fields (importance, corrects,
+ * superseded_by) that apply to every memory regardless of type.
  *
  * Parents can override this schema in the dashboard (post-MVP).
- * For v1.0, this is the only schema.
  */
 
 import type { MemorySchema } from "@carsonos/shared";
@@ -143,6 +144,41 @@ export const DEFAULT_MEMORY_SCHEMA: MemorySchema = {
         { name: "topics", type: "string[]", description: "Relevant topic tags" },
       ],
     },
+    {
+      type: "concept",
+      description: "A reusable mental model, framework, or family value that predates and outlasts specific decisions. New in v5.0. Distinct from `preference` (taste-shaped, individual), `decision` (a moment-in-time call), and `fact` (observable claim).",
+      fields: [
+        { name: "topics", type: "string[]", description: "Relevant topic tags" },
+        { name: "scope", type: "enum", enumValues: ["household", "personal", "domain"], description: "Whose mental model is this" },
+      ],
+    },
+  ],
+  commonFields: [
+    {
+      name: "importance",
+      type: "number",
+      description: "Atom importance, 1–10 (default 5). Corrections are 10. The compilation agent top-bills high-importance atoms in the regenerable compiled view above the `---` line.",
+    },
+    {
+      name: "corrects",
+      type: "string",
+      description: "Atom ID this entry corrects. Use the `correct_memory` tool when fixing a prior atom — it sets this field plus `importance: 10` and links the original via `superseded_by`.",
+    },
+    {
+      name: "superseded_by",
+      type: "string",
+      description: "Atom ID that supersedes this entry. Set automatically when a correction lands.",
+    },
+    {
+      name: "verbatim",
+      type: "string",
+      description: "Set to true when the body should be preserved exactly — never paraphrase. Pair with `verbatim_source` for attribution. A verbatim quote can be any type (decision, preference, concept, etc.) — verbatim is a field, not a type.",
+    },
+    {
+      name: "verbatim_source",
+      type: "string",
+      description: "Who said the verbatim content. Required when `verbatim: true`.",
+    },
   ],
 };
 
@@ -165,6 +201,16 @@ export function buildMemorySchemaInstructions(schema: MemorySchema): string {
   for (const t of schema.types) {
     lines.push(`**${t.type}** — ${t.description}`);
     for (const f of t.fields) {
+      const req = f.required ? " (required)" : "";
+      const vals = f.enumValues ? ` [${f.enumValues.join(", ")}]` : "";
+      lines.push(`  - ${f.name}: ${f.type}${vals}${req} — ${f.description}`);
+    }
+    lines.push("");
+  }
+
+  if (schema.commonFields && schema.commonFields.length > 0) {
+    lines.push("**Common fields** (apply to every memory type):");
+    for (const f of schema.commonFields) {
       const req = f.required ? " (required)" : "";
       const vals = f.enumValues ? ` [${f.enumValues.join(", ")}]` : "";
       lines.push(`  - ${f.name}: ${f.type}${vals}${req} — ${f.description}`);

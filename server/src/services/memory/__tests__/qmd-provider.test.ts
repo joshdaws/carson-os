@@ -7,8 +7,11 @@
  * its own `# title` line. Surfaced via v5 SPIKE Telegram tests.
  */
 
-import { describe, it, expect } from "vitest";
-import { stripLeadingHeading } from "../qmd-provider.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { stripLeadingHeading, QmdMemoryProvider } from "../qmd-provider.js";
 
 describe("stripLeadingHeading", () => {
   it("strips a leading `# title` followed by a blank line", () => {
@@ -63,5 +66,102 @@ The original atom content here.`;
   it("handles empty or whitespace-only input", () => {
     expect(stripLeadingHeading("")).toBe("");
     expect(stripLeadingHeading("   ")).toBe("   ");
+  });
+});
+
+// ── Per-file mutex (eng-review issue 1A) ─────────────────────────────
+
+describe("per-file mutex on save/update/delete", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "carsonos-mutex-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("serializes concurrent saves to the same collection's directory", async () => {
+    const provider = new QmdMemoryProvider(tmpRoot);
+    // Manually populate the collections map without invoking QMD CLI.
+    // ensureCollection would try to call `qmd collection add` which
+    // requires the binary; tests should not depend on that.
+    (provider as unknown as { collections: Map<string, string> }).collections.set(
+      "test",
+      tmpRoot,
+    );
+
+    // Fire 5 concurrent saves with the same title (which generates the
+    // same id and therefore the same file path). Without the mutex, two
+    // saves can race and clobber each other's writes; with it, they
+    // serialize and the last one wins cleanly.
+    const titles = Array.from({ length: 5 }, () => `concurrent-test`);
+    const results = await Promise.all(
+      titles.map((title, i) =>
+        provider.save("test", {
+          type: "fact",
+          title,
+          content: `body-${i}`,
+          frontmatter: { topics: [`tag-${i}`] },
+        }),
+      ),
+    );
+
+    // All five resolved without errors.
+    expect(results).toHaveLength(5);
+    // All point at the same file path (same generated id from same title + date).
+    const filePaths = new Set(results.map((r) => r.filePath));
+    expect(filePaths.size).toBe(1);
+
+    // The file is parseable + has frontmatter from the LAST writer that
+    // ran. Without serialization, you'd see a half-written or
+    // interleaved YAML block here.
+    const content = readFileSync(results[0].filePath, "utf-8");
+    expect(content.startsWith("---\n")).toBe(true);
+    expect(content).toMatch(/type: fact/);
+    expect(content).toMatch(/^body-\d/m);
+  });
+
+  it("does not block writes to different files", async () => {
+    const provider = new QmdMemoryProvider(tmpRoot);
+    (provider as unknown as { collections: Map<string, string> }).collections.set(
+      "test",
+      tmpRoot,
+    );
+
+    // Two saves to different titles (different file paths) should run
+    // concurrently. We don't measure timing; we just assert both finish.
+    const [a, b] = await Promise.all([
+      provider.save("test", { type: "fact", title: "alpha", content: "a" }),
+      provider.save("test", { type: "fact", title: "bravo", content: "b" }),
+    ]);
+    expect(a.filePath).not.toBe(b.filePath);
+  });
+
+  it("a failed save does not poison the lock for subsequent saves", async () => {
+    const provider = new QmdMemoryProvider(tmpRoot);
+    (provider as unknown as { collections: Map<string, string> }).collections.set(
+      "test",
+      tmpRoot,
+    );
+
+    // First save targets a missing collection — throws. The internal
+    // promise chain must recover so the second save succeeds.
+    await expect(
+      provider.save("nonexistent-collection", {
+        type: "fact",
+        title: "stuck",
+        content: "x",
+      }),
+    ).rejects.toThrow();
+
+    // Second save to the SAME would-be path should still work.
+    const ok = await provider.save("test", {
+      type: "fact",
+      title: "stuck",
+      content: "y",
+    });
+    expect(readFileSync(ok.filePath, "utf-8")).toMatch(/^y$/m);
   });
 });
