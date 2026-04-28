@@ -638,6 +638,24 @@ async function main() {
     }
   }
 
+  // 10c. Compilation agent (v0.5). Runs once per night at 3am local.
+  // Disabled via CARSONOS_DISABLE_COMPILATION_AGENT=1.
+  let compilationAgent: import("./services/memory/compilation-agent.js").CompilationAgent | undefined;
+  if (memoryProvider && process.env.CARSONOS_DISABLE_COMPILATION_AGENT !== "1") {
+    try {
+      const { CompilationAgent } = await import("./services/memory/compilation-agent.js");
+      compilationAgent = new CompilationAgent({
+        db,
+        memoryProvider,
+        adapter,
+        memoryRoot: config.memory.rootDir,
+      });
+      console.log("[compilation-agent] Ready (3am nightly)");
+    } catch (err) {
+      console.warn("[compilation-agent] Boot failed (non-fatal):", err);
+    }
+  }
+
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
     db,
@@ -645,6 +663,7 @@ async function main() {
     multiRelay,
     memoryProvider,
     enrichmentWorker,
+    compilationAgent,
   });
   scheduler.start();
 

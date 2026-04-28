@@ -157,6 +157,8 @@ export interface SchedulerDeps {
   memoryProvider?: MemoryProvider;
   /** v0.5: optional enrichment worker. Ticked alongside scheduled tasks. */
   enrichmentWorker?: import("./memory/enrichment-worker.js").EnrichmentWorker;
+  /** v0.5: optional compilation agent. Runs once per night during the quiet window. */
+  compilationAgent?: import("./memory/compilation-agent.js").CompilationAgent;
 }
 
 export class Scheduler {
@@ -165,6 +167,9 @@ export class Scheduler {
   private multiRelay?: MultiRelayManager;
   private memoryProvider?: MemoryProvider;
   private enrichmentWorker?: import("./memory/enrichment-worker.js").EnrichmentWorker;
+  private compilationAgent?: import("./memory/compilation-agent.js").CompilationAgent;
+  /** Last hour we ran the compilation agent. Reset on day rollover. */
+  private lastCompilationHour: number | null = null;
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -174,6 +179,7 @@ export class Scheduler {
     this.multiRelay = deps.multiRelay;
     this.memoryProvider = deps.memoryProvider;
     this.enrichmentWorker = deps.enrichmentWorker;
+    this.compilationAgent = deps.compilationAgent;
   }
 
   /** Start the ticker. */
@@ -230,6 +236,26 @@ export class Scheduler {
           }
         } catch (err) {
           console.warn("[enrichment-worker] tick error:", err);
+        }
+      }
+
+      // v0.5: compilation agent runs once per night during the 3am
+      // quiet window (process-local time). The lastCompilationHour
+      // guard ensures it fires at most once per day.
+      if (this.compilationAgent) {
+        const localHour = new Date().getHours();
+        if (localHour === 3 && this.lastCompilationHour !== 3) {
+          try {
+            const r = await this.compilationAgent.tick();
+            console.log(
+              `[compilation-agent] tick: compiled=${r.compiled} failed=${r.failed} skippedRace=${r.skippedRace}`,
+            );
+          } catch (err) {
+            console.warn("[compilation-agent] tick error:", err);
+          }
+          this.lastCompilationHour = 3;
+        } else if (localHour !== 3) {
+          this.lastCompilationHour = null;
         }
       }
     } catch (err) {
