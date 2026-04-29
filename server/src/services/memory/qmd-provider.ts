@@ -723,14 +723,23 @@ export function levenshtein(a: string, b: string): number {
  * entity types produced 35 broken files in the brain.
  */
 export function serializeFrontmatterYaml(fm: Record<string, unknown>): string {
+  // gray-matter parses YAML date strings into Date objects on read. If a
+  // caller round-trips frontmatter (read → modify → write), `${val}`
+  // would call Date.toString() and emit `Tue Apr 28 2026 20:00:00 GMT-0400`,
+  // which is not valid YAML and corrupts the file. Coerce Dates back to
+  // ISO date strings (YYYY-MM-DD) before formatting.
+  const formatScalar = (val: unknown): string => {
+    if (val instanceof Date) return val.toISOString().slice(0, 10);
+    return String(val);
+  };
   return Object.entries(fm)
     .filter(([, val]) => val !== undefined && val !== null)
     .map(([key, val]) => {
       if (Array.isArray(val)) {
         if (val.length === 0) return `${key}: []`;
-        return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
+        return `${key}:\n${val.map((v) => `  - ${formatScalar(v)}`).join("\n")}`;
       }
-      return `${key}: ${val}`;
+      return `${key}: ${formatScalar(val)}`;
     })
     .join("\n");
 }
