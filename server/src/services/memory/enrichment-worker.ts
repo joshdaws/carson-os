@@ -400,15 +400,17 @@ export class EnrichmentWorker {
           ].join("\n")
         : atomBlock;
 
+      const frontmatter: Record<string, unknown> = {
+        source: "enrichment-worker",
+        last_atom_added_at: source.capturedAt,
+      };
+      if (isEntity) frontmatter.aliases = [];
+
       await this.memoryProvider.save(atom.collection, {
         type: atom.entity_type as never,
         title: atom.entity_slug.replace(/-/g, " "),
         content: body,
-        frontmatter: {
-          aliases: isEntity ? [] : undefined,
-          source: "enrichment-worker",
-          last_atom_added_at: source.capturedAt,
-        },
+        frontmatter,
       });
     }
 

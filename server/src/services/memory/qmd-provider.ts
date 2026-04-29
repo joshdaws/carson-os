@@ -68,6 +68,15 @@ export class QmdMemoryProvider implements MemoryProvider {
    * without a DB.
    */
   private db: import("@carsonos/db").Db | null = null;
+  /**
+   * QMD reindex coalescing. `qmd update` is a subprocess that touches
+   * QMD's own SQLite index. Two parallel runs collide on its primary
+   * key. Coalesce: at most one in-flight run; up to one queued. This
+   * eliminates the SQLITE_CONSTRAINT_PRIMARYKEY errors observed during
+   * burst saves (eng surfaced 2026-04-29).
+   */
+  private reindexInFlight: Promise<void> | null = null;
+  private reindexQueued = false;
 
   constructor(rootDir: string, db?: import("@carsonos/db").Db) {
     this.rootDir = rootDir;
@@ -289,14 +298,7 @@ export class QmdMemoryProvider implements MemoryProvider {
         ...entry.frontmatter,
       };
 
-      const yaml = Object.entries(fm)
-        .map(([key, val]) => {
-          if (Array.isArray(val)) {
-            return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
-          }
-          return `${key}: ${val}`;
-        })
-        .join("\n");
+      const yaml = serializeFrontmatterYaml(fm);
 
       // Strip a leading `# heading` from incoming content. We always emit
       // `# ${title}` ourselves below, so leaving an existing one in place
@@ -364,14 +366,7 @@ export class QmdMemoryProvider implements MemoryProvider {
         updated: new Date().toISOString().slice(0, 10),
       };
 
-      const yaml = Object.entries(fm)
-        .map(([key, val]) => {
-          if (Array.isArray(val)) {
-            return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
-          }
-          return `${key}: ${val}`;
-        })
-        .join("\n");
+      const yaml = serializeFrontmatterYaml(fm);
 
       const cleanContent = stripLeadingHeading(content);
       const fileContent = `---\n${yaml}\n---\n\n# ${title}\n\n${cleanContent}\n`;
@@ -501,7 +496,24 @@ export class QmdMemoryProvider implements MemoryProvider {
 
   // ── Helpers ──────────────────────────────────────────────────────
 
-  private async reindex(): Promise<void> {
+  /**
+   * Trigger a QMD reindex. Coalesces concurrent calls: at most one
+   * in-flight subprocess, plus at most one queued follow-up if more
+   * requests come in while it runs. All callers awaiting `reindex()`
+   * during an in-flight run get the same promise. This fixes
+   * SQLITE_CONSTRAINT_PRIMARYKEY collisions when many save/update
+   * calls fire in a burst.
+   */
+  private reindex(): Promise<void> {
+    if (this.reindexInFlight) {
+      this.reindexQueued = true;
+      return this.reindexInFlight;
+    }
+    this.reindexInFlight = this.runReindex();
+    return this.reindexInFlight;
+  }
+
+  private async runReindex(): Promise<void> {
     try {
       await execFileAsync(QMD_BIN, ["update"], {
         timeout: UPDATE_TIMEOUT_MS,
@@ -509,6 +521,12 @@ export class QmdMemoryProvider implements MemoryProvider {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[memory] QMD reindex error:", msg);
+    }
+    this.reindexInFlight = null;
+    if (this.reindexQueued) {
+      this.reindexQueued = false;
+      // Fire-and-forget the queued run. Errors caught inside runReindex.
+      void this.reindex();
     }
   }
 }
@@ -524,6 +542,26 @@ export class QmdMemoryProvider implements MemoryProvider {
  */
 export function stripLeadingHeading(body: string): string {
   return body.replace(/^\s*#\s+[^\n]*\n+/, "");
+}
+
+/**
+ * Serialize a frontmatter object to YAML lines. Skips entries whose
+ * value is `null` or `undefined` so they don't end up as the literal
+ * string "undefined" or "null" in the file. Surfaced 2026-04-28 via
+ * v5 SPIKE: enrichment worker passing `aliases: undefined` for non-
+ * entity types produced 35 broken files in the brain.
+ */
+export function serializeFrontmatterYaml(fm: Record<string, unknown>): string {
+  return Object.entries(fm)
+    .filter(([, val]) => val !== undefined && val !== null)
+    .map(([key, val]) => {
+      if (Array.isArray(val)) {
+        if (val.length === 0) return `${key}: []`;
+        return `${key}:\n${val.map((v) => `  - ${v}`).join("\n")}`;
+      }
+      return `${key}: ${val}`;
+    })
+    .join("\n");
 }
 
 function generateMemoryId(title: string): string {
