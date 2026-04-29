@@ -237,6 +237,11 @@ export interface MemoryProvider {
     title?: string;
     content?: string;
     frontmatter?: Record<string, unknown>;
+  }, options?: {
+    /** When false, skip the post-write markDirty call. The compilation agent
+     *  passes false because its own writes (regenerating the compiled view)
+     *  shouldn't trigger another compile cycle. Defaults to true. */
+    triggerCompile?: boolean;
   }): Promise<{ id: string; filePath: string }>;
   delete(collection: string, id: string): Promise<void>;
   list(collection: string, limit?: number): Promise<MemoryEntry[]>;

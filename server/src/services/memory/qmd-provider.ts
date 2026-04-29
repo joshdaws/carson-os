@@ -461,6 +461,7 @@ export class QmdMemoryProvider implements MemoryProvider {
       content?: string;
       frontmatter?: Record<string, unknown>;
     },
+    options?: { triggerCompile?: boolean },
   ): Promise<{ id: string; filePath: string }> {
     const dir = this.collections.get(collection);
     if (!dir) {
@@ -506,9 +507,12 @@ export class QmdMemoryProvider implements MemoryProvider {
         });
       }
 
-      // Mark the entity dirty for the next compilation tick.
+      // Mark the entity dirty for the next compilation tick. Skipped when
+      // the compilation agent itself is the writer — its compiled-view
+      // regeneration shouldn't re-queue the entity (would loop forever).
       const fileType = String(parsed.frontmatter.type ?? "");
-      if (this.compilationAgent && ENTITY_TYPES.has(fileType)) {
+      const shouldMarkDirty = options?.triggerCompile !== false;
+      if (shouldMarkDirty && this.compilationAgent && ENTITY_TYPES.has(fileType)) {
         this.compilationAgent.markDirty(id, collection).catch((err) => {
           console.warn("[memory] markDirty failed on update:", err);
         });

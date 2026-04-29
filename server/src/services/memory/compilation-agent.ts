@@ -295,13 +295,18 @@ export class CompilationAgent {
     const newCompiledView = renderCompiledView(entry.title, parsed);
     const newBody = `${newCompiledView}\n\n---\n\n${atomsText.replace(/^## Timeline\s*\n*/, "## Timeline\n\n")}`;
 
-    await this.memoryProvider.update(collection, resolvedSlug, {
-      content: newBody,
-      frontmatter: {
-        ...entry.frontmatter,
-        last_compiled_at: new Date().toISOString().slice(0, 10),
+    await this.memoryProvider.update(
+      collection,
+      resolvedSlug,
+      {
+        content: newBody,
+        frontmatter: {
+          ...entry.frontmatter,
+          last_compiled_at: new Date().toISOString().slice(0, 10),
+        },
       },
-    });
+      { triggerCompile: false },
+    );
 
     // Mark presence of compiledViewPart so we don't lose track of whether
     // a regeneration ever ran. (Kept implicit in the body for now —
