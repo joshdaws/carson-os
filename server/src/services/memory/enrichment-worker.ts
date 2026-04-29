@@ -46,6 +46,18 @@ const DEFAULT_LOCK_TTL_MS = 60_000;
 const MAX_ATTEMPTS = 5;
 const QUOTA_FAILURE_THRESHOLD = 3;
 
+/** v5 entity types that get two-layer pages + nightly compilation. */
+const ENTITY_TYPES = new Set<string>([
+  "person",
+  "project",
+  "place",
+  "media",
+  "relationship",
+  "commitment",
+  "goal",
+  "concept",
+]);
+
 // ── Activity gate ────────────────────────────────────────────────────
 
 /**
@@ -372,6 +384,17 @@ export class EnrichmentWorker {
   private async appendAtom(atom: AtomCandidate, source: EnrichmentTurnPayload): Promise<void> {
     const existing = await this.memoryProvider.read(atom.collection, atom.entity_slug);
     const atomBlock = formatAtomBlock(atom, source);
+    const isEntity = ENTITY_TYPES.has(atom.entity_type);
+
+    /**
+     * `fileId` is the actual on-disk identifier the compilation agent
+     * needs to look the file up later. For UPDATES it equals
+     * `existing.id`. For SAVES it equals what `qmd-provider.save()`
+     * returns — typically `${YYYY-MM-DD}-${slug}` — NOT the bare
+     * `atom.entity_slug`. Marking dirty with the bare slug was the
+     * 20/20 compilation-agent failure surfaced 2026-04-29.
+     */
+    let fileId: string;
 
     if (existing) {
       // Append below the existing body. The qmd-provider's update_memory
@@ -379,15 +402,13 @@ export class EnrichmentWorker {
       // existing body + appended atom and the storage layer handles the
       // duplicate-heading invariant.
       const newContent = existing.content.replace(/\s*$/, "") + "\n\n" + atomBlock + "\n";
-      await this.memoryProvider.update(atom.collection, atom.entity_slug, {
+      const updated = await this.memoryProvider.update(atom.collection, atom.entity_slug, {
         content: newContent,
         frontmatter: { ...existing.frontmatter, last_atom_added_at: source.capturedAt },
       });
+      fileId = updated.id;
     } else {
       // New entity page: skeleton + first atom.
-      const isEntity = ["person", "project", "place", "media", "relationship", "commitment", "goal", "concept"].includes(
-        atom.entity_type,
-      );
       const body = isEntity
         ? [
             "(Compiled view — provisional. The compilation agent will regenerate this from the atoms below in v5.1. Until then, treat the timeline below as canonical.)",
@@ -406,26 +427,23 @@ export class EnrichmentWorker {
       };
       if (isEntity) frontmatter.aliases = [];
 
-      await this.memoryProvider.save(atom.collection, {
+      const saved = await this.memoryProvider.save(atom.collection, {
         type: atom.entity_type as never,
         title: atom.entity_slug.replace(/-/g, " "),
         content: body,
         frontmatter,
       });
+      fileId = saved.id;
     }
 
-    // Mark the entity dirty for the next compilation pass — only meaningful
-    // for entity types (compilation agent ignores non-entity types). The
-    // compilation agent's COMPILABLE_TYPES gate filters anyway, but
-    // checking here avoids a no-op write to compilation_state.
-    if (
-      this.compilationAgent &&
-      ["person", "project", "place", "media", "relationship", "commitment", "goal", "concept"].includes(
-        atom.entity_type,
-      )
-    ) {
+    // Mark the entity dirty for the next compilation pass using the
+    // FILE'S ACTUAL ID (which may include the YYYY-MM-DD prefix added
+    // by generateMemoryId). Earlier code used `atom.entity_slug` here,
+    // which produced 20 "Entity not found" failures the next time the
+    // compilation agent tried to look the file up.
+    if (this.compilationAgent && isEntity) {
       try {
-        await this.compilationAgent.markDirty(atom.entity_slug, atom.collection);
+        await this.compilationAgent.markDirty(fileId, atom.collection);
       } catch (err) {
         console.warn("[enrichment-worker] markDirty failed (non-fatal):", err);
       }
