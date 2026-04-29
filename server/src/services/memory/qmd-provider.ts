@@ -742,7 +742,11 @@ function generateMemoryId(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 60);
-  return `${date}-${slug}`;
+  // Defensive: if the title already starts with a YYYY-MM-DD date (the LLM
+  // emitting a slug it copied from the existing-entities list), strip it so
+  // we don't double-prefix the file id (`2026-04-29-2026-04-29-claire`).
+  const stripped = slug.replace(/^\d{4}-\d{2}-\d{2}-/, "");
+  return `${date}-${stripped}`;
 }
 
 function extractIdFromFile(qmdFile: string): string {

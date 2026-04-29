@@ -39,6 +39,7 @@ import {
 } from "@carsonos/db";
 import type { MemoryProvider } from "@carsonos/shared";
 import type { Adapter } from "../subprocess-adapter.js";
+import { stripDatePrefix } from "./qmd-provider.js";
 
 const DEFAULT_BATCH_SIZE = 10;
 const DEFAULT_BUDGET_MS = 30_000;
@@ -583,11 +584,17 @@ function buildExtractionPrompt(
   // prompt under ~5KB even on large families.
   const knownEntitiesBlock = (() => {
     if (existingEntities.length === 0) return "";
+    // Display the date-stripped slug — internal storage prepends YYYY-MM-DD
+    // to file ids, but the LLM should see (and emit) the bare slug. Showing
+    // the dated form caused the LLM to copy `2026-04-29-claire` verbatim,
+    // which `generateMemoryId` then re-date-prefixed to
+    // `2026-04-29-2026-04-29-claire` on save.
     const sorted = [...existingEntities]
-      .sort((a, b) => a.collection.localeCompare(b.collection) || a.slug.localeCompare(b.slug))
+      .map((e) => ({ ...e, displaySlug: stripDatePrefix(e.slug) }))
+      .sort((a, b) => a.collection.localeCompare(b.collection) || a.displaySlug.localeCompare(b.displaySlug))
       .slice(0, 200);
     const lines = sorted.map(
-      (e) => `- [${e.collection}] ${e.slug} (${e.type}) — ${e.title}`,
+      (e) => `- [${e.collection}] ${e.displaySlug} (${e.type}) — ${e.title}`,
     );
     return [
       "",
