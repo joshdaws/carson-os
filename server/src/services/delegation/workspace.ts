@@ -199,6 +199,7 @@ export class WorkspaceProvider {
   ): Promise<void> {
     // Preferred: `git -C <repo> worktree remove --force <path>` — cleans
     // both the directory and the parent repo's admin state in one call.
+    let worktreeRemoved = false;
     if (workspace.repoPath) {
       try {
         await execFileAsync(this.gitBin, [
@@ -209,26 +210,53 @@ export class WorkspaceProvider {
           "--force",
           workspace.path,
         ]);
-        return;
+        worktreeRemoved = true;
       } catch {
         // Fall through to fs cleanup + prune fallback below.
       }
     }
 
-    // Fallback: directory may already be gone (manual rm, prior teardown).
-    // Remove the dir idempotently, then prune the parent repo's admin state
-    // if we know where it lives so we don't leave "prunable" entries.
-    await rm(workspace.path, { recursive: true, force: true });
-    if (workspace.repoPath) {
+    if (!worktreeRemoved) {
+      // Fallback: directory may already be gone (manual rm, prior teardown).
+      // Remove the dir idempotently, then prune the parent repo's admin state
+      // if we know where it lives so we don't leave "prunable" entries.
+      await rm(workspace.path, { recursive: true, force: true });
+      if (workspace.repoPath) {
+        try {
+          await execFileAsync(this.gitBin, [
+            "-C",
+            workspace.repoPath,
+            "worktree",
+            "prune",
+          ]);
+        } catch {
+          // Non-fatal: prune failures are a hygiene miss, not a correctness one.
+        }
+      }
+    }
+
+    // Delete the carson/<slug> branch as well. `worktree remove` only takes
+    // out the worktree dir + admin state; it leaves the branch behind. That's
+    // what produced the "Branch carson/... already exists" failure on
+    // re-delegation after a cancel (2026-04-29 production incident).
+    // Best-effort: a branch with unique commits (already merged or pushed
+    // somewhere) shouldn't be force-deleted blindly, but `git branch -d`
+    // (lowercase) only deletes if fully merged into HEAD, so it's safe.
+    if (workspace.repoPath && workspace.branch) {
       try {
         await execFileAsync(this.gitBin, [
           "-C",
           workspace.repoPath,
-          "worktree",
-          "prune",
+          "branch",
+          "-D",
+          workspace.branch,
         ]);
       } catch {
-        // Non-fatal: prune failures are a hygiene miss, not a correctness one.
+        // Non-fatal: the branch may have already been deleted by another
+        // teardown, or it may have unique commits that the user wants to
+        // keep. The only consequence is the next provision with the same
+        // slug will fail E_BRANCH_EXISTS — which now fails fast (slot is
+        // drained), not silent.
       }
     }
   }

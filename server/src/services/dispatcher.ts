@@ -549,6 +549,7 @@ export class Dispatcher {
         agent,
         specialty,
         `worktree workspace requires a registered project (task.projectId=${task.projectId ?? "null"}). Re-delegate with workspace='project' and a valid projectId.`,
+        slotKey,
       );
       return;
     }
@@ -560,6 +561,7 @@ export class Dispatcher {
         agent,
         specialty,
         "Dispatcher is missing a WorkspaceProvider (boot wiring incomplete)",
+        slotKey,
       );
       return;
     }
@@ -587,6 +589,7 @@ export class Dispatcher {
         agent,
         specialty,
         `workspace provision failed: ${err instanceof Error ? err.message : String(err)}`,
+        slotKey,
       );
       return;
     }
@@ -889,9 +892,10 @@ export class Dispatcher {
 
   private async failDeveloperTask(
     task: { id: string; title: string; createdAt: Date; notifyAgentId: string | null; requestedBy: string | null },
-    agent: { id: string; householdId: string; specialty: string | null },
+    agent: Parameters<Dispatcher["executeDeveloperTask"]>[1],
     specialty: DeveloperSpecialty,
     reason: string,
+    slotKey?: string,
   ): Promise<void> {
     const card = composeSummaryCard({
       kind: "failure",
@@ -926,6 +930,18 @@ export class Dispatcher {
     }
 
     await this.logEvent(task.id, "failed", agent.id, reason, { specialty, reason });
+
+    // Slot hygiene: pre-execution failures (workspace provision errors, missing
+    // project, etc.) used to leave the slot marked running, which silently
+    // stranded any subsequent delegation attempt for the same agent on the
+    // queue. Drain it so queued retries can move forward (and the queue empties
+    // back to a clean slate when there's nothing left). Surfaced 2026-04-29:
+    // a cancelled task left the carson/<slug> branch behind, the next attempt
+    // failed E_BRANCH_EXISTS in failDeveloperTask, slot stayed dirty, the THIRD
+    // attempt sat queued for 16 minutes until the user killed it.
+    if (slotKey) {
+      await this.drainDeveloperQueue(slotKey, agent);
+    }
   }
 
   // -- Non-Developer specialist execution ----------------------------
