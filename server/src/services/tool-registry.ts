@@ -152,7 +152,7 @@ const DELEGATION_GRANTS_PERSONAL = ["delegate_task", "cancel_task", "list_active
 
 const DEFAULT_GRANTS: Record<string, string[]> = {
   head_butler: [
-    "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
+    "search_memory", "read_memory", "create_memory", "update_memory", "replace_memory", "delete_memory", "save_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
@@ -160,23 +160,23 @@ const DEFAULT_GRANTS: Record<string, string[]> = {
     ...DELEGATION_GRANTS_FULL,
   ],
   personal: [
-    "search_memory", "read_memory", "save_memory", "delete_memory", "update_instructions",
+    "search_memory", "read_memory", "create_memory", "update_memory", "replace_memory", "delete_memory", "save_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_compose", "gmail_reply", "gmail_update_draft", "gmail_send_draft", "gmail_search",
     "drive_search", "drive_list",
     ...DELEGATION_GRANTS_PERSONAL,
   ],
   tutor: [
-    "search_memory", "read_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "create_memory", "update_memory", "replace_memory", "save_memory", "update_instructions",
     "list_calendar_events",
     "drive_search",
   ],
   coach: [
-    "search_memory", "read_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "create_memory", "update_memory", "replace_memory", "save_memory", "update_instructions",
     "list_calendar_events",
   ],
   scheduler: [
-    "search_memory", "read_memory", "save_memory", "update_instructions",
+    "search_memory", "read_memory", "create_memory", "update_memory", "replace_memory", "save_memory", "update_instructions",
     "list_calendar_events", "create_calendar_event", "get_calendar_event",
     "gmail_triage", "gmail_read", "gmail_search",
   ],
