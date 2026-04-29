@@ -211,6 +211,56 @@ export class QmdMemoryProvider implements MemoryProvider {
     return this.collections.get(name);
   }
 
+  /**
+   * Find an existing entity whose slug is fuzzy-similar to `targetSlug`.
+   * Strips date prefixes (`YYYY-MM-DD-`) from existing file ids and
+   * compares with Levenshtein distance. Returns the actual file id
+   * if a sufficiently-similar match exists, else null.
+   *
+   * Catches typo-style duplicates (claire-elizabeth-daws vs
+   * claire-elisabeth-daws) without coalescing logically distinct
+   * entities (becca vs betsy stay separate).
+   *
+   * Threshold: similarity ≥ 0.85 (= 1 - distance/maxLength), with a
+   * minimum length of 4 to avoid false matches on tiny slugs.
+   */
+  findEntityBySimilarSlug(
+    collection: string,
+    targetSlug: string,
+  ): string | null {
+    const dir = this.collections.get(collection);
+    if (!dir || !existsSync(dir)) return null;
+    if (targetSlug.length < 4) return null;
+
+    let bestId: string | null = null;
+    let bestSimilarity = 0;
+
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as import("node:fs").Dirent[];
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      if (entry.name.startsWith(".") || entry.name.startsWith("_")) continue;
+      if (entry.name === "RESOLVER.md") continue;
+      const id = entry.name.replace(/\.md$/, "");
+      // Exact match — short-circuit.
+      if (id === targetSlug) return id;
+      const stripped = stripDatePrefix(id);
+      if (stripped === targetSlug) return id;
+      const dist = levenshtein(stripped, targetSlug);
+      const maxLen = Math.max(stripped.length, targetSlug.length);
+      const similarity = 1 - dist / maxLen;
+      if (similarity >= 0.85 && similarity > bestSimilarity) {
+        bestSimilarity = similarity;
+        bestId = id;
+      }
+    }
+    return bestId;
+  }
+
   // ── MemoryProvider interface ─────────────────────────────────────
 
   async search(
@@ -580,6 +630,39 @@ export class QmdMemoryProvider implements MemoryProvider {
  */
 export function stripLeadingHeading(body: string): string {
   return body.replace(/^\s*#\s+[^\n]*\n+/, "");
+}
+
+/** Strip the `YYYY-MM-DD-` date prefix from a memory id, if present. */
+export function stripDatePrefix(id: string): string {
+  return id.replace(/^\d{4}-\d{2}-\d{2}-/, "");
+}
+
+/**
+ * Levenshtein distance between two strings. Used to detect typo-style
+ * entity-slug duplicates in `findEntityBySimilarSlug`. Iterative DP,
+ * O(m*n) time and O(min(m,n)) memory.
+ */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  // Ensure b is the shorter — keeps memory smaller.
+  if (a.length < b.length) [a, b] = [b, a];
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,       // insertion
+        prev[j] + 1,           // deletion
+        prev[j - 1] + cost,    // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
 }
 
 /**

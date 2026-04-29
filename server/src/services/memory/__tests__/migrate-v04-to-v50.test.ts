@@ -73,7 +73,7 @@ production of Wonderland.
     const after = readFileSync(filePath, "utf-8");
 
     // Frontmatter contains migration_version + aliases
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
     expect(after).toMatch(/aliases:\s*\[\]/);
     // Original frontmatter preserved
     expect(after).toMatch(/type:\s*person/);
@@ -170,7 +170,7 @@ Earl Grey, hot, twice a day.
     await migrate({ dataDir: tmpDataDir, log: silentLog() });
     const after = readFileSync(filePath, "utf-8");
 
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
     expect(after).toMatch(/strength:\s*strong/); // existing fm preserved
     // No `---` separator inserted in body for flat types.
     const bodyOnly = after.split(/^---\n[\s\S]*?\n---\n/m)[1] ?? "";
@@ -260,7 +260,7 @@ not a layer separator.
 
     expect(migrateFile(filePath, false)).toBe("migrated");
     const after = readFileSync(filePath, "utf-8");
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
     expect(after).toMatch(/Section one/);
     expect(after).toMatch(/Section two/);
   });
@@ -508,7 +508,7 @@ YouTube personality, tech recruiter by day.
     const after = readFileSync(filePath, "utf-8");
 
     expect(after).toMatch(/type:\s*person/);
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
     expect(after).toMatch(/^\s+- contact$/m);
     // Translated to person → entity → two-layer split must appear.
     expect(after).toMatch(/Compiled view — provisional/);
@@ -667,7 +667,7 @@ Body.
     const after = readFileSync(filePath, "utf-8");
 
     expect(after).toMatch(/type:\s*sweep/);
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
     expect(after).not.toMatch(/Compiled view — provisional/);
   });
 });
@@ -714,7 +714,7 @@ Body.
     });
     expect(result.migrated).toBe(1);
 
-    expect(readFileSync(joshFile, "utf-8")).toMatch(/migration_version:\s*5\.0/);
+    expect(readFileSync(joshFile, "utf-8")).toMatch(/migration_version:\s*0\.5/);
     expect(readFileSync(householdFile, "utf-8")).not.toMatch(/migration_version:/);
   });
 
@@ -817,7 +817,7 @@ Lives in a knowledge subtree.
     expect(result.migrated).toBe(1);
 
     const after = readFileSync(filePath, "utf-8");
-    expect(after).toMatch(/migration_version:\s*5\.0/);
+    expect(after).toMatch(/migration_version:\s*0\.5/);
   });
 
   it("skips hidden directories like .git and .restore-staging", async () => {

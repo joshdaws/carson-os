@@ -382,7 +382,23 @@ export class EnrichmentWorker {
    * compiled view + Timeline header + the new atom).
    */
   private async appendAtom(atom: AtomCandidate, source: EnrichmentTurnPayload): Promise<void> {
-    const existing = await this.memoryProvider.read(atom.collection, atom.entity_slug);
+    // Try the LLM-provided slug first. If that misses, fuzzy-match the
+    // collection for typo-style duplicates (e.g., `claire-elisabeth-daws`
+    // → existing `2026-04-29-claire-elizabeth-daws`). Catches the
+    // dedup gap surfaced 2026-04-29 — different conversations producing
+    // multiple files for the same logical entity.
+    let existing = await this.memoryProvider.read(atom.collection, atom.entity_slug);
+    let resolvedSlug = atom.entity_slug;
+    if (!existing) {
+      const provider = this.memoryProvider as unknown as {
+        findEntityBySimilarSlug?: (col: string, slug: string) => string | null;
+      };
+      const similar = provider.findEntityBySimilarSlug?.(atom.collection, atom.entity_slug);
+      if (similar) {
+        existing = await this.memoryProvider.read(atom.collection, similar);
+        resolvedSlug = similar;
+      }
+    }
     const atomBlock = formatAtomBlock(atom, source);
     const isEntity = ENTITY_TYPES.has(atom.entity_type);
 
@@ -402,7 +418,7 @@ export class EnrichmentWorker {
       // existing body + appended atom and the storage layer handles the
       // duplicate-heading invariant.
       const newContent = existing.content.replace(/\s*$/, "") + "\n\n" + atomBlock + "\n";
-      const updated = await this.memoryProvider.update(atom.collection, atom.entity_slug, {
+      const updated = await this.memoryProvider.update(atom.collection, resolvedSlug, {
         content: newContent,
         frontmatter: { ...existing.frontmatter, last_atom_added_at: source.capturedAt },
       });

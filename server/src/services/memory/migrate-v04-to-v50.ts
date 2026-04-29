@@ -28,7 +28,14 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { create as tarCreate, extract as tarExtract } from "tar";
 
-const TARGET_VERSION = "5.0";
+const TARGET_VERSION = "0.5";
+/**
+ * Legacy migration_version values that should be treated as
+ * already-current. Earlier builds wrote `5.0` (string) or `5` (number,
+ * after gray-matter parsing) into frontmatter. Files with those values
+ * are in v0.5 shape — don't re-migrate them.
+ */
+const LEGACY_VERSIONS = new Set<number>([5, 5.0, 0.5]);
 
 /** Types that get two-layer pages (compiled view above `---`, atoms below). */
 const ENTITY_TYPES = new Set<string>([
@@ -338,11 +345,8 @@ export function migrateFile(filePath: string, dryRun: boolean): "migrated" | "sk
    * spelling correction; ~15 files doubly-wrapped before fix).
    */
   const verRaw = parsed.frontmatter.migration_version;
-  const alreadyAtTarget =
-    verRaw !== undefined &&
-    verRaw !== null &&
-    !Number.isNaN(Number(verRaw)) &&
-    Number(verRaw) === Number(TARGET_VERSION);
+  const verNum = verRaw === undefined || verRaw === null ? NaN : Number(verRaw);
+  const alreadyAtTarget = !Number.isNaN(verNum) && LEGACY_VERSIONS.has(verNum);
 
   // Idempotency: skip if already at target AND type doesn't need translation.
   // Per eng review 1.4, we do NOT rely on a `---` heuristic — body content
