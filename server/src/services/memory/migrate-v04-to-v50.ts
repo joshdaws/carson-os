@@ -330,7 +330,19 @@ export function migrateFile(filePath: string, dryRun: boolean): "migrated" | "sk
 
   const originalType = String(parsed.frontmatter.type ?? "");
   const translation = TYPE_TRANSLATIONS[originalType];
-  const alreadyAtTarget = parsed.frontmatter.migration_version === TARGET_VERSION;
+  /**
+   * Match either string `"5.0"` or numeric `5` / `5.0` — gray-matter
+   * round-trips an unquoted YAML `5.0` value as the JS number `5`,
+   * which fails strict-string equality and caused every entity file
+   * to be re-wrapped on every boot (surfaced 2026-04-29 via the Claire
+   * spelling correction; ~15 files doubly-wrapped before fix).
+   */
+  const verRaw = parsed.frontmatter.migration_version;
+  const alreadyAtTarget =
+    verRaw !== undefined &&
+    verRaw !== null &&
+    !Number.isNaN(Number(verRaw)) &&
+    Number(verRaw) === Number(TARGET_VERSION);
 
   // Idempotency: skip if already at target AND type doesn't need translation.
   // Per eng review 1.4, we do NOT rely on a `---` heuristic — body content
