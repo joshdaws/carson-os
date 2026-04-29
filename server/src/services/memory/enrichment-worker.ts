@@ -156,6 +156,11 @@ export class EnrichmentWorker {
   /** When set to a future timestamp, the worker is paused until then. Set after quota-exhaustion-style failures. */
   private pausedUntil = 0;
   private compilationAgent: import("./compilation-agent.js").CompilationAgent | null;
+  /** Cached list of entity-type files (slug+title+type+collection), refreshed
+   *  on a TTL. Passed into the extraction prompt so the LLM can reuse existing
+   *  slugs instead of inventing variants for the same logical entity. */
+  private entityListCache: Array<{ collection: string; slug: string; type: string; title: string }> = [];
+  private entityListCachedAt = 0;
 
   constructor(opts: EnrichmentWorkerOptions) {
     this.db = opts.db;
@@ -254,6 +259,27 @@ export class EnrichmentWorker {
     return { processed, failed, skipped: null };
   }
 
+  /**
+   * Existing entity slugs across all collections, refreshed on a 60-second
+   * TTL. Disk-walks all entity-type files via the provider's listEntities,
+   * so the LLM can be given a list of known slugs to reuse instead of
+   * inventing a new one. If the provider doesn't implement listEntities
+   * (non-QMD provider), returns an empty list.
+   */
+  private getCachedEntityList(): Array<{ collection: string; slug: string; type: string; title: string }> {
+    const ENTITY_LIST_TTL_MS = 60_000;
+    const now = Date.now();
+    if (this.entityListCache.length > 0 && now - this.entityListCachedAt < ENTITY_LIST_TTL_MS) {
+      return this.entityListCache;
+    }
+    const provider = this.memoryProvider as unknown as {
+      listEntities?: () => Array<{ collection: string; slug: string; type: string; title: string }>;
+    };
+    this.entityListCache = provider.listEntities?.() ?? [];
+    this.entityListCachedAt = now;
+    return this.entityListCache;
+  }
+
   /** Has interactive activity been detected within the yield window? */
   private async shouldYield(): Promise<boolean> {
     if (lastInteractiveActivityAt === 0) return false;
@@ -337,7 +363,7 @@ export class EnrichmentWorker {
    * the adapter, validate the response, append atoms.
    */
   private async processItem(item: { id: string; payload: EnrichmentTurnPayload }): Promise<void> {
-    const prompt = buildExtractionPrompt(item.payload);
+    const prompt = buildExtractionPrompt(item.payload, this.getCachedEntityList());
     const result = await this.adapter.execute({
       systemPrompt: prompt.system,
       messages: [{ role: "user", content: prompt.user }],
@@ -548,7 +574,30 @@ function sanitizeSlug(name: string): string {
   return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "");
 }
 
-function buildExtractionPrompt(payload: EnrichmentTurnPayload): { system: string; user: string } {
+function buildExtractionPrompt(
+  payload: EnrichmentTurnPayload,
+  existingEntities: Array<{ collection: string; slug: string; type: string; title: string }> = [],
+): { system: string; user: string } {
+  // Format the existing-entity list as one entry per line, sorted by
+  // collection then slug for stability. Capped at 200 entries to keep the
+  // prompt under ~5KB even on large families.
+  const knownEntitiesBlock = (() => {
+    if (existingEntities.length === 0) return "";
+    const sorted = [...existingEntities]
+      .sort((a, b) => a.collection.localeCompare(b.collection) || a.slug.localeCompare(b.slug))
+      .slice(0, 200);
+    const lines = sorted.map(
+      (e) => `- [${e.collection}] ${e.slug} (${e.type}) — ${e.title}`,
+    );
+    return [
+      "",
+      "EXISTING ENTITIES — when an atom is about one of these, REUSE its exact slug + collection. Don't invent a variant (e.g., don't emit `claire` if `claire-elizabeth-daws` is already listed):",
+      ...lines,
+      "",
+      "Only emit a NEW slug if the entity is genuinely not in this list.",
+    ].join("\n");
+  })();
+
   const system = [
     "You are an extraction worker for a family memory system. Your job is to read one conversation turn and extract DISCRETE, FACTUAL atoms — entities mentioned, claims about them, dated events, decisions, commitments.",
     "",
@@ -561,7 +610,8 @@ function buildExtractionPrompt(payload: EnrichmentTurnPayload): { system: string
     "- content: short, faithful to what was said. Never paraphrase loosely. If exact words matter, use them.",
     "- Don't fabricate. If the turn contains no factual atoms (chitchat, greetings, restating known info), return {\"atoms\":[]}.",
     "- importance: 1-3 trivial, 4-6 normal, 7-9 high signal, 10 corrections only.",
-  ].join("\n");
+    knownEntitiesBlock,
+  ].filter(Boolean).join("\n");
 
   const user = [
     `Member: ${payload.member}`,

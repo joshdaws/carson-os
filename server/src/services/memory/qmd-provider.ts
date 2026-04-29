@@ -261,6 +261,52 @@ export class QmdMemoryProvider implements MemoryProvider {
     return bestId;
   }
 
+  /**
+   * List entity-type files across all registered collections. Used by
+   * the enrichment worker to seed the extraction prompt with existing
+   * slugs, so the LLM can reuse a known slug instead of inventing a
+   * variant for the same logical entity (semantic dedup at extraction
+   * time, complementing the post-hoc Levenshtein fallback).
+   *
+   * Top-level only — entity pages live at the root of each collection.
+   * Skips hidden files (`.git/...`), underscore-prefixed (`_enrichment-log.md`),
+   * and `RESOLVER.md`. Files with no recognizable entity type are skipped.
+   */
+  listEntities(): Array<{ collection: string; slug: string; type: string; title: string }> {
+    const out: Array<{ collection: string; slug: string; type: string; title: string }> = [];
+    for (const [colName, dir] of this.collections.entries()) {
+      if (!existsSync(dir)) continue;
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true }) as import("node:fs").Dirent[];
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+        if (entry.name.startsWith(".") || entry.name.startsWith("_")) continue;
+        if (entry.name === "RESOLVER.md") continue;
+        const fullPath = join(dir, entry.name);
+        try {
+          const raw = readFileSync(fullPath, "utf-8");
+          const parsed = parseMemoryFile(raw, fullPath, colName);
+          if (!parsed) continue;
+          const type = String(parsed.frontmatter.type ?? "");
+          if (!ENTITY_TYPES.has(type)) continue;
+          out.push({
+            collection: colName,
+            slug: parsed.id ?? entry.name.replace(/\.md$/, ""),
+            type,
+            title: parsed.title ?? parsed.id ?? "",
+          });
+        } catch {
+          // Unreadable / malformed — skip.
+        }
+      }
+    }
+    return out;
+  }
+
   // ── MemoryProvider interface ─────────────────────────────────────
 
   async search(

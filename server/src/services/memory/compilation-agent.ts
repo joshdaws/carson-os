@@ -248,7 +248,21 @@ export class CompilationAgent {
    * separator without disturbing the timeline below it.
    */
   async compileEntity(slug: string, collection: string): Promise<CompilationResponse> {
-    const entry = await this.memoryProvider.read(collection, slug);
+    // Try exact slug; fall back to fuzzy match (catches stale dirty rows
+    // keyed on bare slugs while files are date-prefixed, or typo-style
+    // mismatches between worker output and disk).
+    let entry = await this.memoryProvider.read(collection, slug);
+    let resolvedSlug = slug;
+    if (!entry) {
+      const provider = this.memoryProvider as unknown as {
+        findEntityBySimilarSlug?: (col: string, slug: string) => string | null;
+      };
+      const similar = provider.findEntityBySimilarSlug?.(collection, slug);
+      if (similar) {
+        entry = await this.memoryProvider.read(collection, similar);
+        resolvedSlug = similar;
+      }
+    }
     if (!entry) {
       throw new Error(`Entity not found: ${slug} in ${collection}`);
     }
@@ -281,7 +295,7 @@ export class CompilationAgent {
     const newCompiledView = renderCompiledView(entry.title, parsed);
     const newBody = `${newCompiledView}\n\n---\n\n${atomsText.replace(/^## Timeline\s*\n*/, "## Timeline\n\n")}`;
 
-    await this.memoryProvider.update(collection, slug, {
+    await this.memoryProvider.update(collection, resolvedSlug, {
       content: newBody,
       frontmatter: {
         ...entry.frontmatter,
