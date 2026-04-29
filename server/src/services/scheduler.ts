@@ -168,8 +168,6 @@ export class Scheduler {
   private memoryProvider?: MemoryProvider;
   private enrichmentWorker?: import("./memory/enrichment-worker.js").EnrichmentWorker;
   private compilationAgent?: import("./memory/compilation-agent.js").CompilationAgent;
-  /** Last hour we ran the compilation agent. Reset on day rollover. */
-  private lastCompilationHour: number | null = null;
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -239,23 +237,21 @@ export class Scheduler {
         }
       }
 
-      // v0.5: compilation agent runs once per night during the 3am
-      // quiet window (process-local time). The lastCompilationHour
-      // guard ensures it fires at most once per day.
+      // v0.5: compilation agent runs every tick. The agent's own tick()
+      // does per-entity debounce (skip entities whose dirty_at is < 60s
+      // old, letting bursts of atoms coalesce into one compile call) and
+      // yields to interactive activity. The 3am-only gate is gone —
+      // compiled views update within ~2 minutes of an atom landing.
       if (this.compilationAgent) {
-        const localHour = new Date().getHours();
-        if (localHour === 3 && this.lastCompilationHour !== 3) {
-          try {
-            const r = await this.compilationAgent.tick();
+        try {
+          const r = await this.compilationAgent.tick();
+          if (r.compiled > 0 || r.failed > 0 || r.skippedRace > 0) {
             console.log(
               `[compilation-agent] tick: compiled=${r.compiled} failed=${r.failed} skippedRace=${r.skippedRace}`,
             );
-          } catch (err) {
-            console.warn("[compilation-agent] tick error:", err);
           }
-          this.lastCompilationHour = 3;
-        } else if (localHour !== 3) {
-          this.lastCompilationHour = null;
+        } catch (err) {
+          console.warn("[compilation-agent] tick error:", err);
         }
       }
     } catch (err) {

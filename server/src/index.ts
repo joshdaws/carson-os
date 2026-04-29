@@ -651,10 +651,18 @@ async function main() {
         adapter,
         memoryRoot: config.memory.rootDir,
       });
-      console.log("[compilation-agent] Ready (3am nightly)");
+      console.log("[compilation-agent] Ready (per-tick, 60s debounce)");
       // Cross-wire: enrichment worker marks an entity dirty after each
-      // atom append so the next nightly tick recompiles its view.
+      // atom append. The qmd-provider also calls markDirty directly on
+      // entity-type save/update so tool-driven writes queue compilation.
       enrichmentWorker?.setCompilationAgent(compilationAgent);
+      // Plumb compilation agent into the memory provider too — direct
+      // tool calls (update_memory, replace_memory, create_memory for
+      // entity types) now mark dirty automatically.
+      if (memoryProvider) {
+        (memoryProvider as { setCompilationAgent?: (a: typeof compilationAgent) => void })
+          .setCompilationAgent?.(compilationAgent);
+      }
     } catch (err) {
       console.warn("[compilation-agent] Boot failed (non-fatal):", err);
     }

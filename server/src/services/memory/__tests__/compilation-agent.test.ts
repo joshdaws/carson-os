@@ -182,6 +182,7 @@ describe("CompilationAgent.compileEntity", () => {
       memoryProvider: provider,
       adapter: makeAdapter(VALID_LLM_RESPONSE),
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
 
     const result = await agent.compileEntity("grant-daws", "household");
@@ -217,6 +218,7 @@ describe("CompilationAgent.compileEntity", () => {
       memoryProvider: provider,
       adapter: makeAdapter(VALID_LLM_RESPONSE),
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
     await expect(agent.compileEntity("weather", "josh")).rejects.toThrow(/not compilable/);
   });
@@ -238,6 +240,7 @@ describe("CompilationAgent.tick — CAS pattern (eng-review critical gap #2)", (
       memoryProvider: provider,
       adapter: makeAdapter(VALID_LLM_RESPONSE),
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
 
     await agent.markDirty("grant-daws", "household");
@@ -284,6 +287,7 @@ describe("CompilationAgent.tick — CAS pattern (eng-review critical gap #2)", (
       memoryProvider: provider,
       adapter,
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
 
     await agent.markDirty("grant-daws", "household");
@@ -312,6 +316,7 @@ describe("CompilationAgent.tick — CAS pattern (eng-review critical gap #2)", (
       memoryProvider: provider,
       adapter: makeAdapter(VALID_LLM_RESPONSE),
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
 
     await agent.markDirty("grant-daws", "household");
@@ -338,6 +343,7 @@ describe("CompilationAgent.tick — CAS pattern (eng-review critical gap #2)", (
       memoryProvider: provider,
       adapter: makeAdapter(VALID_LLM_RESPONSE),
       memoryRoot: tmpRoot,
+      debounceSeconds: 0,
     });
     await agent.markDirty("a", "household");
     await agent.markDirty("b", "household");

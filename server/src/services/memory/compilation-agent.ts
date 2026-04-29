@@ -31,7 +31,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, lte } from "drizzle-orm";
 import {
   compilationState,
   households,
@@ -39,8 +39,11 @@ import {
 } from "@carsonos/db";
 import type { MemoryProvider } from "@carsonos/shared";
 import type { Adapter } from "../subprocess-adapter.js";
+import { getLastInteractiveActivityAt } from "./enrichment-worker.js";
 
 const DEFAULT_BATCH = 20;
+/** Skip entities whose dirty_at is fresher than this — lets atom bursts settle. */
+const DEBOUNCE_SECONDS = 60;
 
 const COMPILABLE_TYPES = new Set<string>([
   "person",
@@ -87,6 +90,12 @@ export interface CompilationAgentOptions {
   batchSize?: number;
   /** Override the model used for compilation. Defaults to Haiku. */
   model?: string;
+  /**
+   * Per-entity debounce (seconds): skip entities whose `dirty_at` is
+   * fresher than this. Lets atom bursts coalesce. Defaults to 60s.
+   * Tests pass 0 to bypass.
+   */
+  debounceSeconds?: number;
 }
 
 export class CompilationAgent {
@@ -96,6 +105,7 @@ export class CompilationAgent {
   private memoryRoot: string;
   private batchSize?: number;
   private model: string;
+  private debounceSeconds: number;
 
   constructor(opts: CompilationAgentOptions) {
     this.db = opts.db;
@@ -104,6 +114,7 @@ export class CompilationAgent {
     this.memoryRoot = opts.memoryRoot;
     this.batchSize = opts.batchSize;
     this.model = opts.model ?? "claude-haiku-4-5-20251001";
+    this.debounceSeconds = opts.debounceSeconds ?? DEBOUNCE_SECONDS;
   }
 
   /**
@@ -138,16 +149,33 @@ export class CompilationAgent {
   }
 
   /**
-   * Run one compilation pass: pick up to `batchSize` dirty entities,
-   * regenerate each, and clear the dirty flag IF no new atom landed
-   * during regen (CAS).
+   * Run one compilation pass: pick up to `batchSize` dirty entities
+   * whose dirty_at is at least DEBOUNCE_SECONDS old (lets atom bursts
+   * coalesce into one compile call), regenerate each, and clear the
+   * dirty flag IF no new atom landed during regen (CAS).
+   *
+   * Yields entirely if interactive activity fired within the
+   * household's `background_yield_threshold_seconds` (default 90s) —
+   * same throttle as the enrichment worker.
    */
-  async tick(): Promise<{ compiled: number; failed: number; skippedRace: number }> {
+  async tick(): Promise<{ compiled: number; failed: number; skippedRace: number; skipped?: "throttled" }> {
+    // Yield to interactive activity. This is shared with the enrichment
+    // worker — both workers respect the same threshold.
+    if (await this.shouldYieldToInteractive()) {
+      return { compiled: 0, failed: 0, skippedRace: 0, skipped: "throttled" };
+    }
+
     const limit = await this.resolveBatchSize();
+    const debounceCutoff = new Date(Date.now() - this.debounceSeconds * 1000);
     const dirtyRows = await this.db
       .select()
       .from(compilationState)
-      .where(isNotNull(compilationState.dirtyAt))
+      .where(
+        and(
+          isNotNull(compilationState.dirtyAt),
+          lte(compilationState.dirtyAt, debounceCutoff),
+        ),
+      )
       .limit(limit);
 
     if (dirtyRows.length === 0) {
@@ -270,6 +298,18 @@ export class CompilationAgent {
   }
 
   // ── helpers ────────────────────────────────────────────────────────
+
+  /** Has interactive activity fired within the household's yield threshold? */
+  private async shouldYieldToInteractive(): Promise<boolean> {
+    const lastActivity = getLastInteractiveActivityAt();
+    if (lastActivity === 0) return false;
+    const [hh] = await this.db
+      .select({ s: households.backgroundYieldThresholdSeconds })
+      .from(households)
+      .limit(1);
+    const thresholdMs = (hh?.s ?? 90) * 1000;
+    return Date.now() - lastActivity < thresholdMs;
+  }
 
   private async resolveBatchSize(): Promise<number> {
     if (this.batchSize !== undefined) return this.batchSize;

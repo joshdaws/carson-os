@@ -35,6 +35,12 @@ const QMD_BIN = "qmd";
 const SEARCH_TIMEOUT_MS = 30_000; // qmd query (hybrid) can take 5-10s
 const UPDATE_TIMEOUT_MS = 30_000;
 
+/** v5 entity types that get two-layer pages + nightly compilation. */
+const ENTITY_TYPES = new Set<string>([
+  "person", "project", "place", "media",
+  "relationship", "commitment", "goal", "concept",
+]);
+
 /**
  * Expand a leading `~` or `~/` in a path to the user's home directory.
  * Node's fs and path APIs don't do this automatically — it's a shell thing —
@@ -69,6 +75,13 @@ export class QmdMemoryProvider implements MemoryProvider {
    */
   private db: import("@carsonos/db").Db | null = null;
   /**
+   * Optional compilation agent. When set, save/update on entity-type
+   * memories call markDirty so the next compilation tick regenerates
+   * the compiled view. Wired late at boot (compilation agent is
+   * constructed after the memory provider).
+   */
+  private compilationAgent: import("./compilation-agent.js").CompilationAgent | null = null;
+  /**
    * QMD reindex coalescing. `qmd update` is a subprocess that touches
    * QMD's own SQLite index. Two parallel runs collide on its primary
    * key. Coalesce: at most one in-flight run; up to one queued. This
@@ -82,6 +95,15 @@ export class QmdMemoryProvider implements MemoryProvider {
     this.rootDir = rootDir;
     this.db = db ?? null;
     mkdirSync(rootDir, { recursive: true });
+  }
+
+  /**
+   * Late-bind the compilation agent (boot order: memory provider →
+   * compilation agent). When set, save/update on entity-type memories
+   * fire markDirty so the next compilation tick recompiles them.
+   */
+  setCompilationAgent(agent: import("./compilation-agent.js").CompilationAgent): void {
+    this.compilationAgent = agent;
   }
 
   /**
@@ -318,6 +340,14 @@ export class QmdMemoryProvider implements MemoryProvider {
         });
       }
 
+      // Mark the entity dirty for the next compilation tick. Only entity
+      // types get compiled views; flat types (fact/preference/etc) don't.
+      if (this.compilationAgent && ENTITY_TYPES.has(entry.type as string)) {
+        this.compilationAgent.markDirty(id, collection).catch((err) => {
+          console.warn("[memory] markDirty failed on save:", err);
+        });
+      }
+
       // Trigger QMD reindex in the background (don't block on it)
       this.reindex().catch((err) => {
         console.warn("[memory] Background reindex failed:", err);
@@ -377,6 +407,14 @@ export class QmdMemoryProvider implements MemoryProvider {
         const { reconcileMemoryLinks } = await import("./memory-links.js");
         reconcileMemoryLinks(this.db, id, collection, cleanContent).catch((err) => {
           console.warn("[memory-links] reconcile failed on update:", err);
+        });
+      }
+
+      // Mark the entity dirty for the next compilation tick.
+      const fileType = String(parsed.frontmatter.type ?? "");
+      if (this.compilationAgent && ENTITY_TYPES.has(fileType)) {
+        this.compilationAgent.markDirty(id, collection).catch((err) => {
+          console.warn("[memory] markDirty failed on update:", err);
         });
       }
 
