@@ -62,6 +62,37 @@ interface ParsedResult {
   content: string;
 }
 
+/**
+ * v0.5.2 (TODO-2): captures the variation between Developer-task execution
+ * (workspace provisioning, cwd + maxTurns=200) and specialist execution
+ * (no workspace, default turn cap, no cwd). The unified `executeTask` path
+ * consumes a strategy and runs adapter.execute + cancel re-read + finalize
+ * once instead of forking by specialty.
+ */
+interface WorkspaceStrategy {
+  readonly agentKind: "Developer" | "Specialist";
+  /** Display string surfaced in events + summary cards. */
+  readonly specialty: string;
+  /** Working directory for adapter.execute. Null for no-workspace strategies. */
+  readonly cwd: string | null;
+  /** Turn cap override. Null falls back to the SDK env default. */
+  readonly maxTurns: number | null;
+  /** Pre-rendered system prompt — strategy decides whether to call the
+   *  Developer- or specialist-flavored builder. */
+  readonly systemPrompt: string;
+  /** Workspace metadata that drives the summary card + finalize log
+   *  payload. Null for no-workspace strategies. */
+  readonly workspace: ProvisionedWorkspace | null;
+  /** Extra structured fields for the "started" log event. */
+  readonly startedLogPayload: Record<string, unknown>;
+  /** Whether the adapter's textual result should be inlined into the
+   *  Telegram notify body (specialist behavior — short reports). False
+   *  for Developer (the user fetches via read_task_result). */
+  readonly inlineAdapterContent: boolean;
+  /** Drain the queue for this slot after execute completes. */
+  drainQueue(): Promise<void>;
+}
+
 // -- Dispatcher -------------------------------------------------------
 
 export class Dispatcher {
@@ -78,11 +109,10 @@ export class Dispatcher {
   /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
   private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
 
-  /** Tracks AbortControllers for in-flight Developer AND specialist tasks so
-   * cancel can stop the Agent SDK query (and the underlying CLI subprocess)
-   * instead of letting compute run until it finishes and clobbers the
-   * `cancelled` status on the way out. Populated in both executeDeveloperTask
-   * and executeSpecialistTask (TODO-1, v0.5.2), cleared when the task exits
+  /** Tracks AbortControllers for in-flight Developer tasks so cancel can stop
+   * the Agent SDK query (and the underlying CLI subprocess) instead of letting
+   * compute run until it finishes and clobbers the `cancelled` status on the
+   * way out. Populated in executeDeveloperTask, cleared when the task exits
    * any terminal state. */
   private inFlightAborts = new Map<string, AbortController>();
 
@@ -703,176 +733,39 @@ export class Dispatcher {
 
     this.workspaceByTaskId.set(taskId, workspace);
 
-    await this.logEvent(taskId, "started", agent.id, `Developer task started (${specialty})`, {
-      workspaceKind: workspace.kind,
-      workspacePath: workspace.path,
-      projectId: project?.id ?? null,
-    });
-    this.broadcast({ type: "task.started", data: { taskId, agentId: agent.id, specialty } });
+    // The pre-execute abort controller registered above gets re-registered
+    // by runStrategy below. The earlier set was for the (rare) provision-
+    // throws case so cancel during `git worktree add` had a handle; once
+    // provision succeeded the controller's job is over until adapter.execute
+    // starts. runStrategy drives its own abort lifecycle.
+    this.inFlightAborts.delete(taskId);
 
-    // -- 4. Build tool executor with callerTaskId --------------------
-    let toolsParam: ReturnType<typeof Array.of> | undefined;
-    let executorParam: ((name: string, input: Record<string, unknown>) => Promise<{
-      content: string;
-      is_error?: boolean;
-    }>) | undefined;
-    let builtins: string[] | undefined;
-
-    if (this.toolRegistry) {
-      builtins = await this.toolRegistry.getAgentBuiltins(agent.id).catch(() => []);
-      const ctx = {
-        db: this.db,
-        memoryProvider: null, // Developers don't use family memory
-        agentId: agent.id,
-        memberId: task.requestedBy ?? agent.id, // best-effort; Developers rarely hit memory tools
-        memberName: agent.name,
-        householdId: agent.householdId,
-        memberCollection: "household",
-        householdCollection: "household",
-        isChiefOfStaff: false,
-        delegationService: this.delegationService ?? undefined,
-        oversight: this.oversight ?? undefined,
-        callerTaskId: taskId,
-      };
-      const built = await this.toolRegistry.buildExecutor(ctx);
-      if (built) {
-        toolsParam = built.tools as unknown as ReturnType<typeof Array.of>;
-        executorParam = built.executor as typeof executorParam;
-      }
-    }
-
-    // -- 5. System prompt + execute ----------------------------------
-    const systemPrompt = this.buildDeveloperSystemPrompt(agent, task, specialty, project);
-
-    const startedAt = new Date();
-    const userMsg = task.description
-      ? `${task.title}\n\n${task.description}`
-      : task.title;
-
-    let adapterResult: { content: string } | null = null;
-    let adapterError: string | null = null;
-    try {
-      adapterResult = await this.adapter.execute({
-        systemPrompt,
-        messages: [{ role: "user", content: userMsg }],
-        tools: toolsParam as never,
-        toolExecutor: executorParam as never,
-        builtinTools: builtins,
-        model: agent.model,
-        cwd: workspace.path,
-        // No turn cap for Developers per design premise 9a. 200 is the SDK
-        // ceiling so we pass it explicitly rather than relying on the
-        // env-driven 50-default.
-        maxTurns: 200,
-        abortController,
-      });
-    } catch (err) {
-      adapterError = err instanceof Error ? err.message : String(err);
-    } finally {
-      this.inFlightAborts.delete(taskId);
-    }
-
-    // If the task was cancelled during execute (either by handleCancelBroadcast
-    // aborting our controller, or directly by handleCancelTask flipping the
-    // status row), the status is already `cancelled` and we must NOT rerun
-    // notifier.prepare with `completed` — the bug v0.4 E2E testing caught was
-    // a slow worker finishing minutes after cancel and overwriting the status.
-    // Re-read the row so our decision is based on authoritative DB state.
-    const [currentState] = await this.db
-      .select({ status: tasks.status })
-      .from(tasks)
-      .where(eq(tasks.id, taskId))
-      .limit(1);
-    const wasCancelled =
-      currentState?.status === "cancelled" || abortController.signal.aborted;
-
-    if (wasCancelled) {
-      await this.logEvent(
-        taskId,
-        "cancelled",
-        agent.id,
-        "Developer task cancelled by user",
-        { specialty, reason: "cancelled by user" },
-      );
-      // Continue to drain any queued tasks for this slot so other work keeps
-      // moving. drainDeveloperQueue will clear the slot when the queue empties.
-      await this.drainDeveloperQueue(slotKey, agent);
-      return;
-    }
-
-    const terminalStatus: "completed" | "failed" | "cancelled" =
-      adapterError ? "failed" : "completed";
-    const summaryReason = adapterError ?? undefined;
-
-    // -- 6. Compose + deliver notification ---------------------------
-    const card = composeSummaryCard({
-      kind: terminalStatus === "completed" ? "completion" : "failure",
-      task: {
-        id: taskId,
-        title: task.title,
-        workspaceKind: workspace.kind,
-        workspaceBranch: workspace.branch ?? null,
-        workspacePath: workspace.path,
-        createdAt: startedAt,
-        completedAt: new Date(),
-      },
-      specialty,
-      artifacts: {},
-      reason: summaryReason,
-    });
-
-    const text = renderSummaryCardText(card);
-    const payload: NotifyPayload = {
-      kind: terminalStatus === "completed" ? "completion" : "failure",
-      text,
-      householdId: agent.householdId,
-      memberId: task.requestedBy ?? agent.id,
-      // Route completion to the parent agent (CoS or personal) that kicked
-      // this off. notify_agent_id was set by delegation-service when the task
-      // was created; fall back to agent.id (self-delivery) if absent.
-      agentId: task.notifyAgentId ?? agent.id,
-      summaryCard: card,
-    };
-
-    const finalized = await this.finalizeTerminalTask({
-      taskId,
-      agent,
-      task,
-      terminalStatus,
-      resultText: adapterError ? `Error: ${adapterError}` : (adapterResult?.content ?? null),
-      durationSec: card.durationSec,
-      specialty,
-      agentKind: "Developer",
-      payload,
-      adapterErrorForLog: adapterError,
-    });
-
-    if (!finalized.preparedUpdate) {
-      // A cancel landed between the earlier status re-read and prepare().
-      // Row already cancelled; skip the completion/failure side effects and
-      // fall straight into drain-queue so other slot work moves on.
-      await this.drainDeveloperQueue(slotKey, agent);
-      return;
-    }
-
-    // -- 7. Workspace teardown policy --------------------------------
-    // Do NOT tear down on success — both workspace kinds need to persist:
-    //
-    //   tool_sandbox: user has to inspect the built SKILL.md + handler.ts
-    //     before deciding to install or discard. Losing the files on
-    //     completion defeats the entire tool-build review UX.
-    //   worktree: PR review iterations reuse the same branch + dir. Teardown
-    //     waits for PR merge/close (v0.5 poller) or explicit cancel.
-    //
-    // Teardown runs only on:
-    //   - task.cancelled broadcast → handleCancelBroadcast calls teardown
-    //   - v0.5: PR merged/closed for project/core specialties
-    //   - v0.5: explicit /api/tools/install or /api/tools/discard for tools
+    // Workspace teardown policy (unchanged):
+    //   Do NOT tear down on success — tool_sandbox needs the built files
+    //   visible for human review, worktree needs the branch + dir for PR
+    //   review iteration. Teardown runs only on task.cancelled, v0.5+ PR
+    //   merge/close, or explicit /api/tools/install|discard.
     //
     // The workspaceByTaskId entry stays so cancel can still find it.
-
-    // -- 8. Drain the queue for this slot ----------------------------
-    await this.drainDeveloperQueue(slotKey, agent);
+    const strategy: WorkspaceStrategy = {
+      agentKind: "Developer",
+      specialty,
+      cwd: workspace.path,
+      // No turn cap for Developers per design premise 9a. 200 is the SDK
+      // ceiling so we pass it explicitly rather than relying on the
+      // env-driven 50-default.
+      maxTurns: 200,
+      systemPrompt: this.buildDeveloperSystemPrompt(agent, task, specialty, project),
+      workspace,
+      startedLogPayload: {
+        workspaceKind: workspace.kind,
+        workspacePath: workspace.path,
+        projectId: project?.id ?? null,
+      },
+      inlineAdapterContent: false,
+      drainQueue: () => this.drainDeveloperQueue(slotKey, agent),
+    };
+    await this.runStrategy(task, agent, strategy);
   }
 
   private async drainDeveloperQueue(
@@ -1052,13 +945,64 @@ export class Dispatcher {
       .set({ status: "in_progress", updatedAt: new Date() })
       .where(eq(tasks.id, taskId));
 
-    await this.logEvent(taskId, "started", agent.id, `Specialist task started (${specialty})`, {
+    const strategy: WorkspaceStrategy = {
+      agentKind: "Specialist",
       specialty,
-    });
-    this.broadcast({ type: "task.started", data: { taskId, agentId: agent.id, specialty } });
+      cwd: null,
+      // No maxTurns override — the env-driven 50 default is appropriate
+      // for conversation-driven specialists.
+      maxTurns: null,
+      systemPrompt: this.buildSpecialistSystemPrompt(agent, task, specialty),
+      workspace: null,
+      startedLogPayload: { specialty },
+      // Specialists return a short report. Inline it into the notify
+      // body so the user gets the full response without having to ask;
+      // long reports will exceed Telegram's 4096-char single-message
+      // cap and chunk into multiple bubbles, which is fine.
+      inlineAdapterContent: true,
+      drainQueue: () => this.drainSpecialistQueue(slotKey, agent),
+    };
+    await this.runStrategy(task, agent, strategy);
+  }
 
-    // MCP tools with callerTaskId set (so this specialist's delegate_task
-    // calls — if they ever get granted — hit the depth-2 gate cleanly).
+  /**
+   * Unified task executor (v0.5.2 / TODO-2). Takes a fully-prepared
+   * WorkspaceStrategy (workspace already provisioned for Developer; no
+   * workspace for specialist) and runs the shared pipeline:
+   *
+   *   1. logEvent + broadcast started
+   *   2. resolve tools/executor/builtins via toolRegistry
+   *   3. adapter.execute with abortController, optional cwd/maxTurns
+   *      from the strategy
+   *   4. re-read DB status; if cancelled, log + drain and bail
+   *   5. compose summary card (workspace fields driven by strategy)
+   *   6. notify payload (text inlines adapter content for specialist
+   *      strategies; Developer keeps the card alone)
+   *   7. finalizeTerminalTask (notifier prepare + delegator-reply wake)
+   *   8. drain queue
+   *
+   * Future refinements (canary hooks, budget gates, resume-after-restart)
+   * touch this method once instead of two near-duplicates.
+   */
+  private async runStrategy(
+    task: NonNullable<Awaited<ReturnType<Dispatcher["loadTask"]>>>,
+    agent: Parameters<Dispatcher["executeDeveloperTask"]>[1],
+    strategy: WorkspaceStrategy,
+  ): Promise<void> {
+    const taskId = task.id;
+
+    await this.logEvent(
+      taskId,
+      "started",
+      agent.id,
+      `${strategy.agentKind} task started (${strategy.specialty})`,
+      strategy.startedLogPayload,
+    );
+    this.broadcast({
+      type: "task.started",
+      data: { taskId, agentId: agent.id, specialty: strategy.specialty },
+    });
+
     let toolsParam: ReturnType<typeof Array.of> | undefined;
     let executorParam:
       | ((name: string, input: Record<string, unknown>) => Promise<{
@@ -1090,17 +1034,9 @@ export class Dispatcher {
       }
     }
 
-    const systemPrompt = this.buildSpecialistSystemPrompt(agent, task, specialty);
     const startedAt = new Date();
     const userMsg = task.description ? `${task.title}\n\n${task.description}` : task.title;
 
-    // v0.5.2 (TODO-1): Mirror the Developer-path abort wiring so cancel
-    // actually stops the SDK query instead of letting it run to completion
-    // before the result gets dropped. Status-row safety is already covered
-    // by finalizeTerminalTask's cancel-sticky guard, but the in-flight
-    // compute kept burning until the SDK finished. With this controller
-    // registered, handleCancelBroadcast aborts the underlying CLI subprocess
-    // immediately.
     const abortController = new AbortController();
     this.inFlightAborts.set(taskId, abortController);
 
@@ -1108,14 +1044,14 @@ export class Dispatcher {
     let adapterError: string | null = null;
     try {
       adapterResult = await this.adapter.execute({
-        systemPrompt,
+        systemPrompt: strategy.systemPrompt,
         messages: [{ role: "user", content: userMsg }],
         tools: toolsParam as never,
         toolExecutor: executorParam as never,
         builtinTools: builtins,
         model: agent.model,
-        // No cwd (no workspace). No maxTurns override — the env-driven 50
-        // default is appropriate for conversation-driven specialists.
+        ...(strategy.cwd != null ? { cwd: strategy.cwd } : {}),
+        ...(strategy.maxTurns != null ? { maxTurns: strategy.maxTurns } : {}),
         abortController,
       });
     } catch (err) {
@@ -1124,9 +1060,6 @@ export class Dispatcher {
       this.inFlightAborts.delete(taskId);
     }
 
-    // Re-read the row so a cancel that landed during execute() short-
-    // circuits before notifier.prepare flips status back to terminal.
-    // Same pattern as executeDeveloperTask above.
     const [currentState] = await this.db
       .select({ status: tasks.status })
       .from(tasks)
@@ -1140,37 +1073,38 @@ export class Dispatcher {
         taskId,
         "cancelled",
         agent.id,
-        "Specialist task cancelled by user",
-        { specialty, reason: "cancelled by user" },
+        `${strategy.agentKind} task cancelled by user`,
+        { specialty: strategy.specialty, reason: "cancelled by user" },
       );
-      await this.drainSpecialistQueue(slotKey, agent);
+      await strategy.drainQueue();
       return;
     }
 
     const terminalStatus: "completed" | "failed" = adapterError ? "failed" : "completed";
+    const summaryReason = adapterError ?? undefined;
+    const ws = strategy.workspace;
 
     const card = composeSummaryCard({
       kind: terminalStatus === "completed" ? "completion" : "failure",
       task: {
         id: taskId,
         title: task.title,
-        workspaceKind: null,
-        workspaceBranch: null,
-        workspacePath: undefined,
+        workspaceKind: ws?.kind ?? null,
+        workspaceBranch: ws?.branch ?? null,
+        workspacePath: ws?.path,
         createdAt: startedAt,
         completedAt: new Date(),
       },
-      specialty,
-      reason: adapterError ?? undefined,
+      specialty: strategy.specialty as DeveloperSpecialty,
+      artifacts: ws ? {} : undefined,
+      reason: summaryReason,
     });
 
-    // Specialists return a report — include it in the delivered text. Long
-    // reports will exceed Telegram's 4096-char single-message cap and chunk
-    // into multiple bubbles; that's fine, the user gets the full response
-    // inline instead of having to ask for it.
     const cardText = renderSummaryCardText(card);
     const text =
-      terminalStatus === "completed" && adapterResult?.content
+      strategy.inlineAdapterContent &&
+      terminalStatus === "completed" &&
+      adapterResult?.content
         ? `${cardText}\n\n${adapterResult.content}`
         : cardText;
 
@@ -1188,24 +1122,23 @@ export class Dispatcher {
       agent,
       task,
       terminalStatus,
-      resultText: adapterResult?.content ?? (adapterError ? `Error: ${adapterError}` : null),
+      resultText:
+        terminalStatus === "completed"
+          ? (adapterResult?.content ?? null)
+          : adapterError
+            ? `Error: ${adapterError}`
+            : null,
       durationSec: card.durationSec,
-      specialty,
-      agentKind: "Specialist",
+      specialty: strategy.specialty,
+      agentKind: strategy.agentKind,
       payload,
       adapterErrorForLog: adapterError,
     });
 
-    // If a cancel landed between the wasCancelled re-read and prepare(),
-    // notifier.prepare's cancel-sticky guard refuses the terminal write.
-    // Drain the queue and bail without firing the completion/failure
-    // side effects — same shape as executeDeveloperTask.
-    if (!finalized.preparedUpdate) {
-      await this.drainSpecialistQueue(slotKey, agent);
-      return;
-    }
-
-    await this.drainSpecialistQueue(slotKey, agent);
+    // drain regardless of preparedUpdate (cancel-sticky guard already
+    // handled the bail-on-refused-update side effects above).
+    await strategy.drainQueue();
+    void finalized;
   }
 
   /**
