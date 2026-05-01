@@ -16,7 +16,7 @@
 - **Context:** Surfaced 2026-04-24 during the /codex review of PR 3 and called out explicitly in Josh's "are we making this DRY" pushback. Scoped to v0.5 to avoid dragging mid-release refinements past the v0.4 merge window.
 - **Depends on:** Could land alongside the specialist-path abort-controller parity item above — same area, same diff.
 
-## v0.5 — Scope ctx.db in custom-tool handlers (tool_secrets exfil risk)
+## [COMPLETED v0.5.0] v0.5 — Scope ctx.db in custom-tool handlers (tool_secrets exfil risk)
 - **What:** Replace `ctx.db` in `CustomToolHandlerContext` with scoped helpers (`ctx.getSecret`, `ctx.storeSecret`, `ctx.listTools`, etc.) or a Proxy that injects `householdId` into queries. Also restrict `node:fs` in the esbuild bundle (`packages: 'external'` currently allows `fs.readFileSync`), so the handler can't `readFileSync('~/.carsonos/.secret')` to lift the AES master key.
 - **Why:** A Developer with `specialty='tools'` + `canCreateActiveTools=true` can author a script tool whose handler does `ctx.db.select().from(toolSecrets)` to dump every household's encrypted secret rows, then reads `~/.carsonos/.secret` (32-byte master key) from disk and decrypts. Single-family today = low practical risk, but the scoping gap is live code.
 - **Pros:** Closes the cross-household data exfil primitive; enforces the principle of least privilege for tool handlers.
@@ -24,7 +24,7 @@
 - **Context:** Surfaced 2026-04-23 during v0.4 /review (RT-05). v0.4 mitigation: the tools-specialty operating_instructions (in `specialty-templates/tools.md`) ask the Developer not to do this, but that's guidance, not a gate.
 - **Depends on:** None.
 
-## v0.5 — Apply-update must preserve script-tool approval invariant
+## [COMPLETED v0.5.0] v0.5 — Apply-update must preserve script-tool approval invariant
 - **What:** `POST /api/tools/custom/:id/apply-update` currently re-fetches `source_url`, promotes the new files, and sets `status='active'` unconditionally. For `kind='script'` tools that aren't authored by the Chief of Staff, this should re-enter `pending_approval` instead of silently going live.
 - **Why:** A malicious upstream skill source can mutate its `handler.ts` and, on the next "Apply Update" click, instantly run its new code in-process. The /create path gates this behind the approval queue; /apply-update doesn't.
 - **Pros:** Closes the supply-chain gap on installed script tools. Same invariant applies whether code enters via create, update, or apply-update.
@@ -32,7 +32,7 @@
 - **Context:** Surfaced 2026-04-23 during v0.4 /review (RT-07).
 - **Depends on:** None.
 
-## v0.5 — Workspace provision crash-safety (orphan branches block retry)
+## [COMPLETED v0.5.0] v0.5 — Workspace provision crash-safety (orphan branches block retry)
 - **What:** Swap the order in `dispatcher.executeDeveloperTask` so the DB UPDATE marking the task in_progress happens BEFORE `git worktree add`. If the server crashes between the two, the task stays pending (next boot re-queues) instead of orphaning a `carson/<slug>` branch + worktree dir that permanently blocks any re-try with the same title.
 - **Why:** Re-running a failed Dev task with the same title currently hits `E_BRANCH_EXISTS` forever because the stale branch isn't torn down until `task.cancelled` fires. A principal who re-queues a failed task has to manually `git branch -D` + `git worktree prune`.
 - **Pros:** Crash-recovery correctness; removes a real footgun for principals.
