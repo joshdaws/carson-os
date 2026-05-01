@@ -21,7 +21,13 @@ import {
   migrate,
   migrateFile,
   restoreFromBackup,
+  getCarsonosVersion,
 } from "../migrate-v04-to-v50.js";
+
+// Pin tests to the actual runtime version so they don't drift on each
+// release. The version check inside restoreFromBackup compares against
+// the manifest written by migrate(), which uses the same source.
+const CURRENT_VERSION = getCarsonosVersion();
 
 let tmpDataDir: string;
 
@@ -437,7 +443,7 @@ Original body.
     // Restore.
     await restoreFromBackup(result.backupPath!, {
       dataDir: tmpDataDir,
-      currentVersion: "0.4.2.1",
+      currentVersion: CURRENT_VERSION,
       log: silentLog(),
     });
 
@@ -772,7 +778,7 @@ Body.
     // Restore should bring back BOTH collections in their pre-migration shape.
     await restoreFromBackup(result.backupPath!, {
       dataDir: tmpDataDir,
-      currentVersion: "0.4.2.1",
+      currentVersion: CURRENT_VERSION,
       log: silentLog(),
     });
     expect(readFileSync(join(tmpDataDir, "memory", "josh", "in-scope.md"), "utf-8"))

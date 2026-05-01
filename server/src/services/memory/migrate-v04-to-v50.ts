@@ -580,7 +580,7 @@ function walkMarkdownFiles(root: string): string[] {
 
 // ── CarsonOS version helper ─────────────────────────────────────────
 
-function getCarsonosVersion(): string {
+export function getCarsonosVersion(): string {
   // Read the root package.json. Falls back to "unknown" if anything
   // goes wrong — the manifest still records a value for restore-time
   // version-match checks.
