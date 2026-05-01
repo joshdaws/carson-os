@@ -27,6 +27,7 @@ import type { Adapter } from "./subprocess-adapter.js";
 import type { BroadcastFn, AppEvent } from "./event-bus.js";
 import { WorkspaceProvider, slugify, type ProvisionedWorkspace } from "./delegation/workspace.js";
 import { DelegationNotifier, type NotifyPayload } from "./delegation/notifier.js";
+import { DelegatorReply } from "./delegation/delegator-reply.js";
 import { composeSummaryCard, renderSummaryCardText, type DeveloperSpecialty } from "./delegation/summary-card.js";
 import { templateForSpecialty } from "./delegation/specialty-templates/index.js";
 import type { ToolRegistry } from "./tool-registry.js";
@@ -72,6 +73,7 @@ export class Dispatcher {
   private toolRegistry: ToolRegistry | null;
   private delegationService: DelegationService | null = null;
   private oversight: CarsonOversight | null = null;
+  private delegatorReply: DelegatorReply | null = null;
 
   /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
   private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
@@ -103,6 +105,14 @@ export class Dispatcher {
   ): void {
     this.delegationService = delegationService;
     this.oversight = oversight;
+    if (this.notifier) {
+      const wake: (taskId: string) => Promise<{ delivered: boolean; reason?: string }> = (taskId) =>
+        delegationService.wakeDelegator(taskId);
+      this.delegatorReply = new DelegatorReply({
+        notifier: this.notifier,
+        wake,
+      });
+    }
   }
 
   // -- Public API -----------------------------------------------------
@@ -422,7 +432,12 @@ export class Dispatcher {
     for (let i = 0; i < pending.length; i++) {
       const { id } = pending[i];
       try {
-        await this.notifier.deliver(id);
+        // Wake-first so host-restart-during-run failures (the recovery path
+        // above primes the prepared payload as a safety net) get phrased in
+        // the delegator's voice, matching live success/failure messaging.
+        // DelegatorReply retries transient wake failures with backoff before
+        // falling back to the templated notifier.
+        await this.deliverDelegatorReply(id);
       } catch (err) {
         console.error(`[dispatcher] notifier replay for ${id} threw:`, err);
       }
@@ -1129,7 +1144,6 @@ export class Dispatcher {
     const {
       taskId,
       agent,
-      task,
       terminalStatus,
       resultText,
       durationSec,
@@ -1185,29 +1199,27 @@ export class Dispatcher {
       data: { taskId, agentId: agent.id, specialty },
     });
 
-    const hasWakeDeps = !!(this.delegationService && task.notifyAgentId && task.requestedBy);
-    const deliver = async () => {
-      if (hasWakeDeps) {
-        const wakeResult = await this.delegationService!.wakeDelegator(taskId);
-        if (wakeResult.delivered) {
-          if (this.notifier) {
-            await this.notifier
-              .markDeliveredByWake(taskId)
-              .catch((err) => console.error(`[dispatcher] markDeliveredByWake(${taskId}) failed:`, err));
-          }
-          return;
-        }
-        console.warn(
-          `[dispatcher] wake(${taskId}) did not deliver (${wakeResult.reason}); falling back to templated notifier`,
-        );
-      }
-      if (this.notifier) {
-        await this.notifier.deliver(taskId);
-      }
-    };
-    deliver().catch((err) => console.error(`[dispatcher] deliver(${taskId}) threw:`, err));
+    this.deliverDelegatorReply(taskId).catch((err) =>
+      console.error(`[dispatcher] deliver(${taskId}) threw:`, err),
+    );
 
     return { preparedUpdate: true };
+  }
+
+  /**
+   * Hand the delegator-reply policy to DelegatorReply if it's wired, else
+   * fall back to direct templated send. The wired path is the normal one;
+   * the fallback covers boot windows where setDelegationContext hasn't run
+   * yet (e.g., recoverStuckTasks before delegationService is bound).
+   */
+  private async deliverDelegatorReply(taskId: string): Promise<void> {
+    if (this.delegatorReply) {
+      await this.delegatorReply.handleTerminal(taskId);
+      return;
+    }
+    if (this.notifier) {
+      await this.notifier.deliver(taskId);
+    }
   }
 
   private async drainSpecialistQueue(
