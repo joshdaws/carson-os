@@ -17,6 +17,7 @@
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { convert as htmlToTextConvert } from "html-to-text";
 import type { ToolDefinition, ToolResult } from "@carsonos/shared";
 import type { GoogleCalendarProvider } from "./calendar-provider.js";
 
@@ -213,65 +214,101 @@ function extractBalancedJson(s: string, start: number): string {
 }
 
 /**
- * Convert HTML email body to readable plain text. Marketing emails come back
- * HTML-only when the sender doesn't include a `text/plain` part; the agent
- * needs something readable to summarize from. This is intentionally simple —
- * strip <script>/<style> blocks entirely, drop tags, decode common HTML
- * entities, and collapse whitespace. Not a full HTML→text engine; just
- * enough to make a marketing email's prose legible.
+ * Convert HTML email body to readable plain text. Marketing and transactional
+ * emails frequently come back HTML-only (or with HTML as the dominant part);
+ * the agent needs something readable to summarize from. We use the
+ * `html-to-text` library configured to:
+ *
+ * - render links inline as `text [https://url]` (the format the task spec
+ *   asked for and what scans cleanly when the agent quotes back to the user),
+ * - drop tracking-only artifacts (images, style/script, base64 src),
+ * - preserve list structure with `-` bullets,
+ * - flatten the layout-table soup that marketing senders love so it doesn't
+ *   render as a column of single-word lines.
+ *
+ * Exported so unit tests can pin the conversion behavior.
  */
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   if (!html) return "";
-  let s = html;
-  // Drop script/style blocks (case-insensitive, multi-line) before tag stripping.
-  s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
-  s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
-  // Treat <br> and block-level tag boundaries as line breaks so paragraphs
-  // don't collapse into a single run.
-  s = s.replace(/<br\s*\/?>/gi, "\n");
-  s = s.replace(/<\/(p|div|h[1-6]|li|tr|table)>/gi, "\n");
-  // Strip remaining tags.
-  s = s.replace(/<[^>]+>/g, "");
-  // Decode the entity set we actually see in marketing email.
-  s = s
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
-  // Collapse runs of blank lines and trim each line.
-  s = s
+  const text = htmlToTextConvert(html, {
+    wordwrap: false,
+    selectors: [
+      // Inline links as: "anchor text [https://url]". Skip mailto/anchor-only refs.
+      {
+        selector: "a",
+        options: {
+          hideLinkHrefIfSameAsText: true,
+          ignoreHref: false,
+          linkBrackets: ["[", "]"],
+          noAnchorUrl: true,
+          baseUrl: undefined,
+        },
+      },
+      // Drop images entirely — alt text alone rarely helps and tracking pixels
+      // produce noise.
+      { selector: "img", format: "skip" },
+      // Bullet-style lists.
+      { selector: "ul", options: { itemPrefix: " - " } },
+      // Headings: keep original case (the library uppercases h1 by default,
+      // which loses signal when agents quote headings back).
+      { selector: "h1", options: { uppercase: false } },
+      { selector: "h2", options: { uppercase: false } },
+      { selector: "h3", options: { uppercase: false } },
+      { selector: "h4", options: { uppercase: false } },
+      { selector: "h5", options: { uppercase: false } },
+      { selector: "h6", options: { uppercase: false } },
+    ],
+  });
+  // Normalize whitespace: NBSP → regular space (html-to-text preserves
+  // U+00A0, but agent prompts read cleaner with ASCII spaces); collapse runs
+  // of more than two blank lines; trim trailing whitespace per line.
+  return text
+    .replace(/\u00A0/g, " ")
     .split("\n")
-    .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .filter((line, i, arr) => !(line === "" && arr[i - 1] === ""))
+    .map((line) => line.replace(/[ \t]+$/g, ""))
     .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return s;
 }
 
 /**
- * Pull all <a href="…"> targets out of an HTML body, paired with their visible
- * link text. Used so agents can surface unsubscribe / call-to-action URLs from
- * marketing emails even when the rendered text doesn't show them.
+ * Pick the best body content from a Gmail message JSON returned by the `gws`
+ * CLI. Handles both shapes we've observed:
+ *
+ *   - `{ body: "..." }` — plain text (CLI's default rendering)
+ *   - `{ text: "...", html: "..." }` — multipart messages where the CLI exposes
+ *     both parts. Prefer plain text per the task spec; fall back to HTML.
+ *   - `{ html: "..." }` — HTML-only message returned via `--html`.
+ *
+ * Returns the converted plain text plus a flag indicating whether the source
+ * was HTML (so the caller can annotate the output).
  */
-function extractLinks(html: string): Array<{ text: string; href: string }> {
-  if (!html) return [];
-  const links: Array<{ text: string; href: string }> = [];
-  const seen = new Set<string>();
-  const pattern = /<a\b[^>]*?href\s*=\s*(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;
-  for (const match of html.matchAll(pattern)) {
-    const href = match[2].trim();
-    if (!href || href.startsWith("#") || href.startsWith("mailto:")) continue;
-    if (seen.has(href)) continue;
-    seen.add(href);
-    const text = htmlToText(match[3]).replace(/\s+/g, " ").trim();
-    links.push({ text, href });
-  }
-  return links;
+export function pickEmailBody(msg: Record<string, unknown>): {
+  text: string;
+  fromHtml: boolean;
+} {
+  const plain =
+    typeof msg.text === "string" && msg.text.trim()
+      ? msg.text.trim()
+      : typeof msg.body === "string" && msg.body.trim() && !looksLikeHtml(msg.body)
+      ? (msg.body as string).trim()
+      : "";
+  if (plain) return { text: plain, fromHtml: false };
+
+  const html =
+    typeof msg.html === "string" && msg.html.trim()
+      ? (msg.html as string)
+      : typeof msg.body === "string" && looksLikeHtml(msg.body)
+      ? (msg.body as string)
+      : "";
+  if (html) return { text: htmlToText(html), fromHtml: true };
+
+  return { text: "", fromHtml: false };
+}
+
+/** Heuristic: does this string look like HTML rather than plain text? */
+function looksLikeHtml(s: string): boolean {
+  return /<\s*(html|body|div|p|br|span|table|a\s|img\s|h[1-6])\b/i.test(s);
 }
 
 // ── Handler ────────────────────────────────────────────────────────
@@ -321,18 +358,15 @@ export function createGmailToolHandler(
           if (msg.date) parts.push(`Date: ${msg.date}`);
           parts.push("");
 
-          // Pull the plain-text body. The CLI normally auto-converts HTML-only
-          // messages, but marketing emails (e.g. Printful newsletters) sometimes
-          // come back empty. Detect that and re-fetch with --html so we still
-          // surface the content (and any links/unsubscribe URLs).
-          const plain =
-            (msg.body as string | undefined)?.trim() ||
-            (msg.text as string | undefined)?.trim() ||
-            "";
+          // Try to extract a body from whatever the CLI returned. Multipart
+          // messages will often expose both a `text` and `html` field; we
+          // prefer plain. Some senders (marketing/transactional) only ship an
+          // HTML part, in which case the CLI's default `body` field comes back
+          // empty even though `--html` would yield content.
+          let { text, fromHtml } = pickEmailBody(msg);
 
-          if (plain) {
-            parts.push(plain);
-          } else {
+          if (!text) {
+            // Re-fetch with --html so we capture HTML-only messages.
             const htmlArgs = ["gmail", "+read", "--id", id, "--html", "--format", "json"];
             try {
               const htmlOut = await provider.gws(memberSlug, htmlArgs);
@@ -340,30 +374,22 @@ export function createGmailToolHandler(
               const htmlMsg = JSON.parse(
                 htmlStart >= 0 ? extractBalancedJson(htmlOut, htmlStart) : htmlOut,
               );
-              const html =
-                (htmlMsg.body as string | undefined) ??
-                (htmlMsg.html as string | undefined) ??
-                "";
-
-              if (html.trim()) {
-                const text = htmlToText(html);
-                const links = extractLinks(html);
-                parts.push("(HTML-only email — converted to text below)");
-                parts.push("");
-                parts.push(text || "(no readable text)");
-                if (links.length > 0) {
-                  parts.push("");
-                  parts.push("Links:");
-                  for (const { text: linkText, href } of links) {
-                    parts.push(linkText ? `- ${linkText}: ${href}` : `- ${href}`);
-                  }
-                }
-              } else {
-                parts.push("(empty)");
-              }
+              const picked = pickEmailBody(htmlMsg);
+              text = picked.text;
+              fromHtml = picked.fromHtml || fromHtml;
             } catch {
-              parts.push("(empty — could not retrieve HTML body)");
+              // Fall through to "(empty …)" below.
             }
+          }
+
+          if (text) {
+            if (fromHtml) {
+              parts.push("(HTML email — converted to text below)");
+              parts.push("");
+            }
+            parts.push(text);
+          } else {
+            parts.push("(empty — could not retrieve message body)");
           }
 
           return { content: parts.join("\n") };
