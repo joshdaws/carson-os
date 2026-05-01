@@ -4,6 +4,47 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - 2026-05-01
+
+### Added — Memory v0.5
+
+- **Enrichment worker** — Background process that watches conversation turns and extracts typed atoms (facts, preferences, events, etc.) into memory entries. Runs alongside the scheduler tick. Yields to active user-facing chat so it never competes with foreground latency. Disabled via `CARSONOS_DISABLE_ENRICHMENT_WORKER=1`.
+- **Compilation agent** — Nightly regeneration of compiled-view files (3am local by default) plus a 60s per-entity debounce for live updates. Compiled views are the readable summary an agent loads first; raw atoms are the long-tail underneath. Disabled via `CARSONOS_DISABLE_COMPILATION_AGENT=1`.
+- **Identity files** — `USER.md` per family member and `PERSONALITY.md` per agent capture stable identity separately from drifting facts. Read first in the system-prompt order so personality and core member context are anchors, not search hits.
+- **Wikilinks + backlinks** — `[[slug]]` references in memory entries are parsed and stored in a new `memory_links` table with inferred link types (parent, spouse, mentions, likes, etc.). Backlinks let an agent answer "what do we know about Becca" without re-searching prose.
+- **Semantic dedup** — Existing entity slugs are passed to the worker LLM at extraction time so it folds duplicates instead of creating near-misses (`josh-daws` vs `josh`). Compilation runs a fuzzy-match fallback over the canonical set as a second layer of defense.
+- **Memory CRUD tools** — Memory tools collapsed from save/update into explicit CRUD: `create_memory`, `update_memory`, `replace_memory`, `delete_memory`, plus `correct_memory` for atom-level corrections when the enrichment worker gets something wrong.
+- **v0.4 → v0.5 migration** — Idempotent at-boot migrator translates the v0.4 schema to v0.5. Skips members/agents whose identity files already exist. Backs up the live DB before running.
+
+### Added — Delegation
+
+- **`workspace='system'`** in `delegate_task` — sugar for "fresh worktree of the CarsonOS project itself," auto-resolved by name. No `projectId` argument needed; the tool description steers agents toward `system` for any CarsonOS fix. Output is a PR against the live source.
+- **Tools-workspace guardrail** — `delegate_task` rejects calls with `workspace='tools'` when the goal/context name-matches a registered project. Closes the common failure mode where an agent picked `tools` for what was actually a system fix, edited live source via absolute paths, and tripped the dev-server file watcher mid-run. The error response steers the caller to `system` (for CarsonOS) or `project` + `projectId` (for other registered codebases).
+- **`DelegatorReply` module** — Consolidates the wake-with-retries-and-templated-fallback policy. The delegator agent gets the last word in their own voice, every time wake is possible: transient wake failures (engine busy, model blip, boot ordering, network errors) retry with backoff (5s/15s/30s, 50s total budget) before falling back to the templated notifier card; terminal failures (task gone, member without telegram_user_id, data invariant) skip retries. `markDeliveredByWake` now retries up to 3x to narrow the wake-double-fire race window.
+- **Cached audio path exposed to agents** — Voice and audio messages now include `[Audio file cached at: <path>]` in the transcript so any tool the agent has (analyze_audio, transcribe, custom audio handlers) can read the original file bytes. Document/document-text already did this; voice/audio was the gap.
+
+### Fixed — Crash safety
+
+- **Workspace provision crash-safety** (TODO-5) — `executeDeveloperTask` now writes `status='in_progress'` with predicted workspace metadata BEFORE calling `git worktree add`. If the host dies between the DB write and provision succeeding, `recoverStuckTasks` finds the in_progress row with metadata and runs `workspace.teardown(...)` before marking failed. Without this, crashed runs orphaned a `carson/<slug>` branch + worktree dir that permanently blocked retries with the same task title (E_BRANCH_EXISTS forever). Provision-failure now also tears down any partial worktree before failing the task, for the same reason.
+- **Tsx watch ignore for sandbox dev mode** — `pnpm dev:sandbox` was placing delegated-run worktrees inside the repo at `.sandbox/...`, which the tsx watcher saw — every Developer file write triggered a host restart that killed the in-flight specialist's session. Added `.sandbox/**` and `.carsonos/**` ignore patterns. See ADR-0001 for the larger architectural decision (live family instance must not file-watch its own source).
+
+### Security
+
+- **Custom-tool sandbox tightened** (TODO-3) — `ctx.db` was removed from the custom-tool handler context. A Developer with `specialty='tools'` could previously author a script tool whose handler did `ctx.db.select().from(toolSecrets)` to dump every household's encrypted secret rows. Handlers needing data should now use `ctx.fetch` (against the local API), `ctx.getSecret` (household-scoped), or `ctx.memory` (member-scoped). Existing handlers that referenced `ctx.db` will fail at runtime with a clear "Cannot read properties of undefined" — intentional break.
+- **Forbidden Node builtin imports rejected at handler validation** (TODO-3) — `validateScriptHandler` now scans handler.ts at create AND apply-update time for imports of `fs`, `fs/promises`, `child_process`, `os`, `net`, `tls`, `dgram`, `cluster`, `worker_threads`, `v8`, `vm` (with and without the `node:` prefix). Closes the matching escape primitive: a handler that imported `fs` could `readFileSync('~/.carsonos/.secret')` to lift the AES master key. Allowed builtins are `path`, `url`, `crypto`, `buffer`, `stream` (pure or scoped).
+- **`apply-update` gates script-tool changes through `pending_approval`** (TODO-4) — `POST /api/tools/custom/:id/apply-update` previously promoted upstream changes to `status='active'` unconditionally. For script-kind tools authored by anyone other than Chief of Staff, that was a supply-chain hole: a malicious upstream could mutate `handler.ts` and run new code in-process the moment the user clicked Apply Update. The /create path already had this gate; now /apply-update matches it. Prompt and HTTP tools are inert and stay on direct-to-active.
+
+### Documentation
+
+- **`CONTEXT.md`** — Project domain glossary covering 11 terms across agents/delegation, workspace/runtime, and memory/constitution. Used by engineering skills to ground refactors in shared vocabulary.
+- **`docs/adr/0001-no-file-watch-on-live-instance.md`** — Architectural decision: CarsonOS is a self-modifying runtime, so naive file-watch auto-reload on the live instance is hostile. The live instance reloads via explicit drain-and-restart, not file events.
+- **Agent skills setup** — `CLAUDE.md` now references `docs/agents/` for issue-tracker, triage-labels, and domain-doc consumer rules. Engineering skills like `/improve-codebase-architecture`, `/diagnose`, and `/triage` read these.
+- **README updated** — Memory section reflects the v0.5 model (5 layers including identity files, wikilinks/backlinks, background workers). Tools table reflects the CRUD memory tool collapse.
+
+### Why this matters
+
+v0.5 is the memory release. Conversations now build a typed knowledge graph in the background — facts, preferences, people, events, relationships — and agents read it back through compiled views and wikilinks. The split between identity (stable) and memory (drifting) keeps personality from getting drowned by recent details. Together with the delegation hardening, agents can do longer-running work on the system itself without losing state to mid-run restarts.
+
 ## [0.4.2.1] - 2026-04-27
 
 ### Added
