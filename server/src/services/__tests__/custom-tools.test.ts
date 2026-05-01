@@ -496,3 +496,70 @@ describe("parseSource", () => {
     expect(() => parseSource("http://github.com/owner/repo")).toThrow(InstallError);
   });
 });
+
+// ── Custom-tool sandbox import scanner (TODO-3) ───────────────────────
+
+describe("scanForbiddenImports", () => {
+  it("rejects ESM import from node:fs", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports("import { readFileSync } from 'node:fs';")).toBe("node:fs");
+  });
+
+  it("rejects bare-specifier fs import", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports('import fs from "fs";')).toBe("fs");
+  });
+
+  it("rejects fs/promises", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports('import { readFile } from "node:fs/promises";')).toBe("node:fs/promises");
+  });
+
+  it("rejects child_process", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports('import { exec } from "node:child_process";')).toBe("node:child_process");
+  });
+
+  it("rejects dynamic import('fs')", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports("const fs = await import('fs');")).toBe("fs");
+  });
+
+  it("rejects require('fs')", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports('const fs = require("fs");')).toBe("fs");
+  });
+
+  it("rejects worker_threads, vm, net, tls, dgram, cluster", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    for (const mod of ["worker_threads", "vm", "net", "tls", "dgram", "cluster", "v8"]) {
+      expect(scanForbiddenImports(`import x from "node:${mod}";`)).toBe(`node:${mod}`);
+    }
+  });
+
+  it("allows node:path, node:url, node:crypto, node:buffer, node:stream", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    const allowed = [
+      'import { join } from "node:path";',
+      'import { URL } from "node:url";',
+      'import { createHash } from "node:crypto";',
+      'import { Buffer } from "node:buffer";',
+      'import { Readable } from "node:stream";',
+    ].join("\n");
+    expect(scanForbiddenImports(allowed)).toBeNull();
+  });
+
+  it("allows third-party imports (zod, etc.)", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(scanForbiddenImports('import { z } from "zod";')).toBeNull();
+  });
+
+  it("doesn't false-positive on string literals containing 'fs'", async () => {
+    const { scanForbiddenImports } = await import("../custom-tools/handlers.js");
+    expect(
+      scanForbiddenImports(
+        'const msg = "Please use the helper, not raw fs";\nconst path = "node:fs is forbidden";\nconst greet = "from cloud function";',
+      ),
+    ).toBeNull();
+  });
+});

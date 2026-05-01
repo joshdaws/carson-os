@@ -314,8 +314,20 @@ export function executePromptTool(body: string, input: Record<string, unknown>):
 
 // ── Script executor ─────────────────────────────────────────────────
 
+/**
+ * Runtime context handed to a script-tool handler. TODO-3 sandbox scope:
+ * `db` was deliberately removed in v0.5 because raw drizzle access let any
+ * tools-specialty Developer write a handler that exfiltrated cross-household
+ * encrypted secrets via `db.select().from(toolSecrets)`. Handlers needing
+ * data access should use `fetch` (against the local API surface), `getSecret`
+ * (household-scoped), or `memory` (member-scoped). Truly privileged work
+ * belongs in a system tool, not a custom one.
+ *
+ * See validateScriptHandler in handlers.ts for the matching create/update
+ * gate that also denies node: filesystem / subprocess / raw network /
+ * vm / worker_threads imports.
+ */
 export interface CustomToolContext {
-  db: Db;
   fetch: typeof globalThis.fetch;
   getSecret: (keyName: string) => Promise<string | null>;
   memory: MemoryProvider | null;
@@ -354,7 +366,6 @@ export async function executeScriptTool(
   }
 
   const scriptCtx: CustomToolContext = {
-    db: ctx.db,
     fetch: globalThis.fetch,
     getSecret: (keyName) => loadSecret(ctx.db, ctx.householdId, keyName, ctx.dataDir),
     memory: ctx.memoryProvider ?? null,
