@@ -303,6 +303,39 @@ describe("formatReindexError", () => {
     err.stderr = "   \n\n  ";
     expect(formatReindexError(err)).toBe("plain error");
   });
+
+  it("strips C0 control bytes (raw stderr) so /api/health JSON stays clean", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("base") as Error & { stderr: string };
+    // \x00 NUL, \x07 BEL, \x1B ESC, \x7F DEL — all should disappear.
+    // \t \n \r are kept (legitimate whitespace).
+    err.stderr = "ok\x00line\x07more\x1Btext\x7F\nrow2\twith\ttabs";
+    const out = formatReindexError(err);
+    expect(out).not.toMatch(/[\x00\x07\x1B\x7F]/);
+    expect(out).toContain("oklinemoretext");
+    // Tabs within the row are preserved (they're legitimate whitespace).
+    expect(out).toContain("row2\twith\ttabs");
+  });
+
+  it("truncates payloads larger than the cap with an explicit marker", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const huge = "X".repeat(50_000); // simulated 50KB qmd stack trace
+    const err = new Error("Command failed") as Error & { stderr: string };
+    err.stderr = huge;
+    const out = formatReindexError(err);
+    // Capped roughly at 2KB; the marker tells a future reader the trace
+    // was clipped, not silently dropped.
+    expect(out.length).toBeLessThanOrEqual(2048);
+    expect(out).toMatch(/\[truncated to \d+B\]/);
+  });
+
+  it("keeps small payloads intact (no truncation marker)", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("Command failed") as Error & { stderr: string };
+    err.stderr = "small trace";
+    const out = formatReindexError(err);
+    expect(out).not.toMatch(/truncated/);
+  });
 });
 
 describe("QmdMemoryProvider.getReindexHealth", () => {

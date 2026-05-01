@@ -715,6 +715,20 @@ export class QmdMemoryProvider implements MemoryProvider {
 // ── Pure helpers ───────────────────────────────────────────────────
 
 /**
+ * Cap on the formatted error message. qmd's stderr can be tens of KB of
+ * SQLite stack trace; without a cap, repeated failures balloon every
+ * /api/health response that surfaces lastError.message.
+ */
+const REINDEX_ERROR_MAX_BYTES = 2048;
+
+/** Strip C0 control chars (except \t, \n, \r) so the JSON response stays
+ * clean if qmd emits raw bytes. \x7F (DEL) is also stripped. */
+function stripControlChars(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+/**
  * Format a thrown error from `execFileAsync(qmd, update)` into a single
  * detailed line that includes the qmd subprocess's stderr trace, when
  * present. The qmd CLI writes the full SQLite error stack (including
@@ -723,6 +737,10 @@ export class QmdMemoryProvider implements MemoryProvider {
  *
  * Without this, runReindex used to log just the top-level message
  * ("Command failed: qmd update"), making post-hoc debugging impossible.
+ *
+ * Output is capped at REINDEX_ERROR_MAX_BYTES and stripped of C0 control
+ * chars so /api/health stays bounded and JSON-clean even on a sticky
+ * failure that fires repeatedly.
  *
  * Pure function so tests can pin the format without spawning subprocesses.
  */
@@ -735,9 +753,17 @@ export function formatReindexError(err: unknown): string {
       : Buffer.isBuffer(stderr)
         ? stderr.toString("utf8")
         : "";
-  return stderrText.trim()
+  const combined = stderrText.trim()
     ? `${msg}\n--- qmd stderr ---\n${stderrText.trim()}`
     : msg;
+  const sanitized = stripControlChars(combined);
+  if (sanitized.length <= REINDEX_ERROR_MAX_BYTES) return sanitized;
+  // Truncate at the byte cap with an explicit marker so a future reader
+  // knows the trace was clipped, not silently corrupted.
+  return (
+    sanitized.slice(0, REINDEX_ERROR_MAX_BYTES - 32) +
+    `\n... [truncated to ${REINDEX_ERROR_MAX_BYTES}B]`
+  );
 }
 
 /**

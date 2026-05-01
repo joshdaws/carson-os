@@ -415,12 +415,13 @@ async function main() {
     toolRegistry,
     multiRelay,
     signalRelay,
-    // Pass through for /api/health → QMD reindex health surface. Structural
-    // typing — only providers that implement getReindexHealth are exposed.
+    // Pass through for /api/health → QMD reindex health surface. AppDeps
+    // exposes `memoryProvider?: ReindexHealthSource | null`; only providers
+    // that implement getReindexHealth get surfaced.
     memoryProvider:
       memoryProvider &&
       typeof (memoryProvider as { getReindexHealth?: unknown }).getReindexHealth === "function"
-        ? (memoryProvider as { getReindexHealth: () => { errorCount: number; lastError: { at: string; message: string } | null } })
+        ? (memoryProvider as unknown as import("./routes/health.js").ReindexHealthSource)
         : null,
   });
 

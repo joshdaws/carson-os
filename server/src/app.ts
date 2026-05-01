@@ -28,7 +28,7 @@ import type { MultiRelayManager } from "./services/multi-relay-manager.js";
 import type { SignalRelayManager } from "./services/signal-relay-manager.js";
 import type { DelegationService } from "./services/delegation-service.js";
 
-import { createHealthRoutes } from "./routes/health.js";
+import { createHealthRoutes, type ReindexHealthSource } from "./routes/health.js";
 import { createHouseholdRoutes } from "./routes/households.js";
 import { createMemberRoutes } from "./routes/members.js";
 import { createStaffRoutes } from "./routes/staff.js";
@@ -58,8 +58,11 @@ export interface AppDeps {
   toolRegistry: ToolRegistry;
   multiRelay?: MultiRelayManager;
   signalRelay?: SignalRelayManager;
-  /** Optional. When provided, /api/health surfaces QMD reindex health. */
-  memoryProvider?: { getReindexHealth: () => { errorCount: number; lastError: { at: string; message: string } | null } } | null;
+  /** Optional. When provided, /api/health surfaces QMD reindex health.
+   * Type imported from routes/health.js so the contract has a single
+   * source of truth — a future widening of ReindexHealthSource is type-
+   * checked here automatically. */
+  memoryProvider?: ReindexHealthSource | null;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
