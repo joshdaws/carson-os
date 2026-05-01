@@ -7,16 +7,48 @@
  * and clear paths are exercised end-to-end without hitting GitHub.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createDb, type Db } from "@carsonos/db";
 
 import {
+  announceUpdateApplied,
   checkForUpdate,
   compareVersions,
   extractChangelogEntry,
+  readUpdatePending,
   sanitizeExcerpt,
   readUpdateAvailable,
+  writeUpdatePending,
 } from "../system-update-check.js";
+
+// Hooks the spawn-mock can run synchronously between the apply handler's
+// pre-spawn `readUpdateAvailable` and the post-spawn re-read. Used by the
+// race-fix test to simulate a scheduler tick rewriting `update_available`
+// in the apply window. Set inside a test, cleared in afterEach.
+const hoisted = vi.hoisted(() => ({
+  onSpawnHook: null as null | (() => void),
+}));
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => {
+    hoisted.onSpawnHook?.();
+    return { unref: () => {}, pid: 99999 };
+  }),
+}));
+
+// Apply handler writes a launch log under ~/.carsonos/logs. No-op the
+// three filesystem entry points it touches so tests don't litter the
+// real home directory. readFileSync (used by readLocalVersion) stays
+// real via importActual.
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    openSync: vi.fn(() => 9999),
+    closeSync: vi.fn(),
+  };
+});
 
 // ── compareVersions ───────────────────────────────────────────────
 
@@ -447,5 +479,451 @@ describe("apply_system_update trust gate", () => {
     );
     expect(result.is_error).toBe(true);
     expect(result.content).toMatch(/No CarsonOS update is currently available/i);
+  });
+});
+
+// ── checkForUpdate: clock-skew guard (PR #41 deferred) ────────────
+
+describe("checkForUpdate: clock-skew guard", () => {
+  let db: Db;
+  beforeEach(() => {
+    db = createDb(":memory:");
+  });
+
+  it("treats a future last_checked_at as a cache miss and re-fetches", async () => {
+    // Seed the cache row one hour in the future. Without the delta>=0
+    // guard, `Date.now() - lastAt` is negative, which still passes
+    // `< CHECK_TTL_MS` and pins the cache until wall-clock catches up.
+    const { instanceSettings } = await import("@carsonos/db");
+    await db.insert(instanceSettings).values({
+      id: crypto.randomUUID(),
+      key: "system.update_check.last_checked_at",
+      value: { at: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+    });
+
+    let fetched = 0;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      fetched += 1;
+      const url = String(input);
+      if (url.endsWith("/VERSION")) return new Response("0.5.1");
+      return new Response(SAMPLE_CHANGELOG);
+    }) as typeof fetch;
+
+    const result = await checkForUpdate(db, {
+      currentVersion: "0.5.0",
+      fetcher,
+      // No `force` — the cache gate must decline the future timestamp.
+    });
+
+    expect(fetched).toBeGreaterThan(0);
+    expect(result?.to).toBe("0.5.1");
+  });
+
+  it("still honors a past last_checked_at within the 24h window (no re-fetch)", async () => {
+    // Sanity check: the new clock-skew guard must not break the normal
+    // cache-hit path.
+    const { instanceSettings } = await import("@carsonos/db");
+    await db.insert(instanceSettings).values({
+      id: crypto.randomUUID(),
+      key: "system.update_check.last_checked_at",
+      value: { at: new Date(Date.now() - 60_000).toISOString() }, // 1 min ago
+    });
+
+    let fetched = 0;
+    const fetcher = (async () => {
+      fetched += 1;
+      return new Response("0.5.1");
+    }) as typeof fetch;
+
+    await checkForUpdate(db, {
+      currentVersion: "0.5.0",
+      fetcher,
+    });
+
+    expect(fetched).toBe(0);
+  });
+});
+
+// ── announceUpdateApplied: channel selection (PR #41 deferred) ────
+
+describe("announceUpdateApplied: channel selection", () => {
+  let db: Db;
+  let householdId: string;
+  let cosAgentId: string;
+  let telegramMemberId: string;
+  let webOnlyMemberId: string;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    const { households, familyMembers, staffAgents } = await import("@carsonos/db");
+
+    const [household] = await db
+      .insert(households)
+      .values({ name: "Channel Test" })
+      .returning();
+    householdId = household.id;
+
+    const [tg] = await db
+      .insert(familyMembers)
+      .values({
+        householdId,
+        name: "Telegram Parent",
+        role: "parent",
+        age: 40,
+        telegramUserId: "tg-12345",
+      })
+      .returning();
+    telegramMemberId = tg.id;
+
+    const [web] = await db
+      .insert(familyMembers)
+      .values({
+        householdId,
+        name: "Web Parent",
+        role: "parent",
+        age: 38,
+        // No telegramUserId — should fall through to "web" channel.
+      })
+      .returning();
+    webOnlyMemberId = web.id;
+
+    const [cos] = await db
+      .insert(staffAgents)
+      .values({
+        householdId,
+        name: "Carson",
+        staffRole: "head_butler",
+        roleContent: "CoS for tests",
+        isHeadButler: true,
+      })
+      .returning();
+    cosAgentId = cos.id;
+  });
+
+  it("delivers via telegram when the member has telegramUserId set", async () => {
+    await writeUpdatePending(db, {
+      from: "0.5.0",
+      to: "0.5.1",
+      changelogExcerpt: "test changelog",
+      requestedAt: new Date().toISOString(),
+      householdId,
+      requestedByMemberId: telegramMemberId,
+    });
+
+    const processCalls: Array<{ channel: string; agentId: string; memberId: string }> = [];
+    const sendCalls: Array<{ agentId: string; telegramUserId: string; text: string }> = [];
+
+    await announceUpdateApplied(db, {
+      processMessage: async (input) => {
+        processCalls.push({ channel: input.channel, agentId: input.agentId, memberId: input.memberId });
+        return { response: "Update finished, here's what's new." };
+      },
+      sendToUser: async (agentId, telegramUserId, text) => {
+        sendCalls.push({ agentId, telegramUserId, text });
+      },
+      currentVersion: "0.5.1",
+    });
+
+    expect(processCalls).toHaveLength(1);
+    expect(processCalls[0].channel).toBe("telegram");
+    expect(processCalls[0].agentId).toBe(cosAgentId);
+    expect(processCalls[0].memberId).toBe(telegramMemberId);
+
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0].telegramUserId).toBe("tg-12345");
+    expect(sendCalls[0].text).toBe("Update finished, here's what's new.");
+
+    // Pending row cleared once the announcement landed.
+    expect(await readUpdatePending(db)).toBeNull();
+  });
+
+  it("delivers via web (no push) when the member has no telegramUserId", async () => {
+    await writeUpdatePending(db, {
+      from: "0.5.0",
+      to: "0.5.1",
+      changelogExcerpt: "test changelog",
+      requestedAt: new Date().toISOString(),
+      householdId,
+      requestedByMemberId: webOnlyMemberId,
+    });
+
+    let processChannel: string | null = null;
+    let sendInvoked = false;
+
+    await announceUpdateApplied(db, {
+      processMessage: async (input) => {
+        processChannel = input.channel;
+        return { response: "Update finished." };
+      },
+      sendToUser: async () => {
+        sendInvoked = true;
+      },
+      currentVersion: "0.5.1",
+    });
+
+    expect(processChannel).toBe("web");
+    // Web channel relies on processMessage's conversation persistence —
+    // the announcement is the assistant message it just wrote, no push.
+    expect(sendInvoked).toBe(false);
+    // Pending still gets cleared so the announcement doesn't re-fire on
+    // the next boot.
+    expect(await readUpdatePending(db)).toBeNull();
+  });
+
+  it("strips the system trigger from the web conversation after delivery", async () => {
+    // Simulate processMessage's behavior: it persists the trigger as a
+    // role="user" row before generating a response. The web announce
+    // path must scrub this so the user doesn't see a "user" bubble
+    // they didn't type when they next open the UI.
+    await writeUpdatePending(db, {
+      from: "0.5.0",
+      to: "0.5.1",
+      changelogExcerpt: "test changelog",
+      requestedAt: new Date().toISOString(),
+      householdId,
+      requestedByMemberId: webOnlyMemberId,
+    });
+
+    const { conversations, messages } = await import("@carsonos/db");
+    const { eq, and, asc } = await import("drizzle-orm");
+
+    let capturedTrigger: string | null = null;
+    await announceUpdateApplied(db, {
+      processMessage: async (input) => {
+        capturedTrigger = input.message;
+        // Stand in for the engine: open or create the web conversation
+        // and append role="user"=trigger then role="assistant"=response,
+        // matching ConstitutionEngine.processMessage's persistence.
+        const [existing] = db
+          .select()
+          .from(conversations)
+          .where(
+            and(
+              eq(conversations.agentId, input.agentId),
+              eq(conversations.memberId, input.memberId),
+              eq(conversations.householdId, input.householdId),
+              eq(conversations.channel, "web"),
+            ),
+          )
+          .all();
+        const convoId =
+          existing?.id ??
+          db
+            .insert(conversations)
+            .values({
+              agentId: input.agentId,
+              memberId: input.memberId,
+              householdId: input.householdId,
+              channel: "web",
+              startedAt: new Date().toISOString(),
+              lastMessageAt: new Date().toISOString(),
+            })
+            .returning({ id: conversations.id })
+            .all()[0].id;
+        db.insert(messages)
+          .values({
+            conversationId: convoId,
+            role: "user",
+            content: input.message,
+          })
+          .run();
+        db.insert(messages)
+          .values({
+            conversationId: convoId,
+            role: "assistant",
+            content: "Update finished, here's what's new.",
+          })
+          .run();
+        return { response: "Update finished, here's what's new." };
+      },
+      sendToUser: async () => {},
+      currentVersion: "0.5.1",
+    });
+
+    // The web conversation should have ONLY the assistant message —
+    // the trigger user row was scrubbed by stripWebChannelTrigger.
+    const [conv] = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.agentId, cosAgentId),
+          eq(conversations.memberId, webOnlyMemberId),
+          eq(conversations.householdId, householdId),
+          eq(conversations.channel, "web"),
+        ),
+      )
+      .limit(1);
+    expect(conv).toBeTruthy();
+
+    const rows = await db
+      .select({ role: messages.role, content: messages.content })
+      .from(messages)
+      .where(eq(messages.conversationId, conv!.id))
+      .orderBy(asc(messages.createdAt));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].role).toBe("assistant");
+    expect(rows[0].content).toBe("Update finished, here's what's new.");
+    // The trigger we captured was the system-injected one, and it should
+    // no longer be present anywhere in the conversation.
+    expect(capturedTrigger).not.toBeNull();
+    expect(rows.some((r) => r.content === capturedTrigger!)).toBe(false);
+  });
+
+  it("leaves pending in place when the engine returns blocked (retries next boot)", async () => {
+    await writeUpdatePending(db, {
+      from: "0.5.0",
+      to: "0.5.1",
+      changelogExcerpt: "test",
+      requestedAt: new Date().toISOString(),
+      householdId,
+      requestedByMemberId: webOnlyMemberId,
+    });
+
+    await announceUpdateApplied(db, {
+      processMessage: async () => ({ blocked: true }),
+      sendToUser: async () => {
+        throw new Error("must not be called when blocked");
+      },
+      currentVersion: "0.5.1",
+    });
+
+    // Pending NOT cleared — next boot retries.
+    expect(await readUpdatePending(db)).not.toBeNull();
+  });
+});
+
+// ── apply_system_update: read/write race fix (PR #41 deferred) ────
+
+describe("apply_system_update: pending uses freshest update_available", () => {
+  let db: Db;
+  let householdId: string;
+  let parentMemberId: string;
+  let cosAgentId: string;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+    hoisted.onSpawnHook = null;
+
+    const { households, familyMembers, staffAgents } = await import("@carsonos/db");
+
+    const [household] = await db
+      .insert(households)
+      .values({ name: "Race Test" })
+      .returning();
+    householdId = household.id;
+
+    const [parent] = await db
+      .insert(familyMembers)
+      .values({ householdId, name: "Parent", role: "parent", age: 40 })
+      .returning();
+    parentMemberId = parent.id;
+
+    const [cos] = await db
+      .insert(staffAgents)
+      .values({
+        householdId,
+        name: "Carson",
+        staffRole: "head_butler",
+        roleContent: "CoS",
+        isHeadButler: true,
+      })
+      .returning();
+    cosAgentId = cos.id;
+
+    // Seed an update_available row pointing 0.5.0 → 0.5.1.
+    const { instanceSettings } = await import("@carsonos/db");
+    await db.insert(instanceSettings).values({
+      id: crypto.randomUUID(),
+      key: "system.update_available",
+      value: {
+        from: "0.5.0",
+        to: "0.5.1",
+        fetchedAt: new Date().toISOString(),
+        changelogExcerpt: "v0.5.1 changelog",
+      },
+    });
+  });
+
+  it("re-reads update_available before writing pending and prefers the freshest row", async () => {
+    // Simulate the scheduler tick rewriting update_available between
+    // our pre-spawn read and post-spawn re-read: main bumped from
+    // 0.5.1 to 0.5.2 in the apply window. Without the re-read,
+    // pending.to would be 0.5.1 (stale).
+    const { instanceSettings } = await import("@carsonos/db");
+    const { eq } = await import("drizzle-orm");
+    hoisted.onSpawnHook = () => {
+      db.update(instanceSettings)
+        .set({
+          value: {
+            from: "0.5.0",
+            to: "0.5.2",
+            fetchedAt: new Date().toISOString(),
+            changelogExcerpt: "v0.5.2 changelog",
+          },
+        })
+        .where(eq(instanceSettings.key, "system.update_available"))
+        .run();
+    };
+
+    const { handleAgentTool } = await import("../agent-tools.js");
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: parentMemberId,
+        memberName: "Parent",
+        householdId,
+        isChiefOfStaff: true,
+      },
+      "apply_system_update",
+      {},
+    );
+
+    expect(result.is_error).toBeFalsy();
+
+    const pending = await readUpdatePending(db);
+    expect(pending).not.toBeNull();
+    expect(pending!.to).toBe("0.5.2");
+    expect(pending!.changelogExcerpt).toBe("v0.5.2 changelog");
+    expect(pending!.requestedByMemberId).toBe(parentMemberId);
+    expect(pending!.householdId).toBe(householdId);
+  });
+
+  it("falls back to the snapshot when the row was cleared during the apply window", async () => {
+    // If the tick clears update_available between our pre-spawn read
+    // and post-spawn re-read, we still want the announcement to fire
+    // on the post-restart boot — the script has already been kicked
+    // off by spawn. Use the original snapshot.
+    const { instanceSettings } = await import("@carsonos/db");
+    const { eq } = await import("drizzle-orm");
+    hoisted.onSpawnHook = () => {
+      db.delete(instanceSettings)
+        .where(eq(instanceSettings.key, "system.update_available"))
+        .run();
+    };
+
+    const { handleAgentTool } = await import("../agent-tools.js");
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: parentMemberId,
+        memberName: "Parent",
+        householdId,
+        isChiefOfStaff: true,
+      },
+      "apply_system_update",
+      {},
+    );
+
+    expect(result.is_error).toBeFalsy();
+
+    const pending = await readUpdatePending(db);
+    expect(pending).not.toBeNull();
+    // Snapshot values from the seeded row.
+    expect(pending!.to).toBe("0.5.1");
+    expect(pending!.changelogExcerpt).toBe("v0.5.1 changelog");
   });
 });

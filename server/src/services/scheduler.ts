@@ -18,6 +18,7 @@ import type { ConstitutionEngine } from "./constitution-engine.js";
 import type { MultiRelayManager } from "./multi-relay-manager.js";
 import type { MemoryProvider } from "@carsonos/shared";
 import { familyMembers } from "@carsonos/db";
+import { checkForUpdate } from "./system-update-check.js";
 
 const TICK_INTERVAL_MS = 60_000; // Check every 60 seconds
 
@@ -261,7 +262,6 @@ export class Scheduler {
       // and air-gapped deploys.
       if (process.env.CARSONOS_DISABLE_UPDATE_CHECK !== "1") {
         try {
-          const { checkForUpdate } = await import("./system-update-check.js");
           await checkForUpdate(this.db);
         } catch (err) {
           console.warn("[update-check] tick error:", err);

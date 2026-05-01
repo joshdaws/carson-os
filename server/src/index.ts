@@ -23,6 +23,10 @@ import { getConfig } from "./config.js";
 import { backupDatabase } from "./services/backup.js";
 import { checkForUpdates } from "./services/update-check.js";
 import { Scheduler } from "./services/scheduler.js";
+import {
+  announceUpdateApplied,
+  checkForUpdate,
+} from "./services/system-update-check.js";
 import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
@@ -618,22 +622,15 @@ async function main() {
   // the user — running earlier would silently fail and defer the
   // announcement to the NEXT boot, defeating the feature on the very
   // boot it's meant to handle.
-  void import("./services/system-update-check.js").then(
-    ({ announceUpdateApplied }) =>
-      announceUpdateApplied(db, {
-        processMessage: (p) =>
-          constitutionEngine.processMessage({
-            ...p,
-            channel: p.channel as "telegram" | "web",
-          }),
-        sendToUser: (agentId, telegramUserId, text) =>
-          multiRelay.sendMessage(agentId, telegramUserId, text),
-      }).catch((err) =>
-        console.warn(
-          "[update-check] boot announcement failed:",
-          err instanceof Error ? err.message : String(err),
-        ),
-      ),
+  announceUpdateApplied(db, {
+    processMessage: (p) => constitutionEngine.processMessage(p),
+    sendToUser: (agentId, telegramUserId, text) =>
+      multiRelay.sendMessage(agentId, telegramUserId, text),
+  }).catch((err) =>
+    console.warn(
+      "[update-check] boot announcement failed:",
+      err instanceof Error ? err.message : String(err),
+    ),
   );
 
   // Hourly sweep of expired hire proposals. Boot-time pass already fired
@@ -715,16 +712,14 @@ async function main() {
 
   // v0.5.1: kick off a non-blocking update check at boot so the CoS knows
   // about pending updates on the first conversation, not 60s after boot.
-  // Inner function self-throttles to 24h via instance_settings TTL.
+  // The function self-throttles to 24h via instance_settings TTL.
   if (process.env.CARSONOS_DISABLE_UPDATE_CHECK !== "1") {
-    void import("./services/system-update-check.js")
-      .then(({ checkForUpdate }) => checkForUpdate(db))
-      .catch((err) =>
-        console.warn(
-          "[update-check] boot check failed:",
-          err instanceof Error ? err.message : String(err),
-        ),
-      );
+    checkForUpdate(db).catch((err) =>
+      console.warn(
+        "[update-check] boot check failed:",
+        err instanceof Error ? err.message : String(err),
+      ),
+    );
   }
 
   // Start listening on loopback only
