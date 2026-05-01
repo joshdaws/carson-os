@@ -41,6 +41,7 @@ import {
   composeGenericSpecialistInstructions,
 } from "./delegation/specialty-templates/index.js";
 import type { DelegationNotifier, NotifyPayload } from "./delegation/notifier.js";
+import { signApprovalToken } from "./approval-token.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -538,10 +539,33 @@ export class DelegationService {
           ],
         ],
       };
+
+      // v0.5.2 (TODO-6): build a Signal-flavored card body that includes
+      // tap-to-act deep-links instead of inline buttons. Signal-only
+      // members fall through to this path in the boot's notifierSend
+      // routing. The tokens are HMAC-signed and time-bound; tapping a
+      // link opens a confirmation page that POSTs back to redeem.
+      const baseUrl = (
+        process.env.CARSONOS_PUBLIC_BASE_URL ??
+        `http://127.0.0.1:${process.env.PORT ?? "3300"}`
+      ).replace(/\/$/, "");
+      const approveToken = await signApprovalToken(this.db, approvalTask.id, "approve");
+      const rejectToken = await signApprovalToken(this.db, approvalTask.id, "reject");
+      const approveUrl = `${baseUrl}/api/approval/redeem?token=${encodeURIComponent(approveToken)}`;
+      const rejectUrl = `${baseUrl}/api/approval/redeem?token=${encodeURIComponent(rejectToken)}`;
+      const signalText = [
+        cardText,
+        "",
+        "Tap to approve or reject (each link confirms before acting):",
+        `Approve: ${approveUrl}`,
+        `Reject:  ${rejectUrl}`,
+      ].join("\n");
+
       const payload: NotifyPayload = {
         kind: "hire_proposal",
         text: cardText,
         replyMarkup,
+        signalText,
         householdId: input.householdId,
         memberId: input.proposedByMemberId,
         agentId: input.proposedByAgentId,

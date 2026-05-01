@@ -307,35 +307,66 @@ async function main() {
   // 6b-1. Workspace provider (v0.4: per-task git worktree + tool sandbox)
   const workspace = new WorkspaceProvider();
 
-  // 6b-2. Telegram send fn for the notifier. multiRelay doesn't exist yet
-  // (boot order: dispatcher → delegation-service → multiRelay), so the send
-  // closure resolves the reference lazily. Until multiRelay is bound, sends
-  // fail loud so the reconciler retries on next boot — never drops a payload.
+  // 6b-2. Send fn for the notifier. multiRelay/signalRelay don't exist
+  // yet (boot order: dispatcher → delegation-service → multiRelay/signal),
+  // so the send closure resolves the references lazily. Until both are
+  // bound, sends fail loud so the reconciler retries on next boot.
+  //
+  // Routing policy:
+  //   - Telegram if telegramUserId is set (replyMarkup honored).
+  //   - Signal if no telegramUserId but signalUuid is set (replyMarkup
+  //     dropped — Signal has no callback queries; v0.5.2 / TODO-6 stamps
+  //     deep-link URLs into payload.signalText for hire-proposal cards).
+  //   - Otherwise return an error so the reconciler doesn't silently drop.
   let multiRelayRef: MultiRelayManager | null = null;
+  let signalRelayRef: SignalRelayManager | null = null;
   const notifierSend: TelegramSendFn = async (args): Promise<TelegramSendResult> => {
-    if (!multiRelayRef) return { ok: false, error: "multiRelay not ready yet" };
+    if (!multiRelayRef && !signalRelayRef) {
+      return { ok: false, error: "no relay ready yet" };
+    }
     const [member] = await db
       .select()
       .from(familyMembers)
       .where(eq(familyMembers.id, args.memberId))
       .limit(1);
-    if (!member?.telegramUserId) {
-      return { ok: false, error: `no telegram user id for member ${args.memberId}` };
+    if (!member) {
+      return { ok: false, error: `member ${args.memberId} not found` };
     }
-    try {
-      const { messageId } = await multiRelayRef.sendMessage(
-        args.agentId,
-        member.telegramUserId,
-        args.text,
-        { replyMarkup: args.replyMarkup },
-      );
-      return { ok: true, messageId };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
+    if (member.telegramUserId && multiRelayRef) {
+      try {
+        const { messageId } = await multiRelayRef.sendMessage(
+          args.agentId,
+          member.telegramUserId,
+          args.text,
+          { replyMarkup: args.replyMarkup },
+        );
+        return { ok: true, messageId };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
+    // No telegram → try Signal. Use signalText if the payload provided a
+    // Signal-specific body (currently the hire-proposal flow uses this to
+    // include approve/reject deep-link URLs in place of inline buttons).
+    if (member.signalUuid && signalRelayRef) {
+      try {
+        const body = args.signalText ?? args.text;
+        await signalRelayRef.sendMessage(args.agentId, member.signalUuid, body);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    return {
+      ok: false,
+      error: `member ${args.memberId} has no reachable transport (no telegram_user_id, no signal_uuid)`,
+    };
   };
   const notifier = new DelegationNotifier(db, notifierSend);
 
@@ -400,6 +431,7 @@ async function main() {
     engine: constitutionEngine,
     orchestrator,
   });
+  signalRelayRef = signalRelay; // bind the notifier's Signal send target
 
   // 8. Create Express app with all dependencies
   const app = await createApp({

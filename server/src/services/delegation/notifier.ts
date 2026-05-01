@@ -44,6 +44,11 @@ export interface NotifyPayload {
   /** Inline buttons for approval cards. Shape intentionally unknown at this
    * layer — Lane F (Telegram callbacks) defines the exact type. */
   replyMarkup?: unknown;
+  /** v0.5.2 (TODO-6): alternate body for Signal delivery. Signal can't
+   * render inline buttons, so hire-proposal cards include URL deep-links
+   * here that the Signal-only flow uses in place of replyMarkup. When
+   * unset, the regular `text` is sent on either transport. */
+  signalText?: string;
   /** Routing: which household / member / agent's bot sends this. */
   householdId: string;
   memberId: string;
@@ -61,6 +66,10 @@ export type TelegramSendFn = (args: {
   memberId: string;
   text: string;
   replyMarkup?: unknown;
+  /** v0.5.2 (TODO-6): the alternate body to use when this member is
+   *  reached via Signal instead of Telegram. Routing is the send fn's
+   *  responsibility; the notifier just passes the field through. */
+  signalText?: string;
 }) => Promise<TelegramSendResult>;
 
 export interface DeliverResult {
@@ -178,6 +187,7 @@ export class DelegationNotifier {
         memberId: payload.memberId,
         text: payload.text,
         replyMarkup: payload.replyMarkup,
+        signalText: payload.signalText,
       });
     } catch (err) {
       return {

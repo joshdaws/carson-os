@@ -42,6 +42,7 @@ import { createSettingsRoutes } from "./routes/settings.js";
 import { createProfileRoutes } from "./routes/profiles.js";
 import { createScheduledTaskRoutes } from "./routes/scheduled-tasks.js";
 import { createProjectRoutes } from "./routes/projects.js";
+import { createApprovalRoutes } from "./routes/approval.js";
 
 const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -127,6 +128,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/households", createMemberRoutes(db));
   app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay, delegationService: deps.delegationService }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight, delegationService: deps.delegationService }));
+  app.use("/api/approval", createApprovalRoutes({ db, delegationService: deps.delegationService }));
   app.use(
     "/api/constitution",
     createConstitutionRoutes({ db, constitutionEngine, interviewEngine }),
