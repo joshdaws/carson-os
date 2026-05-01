@@ -41,6 +41,14 @@ export interface CompilePromptParams {
   // Household roster (all family members)
   householdName?: string | null;
   householdMembers?: Array<{ name: string; role: string; age: number }> | null;
+  /** Pending CarsonOS update for the Chief of Staff to surface (TODO-3).
+   * Constitution-engine reads from instance_settings and passes this only
+   * to head_butler agents — personal agents never see it. */
+  updateAvailable?: {
+    from: string;
+    to: string;
+    changelogExcerpt: string;
+  } | null;
 }
 
 export interface DelegationEdge {
@@ -319,6 +327,39 @@ function compileChatPrompt(params: CompilePromptParams): string {
   // 10. Delegation instructions (personal agents only)
   if (delegationInstructions) {
     sections.push(`# Delegation\n\n${delegationInstructions}`);
+  }
+
+  // 11. CarsonOS update available — Chief of Staff only. constitution-engine
+  // gates this so personal agents and specialists never see the section.
+  // The excerpt has already been sanitized (control chars stripped, length
+  // capped) by services/system-update-check.ts before reaching here.
+  if (params.updateAvailable) {
+    const { from, to, changelogExcerpt } = params.updateAvailable;
+    sections.push(
+      [
+        "# CarsonOS Update Available",
+        "",
+        `The system you run on is at v${from}. Latest is v${to}.`,
+        "",
+        "If it fits the conversation, mention this casually to the user (don't",
+        "lead with it — drop it in if there's a natural opening). When you do,",
+        "summarize the changelog excerpt below in plain English: what they'll",
+        "be able to do that they can't now.",
+        "",
+        "Only a parent (full-trust member) can apply the update. If a parent",
+        "asks you to apply it, call `apply_system_update` — that script will",
+        "git pull main, install dependencies, and restart the service. The host",
+        "will go offline briefly during the restart; that's expected. After",
+        "the restart, you'll come back up and tell the family what changed.",
+        "",
+        "If a kid asks for the update, politely tell them to ask a parent —",
+        "the tool won't let you run it on a non-parent's behalf.",
+        "",
+        "## Changelog excerpt (vX → vY)",
+        "",
+        changelogExcerpt || "(no changelog excerpt available — describe v" + to + " generically)",
+      ].join("\n"),
+    );
   }
 
   return sections.join("\n\n");

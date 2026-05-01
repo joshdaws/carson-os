@@ -27,7 +27,7 @@ import {
   buildToolExecutor,
 } from "./memory/index.js";
 import { SCHEDULING_TOOLS, handleSchedulingTool } from "./scheduling-tools.js";
-import { SELF_TOOLS, STAFF_TOOLS, handleAgentTool } from "./agent-tools.js";
+import { SELF_TOOLS, STAFF_TOOLS, SYSTEM_TOOLS, handleAgentTool } from "./agent-tools.js";
 import { AGENT_GUIDE_TOOLS, handleAgentGuideTool } from "./agent-guides.js";
 import { REDACTION_TOOLS, REDACTION_TOOL_NAMES, handleRedactionTool } from "./redaction-tools.js";
 import {
@@ -238,6 +238,17 @@ export class ToolRegistry {
       this.tools.set(def.name, {
         definition: def,
         category: "agent-staff",
+        tier: "system-chief",
+      });
+    }
+
+    // System tools — CoS-only AND parent-member gated. Trust enforcement
+    // lives inside handleAgentTool (member.role lookup) since `tier` only
+    // captures the CoS axis.
+    for (const def of SYSTEM_TOOLS) {
+      this.tools.set(def.name, {
+        definition: def,
+        category: "agent-system",
         tier: "system-chief",
       });
     }
@@ -689,10 +700,12 @@ export class ToolRegistry {
       }
 
       // Agent management tools (self + staff management for Chief of Staff)
+      // + system tools (apply_system_update, gated to CoS+parent inside the handler).
       const agentToolNames = [
         "update_instructions", "update_personality", "update_role",
         "list_agents", "create_agent", "delete_agent", "pause_agent", "resume_agent", "update_agent_assignment",
         "list_agent_tools", "grant_tool_to_agent", "revoke_tool_from_agent",
+        "apply_system_update",
       ];
       if (agentToolNames.includes(name)) {
         const result = await handleAgentTool(
