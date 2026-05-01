@@ -254,6 +254,19 @@ export class Scheduler {
           console.warn("[compilation-agent] tick error:", err);
         }
       }
+
+      // v0.5.1: system update self-awareness. Cheap when cached (one DB
+      // read per tick); the actual GitHub fetch only fires every 24h via
+      // the function's internal TTL gate. Disabled via env for tests
+      // and air-gapped deploys.
+      if (process.env.CARSONOS_DISABLE_UPDATE_CHECK !== "1") {
+        try {
+          const { checkForUpdate } = await import("./system-update-check.js");
+          await checkForUpdate(this.db);
+        } catch (err) {
+          console.warn("[update-check] tick error:", err);
+        }
+      }
     } catch (err) {
       console.error("[scheduler] Tick error:", err);
     } finally {

@@ -394,6 +394,29 @@ async function main() {
   );
   orchestrator.setAgentQueueForWake((agentId, memberId, fn) => multiRelay.enqueueAgentWork(agentId, memberId, fn));
 
+  // v0.5.1 post-restart announcement (TODO-3.5): if the previous instance
+  // wrote `system.update_pending` before restarting AND we came back up at
+  // the expected version, queue a one-shot in-voice "update applied" message
+  // from CoS to the requesting member. Fires once per boot, after multiRelay
+  // is up so the response can actually reach the user.
+  void import("./services/system-update-check.js").then(
+    ({ announceUpdateApplied }) =>
+      announceUpdateApplied(db, {
+        processMessage: (p) =>
+          constitutionEngine.processMessage({
+            ...p,
+            channel: p.channel as "telegram" | "web",
+          }),
+        sendToUser: (agentId, telegramUserId, text) =>
+          multiRelay.sendMessage(agentId, telegramUserId, text),
+      }).catch((err) =>
+        console.warn(
+          "[update-check] boot announcement failed:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      ),
+  );
+
   // 7b. Signal relay (agents with signal_account + signal_daemon_port set)
   const signalRelay = new SignalRelayManager({
     db,
@@ -686,6 +709,20 @@ async function main() {
     compilationAgent,
   });
   scheduler.start();
+
+  // v0.5.1: kick off a non-blocking update check at boot so the CoS knows
+  // about pending updates on the first conversation, not 60s after boot.
+  // Inner function self-throttles to 24h via instance_settings TTL.
+  if (process.env.CARSONOS_DISABLE_UPDATE_CHECK !== "1") {
+    void import("./services/system-update-check.js")
+      .then(({ checkForUpdate }) => checkForUpdate(db))
+      .catch((err) =>
+        console.warn(
+          "[update-check] boot check failed:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
+  }
 
   // Start listening on loopback only
   server.listen(config.port, "127.0.0.1", () => {
