@@ -25,8 +25,9 @@ import type { Db } from "@carsonos/db";
 import { tasks, taskEvents, staffAgents, projects } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
 import type { BroadcastFn, AppEvent } from "./event-bus.js";
-import { WorkspaceProvider, slugify, type ProvisionedWorkspace } from "./delegation/workspace.js";
+import { WorkspaceProvider, slugify, type ProvisionedWorkspace, type ProvisionInput } from "./delegation/workspace.js";
 import { DelegationNotifier, type NotifyPayload } from "./delegation/notifier.js";
+import { DelegatorReply } from "./delegation/delegator-reply.js";
 import { composeSummaryCard, renderSummaryCardText, type DeveloperSpecialty } from "./delegation/summary-card.js";
 import { templateForSpecialty } from "./delegation/specialty-templates/index.js";
 import type { ToolRegistry } from "./tool-registry.js";
@@ -72,6 +73,7 @@ export class Dispatcher {
   private toolRegistry: ToolRegistry | null;
   private delegationService: DelegationService | null = null;
   private oversight: CarsonOversight | null = null;
+  private delegatorReply: DelegatorReply | null = null;
 
   /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
   private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
@@ -103,6 +105,14 @@ export class Dispatcher {
   ): void {
     this.delegationService = delegationService;
     this.oversight = oversight;
+    if (this.notifier) {
+      const wake: (taskId: string) => Promise<{ delivered: boolean; reason?: string }> = (taskId) =>
+        delegationService.wakeDelegator(taskId);
+      this.delegatorReply = new DelegatorReply({
+        notifier: this.notifier,
+        wake,
+      });
+    }
   }
 
   // -- Public API -----------------------------------------------------
@@ -218,6 +228,36 @@ export class Dispatcher {
       // agent gets a "server restarted — task didn't finish" message. For
       // non-Developer tasks, preserve the v0.1 auto-re-queue.
       if (isDeveloper && this.notifier) {
+        // Best-effort teardown using the persisted workspace metadata. With
+        // TODO-5's DB-then-git ordering, the row was claimed BEFORE git ran,
+        // so a crash during provision still leaves enough metadata here to
+        // remove a partial worktree and free the carson/<slug> branch.
+        // Without this, retrying a task with the same title hits
+        // E_BRANCH_EXISTS forever.
+        if (this.workspace && task.workspacePath) {
+          let repoPath: string | undefined;
+          if (task.workspaceKind === "worktree" && task.projectId) {
+            const [proj] = await this.db
+              .select({ path: projects.path })
+              .from(projects)
+              .where(eq(projects.id, task.projectId))
+              .limit(1);
+            repoPath = proj?.path;
+          }
+          const partial: ProvisionedWorkspace =
+            task.workspaceKind === "worktree"
+              ? {
+                  kind: "worktree",
+                  path: task.workspacePath,
+                  branch: task.workspaceBranch ?? undefined,
+                  repoPath,
+                }
+              : { kind: "tool_sandbox", path: task.workspacePath };
+          await this.workspace.teardown(partial).catch((err) =>
+            console.error(`[dispatcher] recovery teardown for ${task.id} failed:`, err),
+          );
+        }
+
         const specialty =
           task.workspaceKind === "tool_sandbox" ? "tools" : "project";
         const card = composeSummaryCard({
@@ -422,7 +462,12 @@ export class Dispatcher {
     for (let i = 0; i < pending.length; i++) {
       const { id } = pending[i];
       try {
-        await this.notifier.deliver(id);
+        // Wake-first so host-restart-during-run failures (the recovery path
+        // above primes the prepared payload as a safety net) get phrased in
+        // the delegator's voice, matching live success/failure messaging.
+        // DelegatorReply retries transient wake failures with backoff before
+        // falling back to the templated notifier.
+        await this.deliverDelegatorReply(id);
       } catch (err) {
         console.error(`[dispatcher] notifier replay for ${id} threw:`, err);
       }
@@ -549,60 +594,45 @@ export class Dispatcher {
         agent,
         specialty,
         `worktree workspace requires a registered project (task.projectId=${task.projectId ?? "null"}). Re-delegate with workspace='project' and a valid projectId.`,
+        slotKey,
       );
       return;
     }
 
-    // -- 2. Provision workspace --------------------------------------
+    // -- 2. Pre-claim row + provision workspace ----------------------
+    // Order is DB-then-git (TODO-5 crash-safety): we predict the workspace
+    // path/branch deterministically, write them to the row alongside
+    // status='in_progress', AND ONLY THEN call git worktree add. If the host
+    // dies between the DB write and provision succeeding, recoverStuckTasks
+    // sees the in_progress row with workspace metadata and can teardown
+    // whatever partial state git left behind, instead of orphaning a
+    // carson/<slug> branch that permanently blocks retries with the same
+    // title. If provision throws, we catch and call failDeveloperTask after
+    // a best-effort teardown of the predicted path.
     if (!this.workspace) {
       await this.failDeveloperTask(
         task,
         agent,
         specialty,
         "Dispatcher is missing a WorkspaceProvider (boot wiring incomplete)",
+        slotKey,
       );
       return;
     }
 
-    let workspace: ProvisionedWorkspace;
-    try {
-      if (workspaceKindResolved === "tool_sandbox") {
-        workspace = await this.workspace.provision({
-          kind: "tool_sandbox",
-          runId: taskId,
-        });
-      } else {
-        workspace = await this.workspace.provision({
-          kind: "worktree",
-          projectName: project!.name,
-          projectPath: project!.path,
-          defaultBranch: project!.defaultBranch,
-          runId: taskId,
-          slug: slugify(task.title),
-        });
-      }
-    } catch (err) {
-      await this.failDeveloperTask(
-        task,
-        agent,
-        specialty,
-        `workspace provision failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return;
-    }
+    const provisionInput: ProvisionInput =
+      workspaceKindResolved === "tool_sandbox"
+        ? { kind: "tool_sandbox", runId: taskId }
+        : {
+            kind: "worktree",
+            projectName: project!.name,
+            projectPath: project!.path,
+            defaultBranch: project!.defaultBranch,
+            runId: taskId,
+            slug: slugify(task.title),
+          };
+    const predicted = this.workspace.predictMetadata(provisionInput);
 
-    this.workspaceByTaskId.set(taskId, workspace);
-
-    // Register the AbortController BEFORE we write in_progress so a cancel
-    // that lands in this window can still find something to abort. The
-    // controller stays in the map until the finally{} block after execute().
-    // Pre-register so handleCancelBroadcast (which fires sync from the
-    // cancel_task broadcast) has a handle even if its broadcast arrives
-    // before adapter.execute is called.
-    const abortController = new AbortController();
-    this.inFlightAborts.set(taskId, abortController);
-
-    // -- 3. Persist workspace metadata + transition to in_progress ---
     // Conditional UPDATE so if handleCancelTask already flipped the row to
     // `cancelled` before we claimed it (narrow race between the dispatcher
     // picking the task up and the user tapping Reject/Cancel), this write is
@@ -611,18 +641,17 @@ export class Dispatcher {
       .update(tasks)
       .set({
         status: "in_progress",
-        workspaceKind: workspace.kind,
-        workspacePath: workspace.path,
-        workspaceBranch: workspace.branch ?? null,
+        workspaceKind: workspaceKindResolved,
+        workspacePath: predicted.path,
+        workspaceBranch: predicted.branch ?? null,
         updatedAt: new Date(),
       })
       .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
       .returning({ id: tasks.id });
 
     if (claimed.length === 0) {
-      // The cancel path won. Our pre-registered controller has already been
-      // aborted by handleCancelBroadcast; cleanup + bail.
-      this.inFlightAborts.delete(taskId);
+      // The cancel path won. Bail before provisioning — there's no workspace
+      // yet to clean up.
       await this.logEvent(
         taskId,
         "cancelled",
@@ -633,6 +662,45 @@ export class Dispatcher {
       await this.drainDeveloperQueue(slotKey, agent);
       return;
     }
+
+    // Register AbortController before provision so a cancel mid-`git
+    // worktree add` has a handle to abort against (provision is awaited so
+    // abort can't actually short-circuit it today, but registering here
+    // keeps the bookkeeping consistent and ready for future async work).
+    const abortController = new AbortController();
+    this.inFlightAborts.set(taskId, abortController);
+
+    let workspace: ProvisionedWorkspace;
+    try {
+      workspace = await this.workspace.provision(provisionInput);
+    } catch (err) {
+      // Best-effort teardown using the predicted metadata. If git left a
+      // partial worktree dir, this cleans it up so the next retry isn't
+      // blocked by E_WORKTREE_EXISTS.
+      const partial: ProvisionedWorkspace =
+        workspaceKindResolved === "worktree"
+          ? {
+              kind: "worktree",
+              path: predicted.path,
+              branch: predicted.branch,
+              repoPath: project!.path,
+            }
+          : { kind: "tool_sandbox", path: predicted.path };
+      await this.workspace.teardown(partial).catch((tdErr) =>
+        console.error(`[dispatcher] teardown after provision failure for ${taskId}:`, tdErr),
+      );
+      this.inFlightAborts.delete(taskId);
+      await this.failDeveloperTask(
+        task,
+        agent,
+        specialty,
+        `workspace provision failed: ${err instanceof Error ? err.message : String(err)}`,
+        slotKey,
+      );
+      return;
+    }
+
+    this.workspaceByTaskId.set(taskId, workspace);
 
     await this.logEvent(taskId, "started", agent.id, `Developer task started (${specialty})`, {
       workspaceKind: workspace.kind,
@@ -889,9 +957,10 @@ export class Dispatcher {
 
   private async failDeveloperTask(
     task: { id: string; title: string; createdAt: Date; notifyAgentId: string | null; requestedBy: string | null },
-    agent: { id: string; householdId: string; specialty: string | null },
+    agent: Parameters<Dispatcher["executeDeveloperTask"]>[1],
     specialty: DeveloperSpecialty,
     reason: string,
+    slotKey?: string,
   ): Promise<void> {
     const card = composeSummaryCard({
       kind: "failure",
@@ -926,6 +995,18 @@ export class Dispatcher {
     }
 
     await this.logEvent(task.id, "failed", agent.id, reason, { specialty, reason });
+
+    // Slot hygiene: pre-execution failures (workspace provision errors, missing
+    // project, etc.) used to leave the slot marked running, which silently
+    // stranded any subsequent delegation attempt for the same agent on the
+    // queue. Drain it so queued retries can move forward (and the queue empties
+    // back to a clean slate when there's nothing left). Surfaced 2026-04-29:
+    // a cancelled task left the carson/<slug> branch behind, the next attempt
+    // failed E_BRANCH_EXISTS in failDeveloperTask, slot stayed dirty, the THIRD
+    // attempt sat queued for 16 minutes until the user killed it.
+    if (slotKey) {
+      await this.drainDeveloperQueue(slotKey, agent);
+    }
   }
 
   // -- Non-Developer specialist execution ----------------------------
@@ -1113,7 +1194,6 @@ export class Dispatcher {
     const {
       taskId,
       agent,
-      task,
       terminalStatus,
       resultText,
       durationSec,
@@ -1169,29 +1249,27 @@ export class Dispatcher {
       data: { taskId, agentId: agent.id, specialty },
     });
 
-    const hasWakeDeps = !!(this.delegationService && task.notifyAgentId && task.requestedBy);
-    const deliver = async () => {
-      if (hasWakeDeps) {
-        const wakeResult = await this.delegationService!.wakeDelegator(taskId);
-        if (wakeResult.delivered) {
-          if (this.notifier) {
-            await this.notifier
-              .markDeliveredByWake(taskId)
-              .catch((err) => console.error(`[dispatcher] markDeliveredByWake(${taskId}) failed:`, err));
-          }
-          return;
-        }
-        console.warn(
-          `[dispatcher] wake(${taskId}) did not deliver (${wakeResult.reason}); falling back to templated notifier`,
-        );
-      }
-      if (this.notifier) {
-        await this.notifier.deliver(taskId);
-      }
-    };
-    deliver().catch((err) => console.error(`[dispatcher] deliver(${taskId}) threw:`, err));
+    this.deliverDelegatorReply(taskId).catch((err) =>
+      console.error(`[dispatcher] deliver(${taskId}) threw:`, err),
+    );
 
     return { preparedUpdate: true };
+  }
+
+  /**
+   * Hand the delegator-reply policy to DelegatorReply if it's wired, else
+   * fall back to direct templated send. The wired path is the normal one;
+   * the fallback covers boot windows where setDelegationContext hasn't run
+   * yet (e.g., recoverStuckTasks before delegationService is bound).
+   */
+  private async deliverDelegatorReply(taskId: string): Promise<void> {
+    if (this.delegatorReply) {
+      await this.delegatorReply.handleTerminal(taskId);
+      return;
+    }
+    if (this.notifier) {
+      await this.notifier.deliver(taskId);
+    }
   }
 
   private async drainSpecialistQueue(

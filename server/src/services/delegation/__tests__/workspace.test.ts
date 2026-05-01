@@ -75,6 +75,17 @@ describe("WorkspaceProvider — tool sandbox", () => {
     expect(await pathExists(ws.path)).toBe(true);
   });
 
+  it("predictMetadata returns the same path provision would create — sandbox", async () => {
+    const predicted = provider.predictMetadata({ kind: "tool_sandbox", runId: "run-pred" });
+    const ws = await provider.provision({ kind: "tool_sandbox", runId: "run-pred" });
+    expect(predicted.path).toBe(ws.path);
+    expect(predicted.branch).toBeUndefined();
+    // No IO from predictMetadata — file system shouldn't have been touched
+    // until provision ran. Verifies we can use predictMetadata as a
+    // crash-safety pre-claim before the actual provision call.
+    expect(await pathExists(ws.path)).toBe(true);
+  });
+
   it("refuses to provision when the sandbox path already exists", async () => {
     const ws = await provider.provision({ kind: "tool_sandbox", runId: "run-1" });
     await writeFile(join(ws.path, "scratch.ts"), "// content\n");
@@ -125,6 +136,18 @@ describe("WorkspaceProvider — git worktree", () => {
     expect(ws.path).toBe(
       join(base, "worktrees", "homeschool-happy", "run-a"),
     );
+    // predictMetadata returns the same shape provision lands at — confirms
+    // dispatcher's pre-claim writes the right values for crash recovery.
+    const predicted = provider.predictMetadata({
+      kind: "worktree",
+      projectName: "homeschool-happy",
+      projectPath: repoPath,
+      defaultBranch: "main",
+      runId: "run-a",
+      slug: "fix-unit-preview",
+    });
+    expect(predicted.path).toBe(ws.path);
+    expect(predicted.branch).toBe(ws.branch);
     expect(await pathExists(ws.path)).toBe(true);
     // Worktree is registered with git
     const { stdout } = await execFileAsync("git", [

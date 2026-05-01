@@ -158,23 +158,33 @@ Conversations maintain continuity via Claude Agent SDK session resume. Each conv
 
 ## Memory
 
-Three layers, all stored as local markdown files with YAML frontmatter:
+Five layers in v0.5, all stored as local markdown files with YAML frontmatter:
 
 1. **Knowledge Base** — QMD-indexed markdown files. One collection per family member + a shared household collection. Agents search memory on demand via the `search_memory` tool.
 
-2. **Memory Schema** — 13 types (fact, preference, event, decision, commitment, person, project, media, place, routine, relationship, goal, skill) with typed frontmatter fields. Agents use `save_memory` and `update_memory` to manage entries, with dedup (search before save).
+2. **Memory Schema** — 13 typed entity kinds (fact, preference, event, decision, commitment, person, project, media, place, routine, relationship, goal, skill) with typed frontmatter fields. Agents manage entries via four CRUD tools (`create_memory`, `update_memory`, `replace_memory`, `delete_memory`) plus `correct_memory` for atom-level corrections. Dedup runs as a search-before-save guard inside the worker LLM and a fuzzy-match fallback during compilation.
 
-3. **Operating Instructions** — Per-agent self-maintained behavioral notes ("Josh prefers bullet points", "Don't schedule during church on Sundays"). Capped at 2000 characters.
+3. **Identity files** — Per-member `USER.md` and per-agent `PERSONALITY.md` capture stable identity separately from drifting facts. Read first in the agent's prompt order.
+
+4. **Wikilinks + backlinks** — `[[slug]]` references between memory entries are tracked in a `memory_links` table; backlinks let agents find "everything that mentions Becca" without searching prose.
+
+5. **Background workers** — An enrichment worker extracts atoms from conversation turns into typed entries. A compilation agent regenerates compiled views nightly (and lazily, with a 60s per-entity debounce). Both yield to active interactive chat so they never compete with user-facing latency.
+
+6. **Operating Instructions** — Per-agent self-maintained behavioral notes ("Josh prefers bullet points", "Don't schedule during church on Sundays"). Capped at 2000 characters.
 
 ```
 ~/.carsonos/memory/
   household/       <- shared family memory
   josh/            <- Josh's personal memory
-  becca/           <- Becca's personal memory
+    USER.md        <- Josh's identity (stable)
+  becca/
+    USER.md
   ...
 ```
 
 Members can override their memory directory to point at an existing QMD-compatible knowledge base.
+
+For the project's domain vocabulary (delegator, specialist, delegated run, workspace kinds, self-modifying runtime), see [`CONTEXT.md`](./CONTEXT.md). Architectural decisions live under [`docs/adr/`](./docs/adr/).
 
 ## Tools
 
@@ -183,9 +193,11 @@ Agents get tools based on their role and trust level:
 | Tool | Description |
 |------|-------------|
 | `search_memory` | Search personal + household memory |
-| `save_memory` | Save new memories (facts, events, etc.) |
+| `create_memory` | Create new memory entries (facts, events, etc.) |
 | `update_memory` | Update existing memory entries in-place |
+| `replace_memory` | Wholesale replace an entry (post-major-revision) |
 | `delete_memory` | Remove outdated memories |
+| `correct_memory` | Atoms-canonical correction for enrichment errors |
 | `update_instructions` | Maintain operating instructions |
 | `list_calendar_events` | Check schedules (Google Calendar via gws, or any CalDAV server) |
 | `create_calendar_event` | Create events (Google Calendar via gws, or any CalDAV server) |

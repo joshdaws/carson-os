@@ -59,7 +59,7 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "delegate_task",
     description:
-      "Hand a long-running task to a hired Developer specialist. Returns immediately with a runId; the Developer works in the background and messages back on completion. Use when the work would take more than a few turns (building a tool, fixing an external project, updating CarsonOS). The principal can cancel via 'kill <name>'s task'.\n\nPick `workspace` per task — it determines WHERE the Developer works:\n  - 'tools' → empty sandbox at ~/.carsonos/sandbox/{runId}/. Use ONLY when building a NEW custom tool/skill/script from scratch. No projectId.\n  - 'project' → fresh git worktree of a registered project. Use for any fix or feature in an existing codebase, INCLUDING CarsonOS itself. Requires projectId — resolve via list_projects. Output is a PR.\n\nIf the goal is 'fix the gmail tool' / 'edit the calendar provider' / 'update the relay code' / anything that touches existing code in a registered project: workspace='project' with the project's id. Worktrees keep the Developer's edits off the live source so the dev server isn't disrupted mid-run.\n\nIf workspace is omitted, falls back to the specialist's hired specialty.",
+      "Hand a long-running task to a hired Developer specialist. Returns immediately with a runId; the Developer works in the background and messages back on completion. Use when the work would take more than a few turns (building a tool, fixing an external project, updating CarsonOS). The principal can cancel via 'kill <name>'s task'.\n\nPick `workspace` per task — it determines WHERE the Developer works:\n  - 'tools'   → empty sandbox at ~/.carsonos/sandbox/{runId}/. Use ONLY when building a NEW custom tool/skill/script from scratch. No projectId. Never use this for fixing or editing existing code.\n  - 'system'  → fresh git worktree of CarsonOS itself. Use for ANY change to CarsonOS source — bug fixes, new features, refactors. No projectId needed; auto-resolves to the carson-os project. Output is a PR.\n  - 'project' → fresh git worktree of a registered NON-CarsonOS project. Use for fixes/features in another codebase. Requires projectId — resolve via list_projects. Output is a PR.\n\nWorktrees keep the Developer's edits off the live source so the dev server's file watcher isn't disrupted mid-run. Picking 'tools' for a CarsonOS fix will trip the watcher and kill the task.\n\nIf workspace is omitted, falls back to the specialist's hired specialty.",
     input_schema: {
       type: "object",
       properties: {
@@ -68,10 +68,10 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
         context: { type: "string", description: "Background, references, examples. Optional. Shown to the Developer as the task description." },
         workspace: {
           type: "string",
-          enum: ["tools", "project"],
-          description: "Workspace kind for THIS task. 'tools' = sandbox for new tool/skill creation. 'project' = git worktree of a registered project, including CarsonOS itself for core fixes. Use 'project' for ANY fix to existing code in a registered codebase. Optional — defaults to the specialist's hired specialty.",
+          enum: ["tools", "project", "system"],
+          description: "Workspace kind for THIS task. 'tools' = sandbox for brand-new tool/skill creation only. 'system' = git worktree of CarsonOS itself (no projectId; auto-resolved). 'project' = git worktree of another registered codebase (requires projectId). Use 'system' for any CarsonOS fix; never 'tools'. Optional — defaults to the specialist's hired specialty.",
         },
-        projectId: { type: "string", description: "Required when workspace='project'. The registered project to clone the worktree from. Resolve via list_projects if needed. For CarsonOS core fixes, use the carson-os project id." },
+        projectId: { type: "string", description: "Required when workspace='project'. The registered project to clone the worktree from. Resolve via list_projects if needed. Do NOT pass for workspace='system' or 'tools'." },
       },
       required: ["to", "goal"],
     },
@@ -237,14 +237,22 @@ async function handleDelegateTask(
   const projectId = stringArg(input.projectId) ?? undefined;
   const context = stringArg(input.context) ?? undefined;
   const workspaceArg = stringArg(input.workspace) ?? undefined;
-  if (workspaceArg && workspaceArg !== "tools" && workspaceArg !== "project") {
-    return toolError(`workspace must be 'tools' or 'project', got '${workspaceArg}'`);
+  if (
+    workspaceArg &&
+    workspaceArg !== "tools" &&
+    workspaceArg !== "project" &&
+    workspaceArg !== "system"
+  ) {
+    return toolError(`workspace must be 'tools', 'project', or 'system'; got '${workspaceArg}'`);
   }
   if (workspaceArg === "project" && !projectId) {
-    return toolError("workspace='project' requires projectId. Resolve the target codebase via list_projects.");
+    return toolError("workspace='project' requires projectId. Resolve the target codebase via list_projects. (For CarsonOS itself, use workspace='system' — no projectId needed.)");
   }
   if (workspaceArg === "tools" && projectId) {
-    return toolError("workspace='tools' is for NEW tool creation in a sandbox; don't pass projectId. Use workspace='project' to edit existing code in a registered project.");
+    return toolError("workspace='tools' is for NEW tool creation in a sandbox; don't pass projectId. Use workspace='system' for CarsonOS fixes or workspace='project' to edit other registered codebases.");
+  }
+  if (workspaceArg === "system" && projectId) {
+    return toolError("workspace='system' auto-resolves to the CarsonOS project — don't pass projectId.");
   }
 
   const result = await ctx.delegationService.handleDelegateTaskCall({
@@ -254,7 +262,7 @@ async function handleDelegateTask(
     goal,
     context,
     projectId,
-    workspace: workspaceArg as "tools" | "project" | undefined,
+    workspace: workspaceArg as "tools" | "project" | "system" | undefined,
     requestedByMember: ctx.memberId,
     callerTaskId: ctx.callerTaskId,
   });

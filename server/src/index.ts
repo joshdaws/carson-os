@@ -99,6 +99,31 @@ async function main() {
   // 0. Backup database before anything touches it
   backupDatabase(dbPath, config.dataDir, "boot");
 
+  // 0b. Run v0.4 → v5.0 memory migration. Idempotent (skips files
+  // already at migration_version: 5.0). Creates its own combined
+  // DB+memory tarball before mutating anything; --restore-from-backup
+  // reverts. Disable with CARSONOS_SKIP_V50_MIGRATION=1 during
+  // controlled rollouts.
+  if (process.env.CARSONOS_SKIP_V50_MIGRATION !== "1") {
+    try {
+      const { migrate } = await import("./services/memory/migrate-v04-to-v50.js");
+      const result = await migrate({
+        dataDir: config.dataDir,
+        memoryDir: config.memory.rootDir,
+      });
+      if (result.migrated > 0) {
+        console.log(
+          `[migrate-v50] Migrated ${result.migrated} memory file(s); ` +
+            `${result.skipped} already current. Backup at ${result.backupPath}`,
+        );
+      } else if (result.errors.length > 0) {
+        console.warn(`[migrate-v50] ${result.errors.length} error(s); see log above`);
+      }
+    } catch (err) {
+      console.warn("[migrate-v50] Migration failed (non-fatal):", err);
+    }
+  }
+
   // 1. Boot database (pre-migration hook creates another backup if schema changes)
   const db = createDb(dbPath, (reason) => {
     backupDatabase(dbPath, config.dataDir, reason);
@@ -109,6 +134,21 @@ async function main() {
   // instance_settings into process.env so services that read process.env can
   // pick up keys saved via the Settings UI without the operator editing files.
   await hydrateEnvFromSettings(db);
+
+  // 1c. Identity files: write any DB-resident profile_content / soul_content
+  // out to USER.md / PERSONALITY.md if the file doesn't exist yet. Idempotent
+  // — skips members/agents whose file already exists. v0.5.0 transition.
+  try {
+    const { migrateIdentityToFiles } = await import("./services/identity-files.js");
+    const idMigration = await migrateIdentityToFiles(db, config.dataDir);
+    if (idMigration.usersWritten > 0 || idMigration.personalitiesWritten > 0) {
+      console.log(
+        `[migrate-v50] Identity files written: ${idMigration.usersWritten} USER.md, ${idMigration.personalitiesWritten} PERSONALITY.md`,
+      );
+    }
+  } catch (err) {
+    console.warn("[migrate-v50] Identity file migration failed (non-fatal):", err);
+  }
 
   // 2. Create adapter
   const adapter = createAdapter(config.adapterType);
@@ -221,6 +261,7 @@ async function main() {
     calendarProvider: gwsHealthy ? calendarProvider : undefined,
     caldavProvider,
     imapProvider,
+    dataDir: config.dataDir,
     featureFlags: config.featureFlags,
   });
   console.log("[engine] Constitution engine ready");
@@ -578,12 +619,63 @@ async function main() {
     });
   }, APPROVAL_SWEEP_INTERVAL_MS);
 
+  // 10b. Enrichment worker (v0.5). Ticked alongside scheduled tasks.
+  // Disabled when CARSONOS_DISABLE_ENRICHMENT_WORKER=1 or the household
+  // flag is off. The worker reads its own per-household config on tick.
+  let enrichmentWorker: import("./services/memory/enrichment-worker.js").EnrichmentWorker | undefined;
+  if (memoryProvider && process.env.CARSONOS_DISABLE_ENRICHMENT_WORKER !== "1") {
+    try {
+      const { EnrichmentWorker } = await import("./services/memory/enrichment-worker.js");
+      enrichmentWorker = new EnrichmentWorker({
+        db,
+        memoryProvider,
+        adapter,
+        memoryRoot: config.memory.rootDir,
+      });
+      console.log("[enrichment-worker] Ready");
+      constitutionEngine.setEnrichmentWorker(enrichmentWorker);
+    } catch (err) {
+      console.warn("[enrichment-worker] Boot failed (non-fatal):", err);
+    }
+  }
+
+  // 10c. Compilation agent (v0.5). Runs once per night at 3am local.
+  // Disabled via CARSONOS_DISABLE_COMPILATION_AGENT=1.
+  let compilationAgent: import("./services/memory/compilation-agent.js").CompilationAgent | undefined;
+  if (memoryProvider && process.env.CARSONOS_DISABLE_COMPILATION_AGENT !== "1") {
+    try {
+      const { CompilationAgent } = await import("./services/memory/compilation-agent.js");
+      compilationAgent = new CompilationAgent({
+        db,
+        memoryProvider,
+        adapter,
+        memoryRoot: config.memory.rootDir,
+      });
+      console.log("[compilation-agent] Ready (per-tick, 60s debounce)");
+      // Cross-wire: enrichment worker marks an entity dirty after each
+      // atom append. The qmd-provider also calls markDirty directly on
+      // entity-type save/update so tool-driven writes queue compilation.
+      enrichmentWorker?.setCompilationAgent(compilationAgent);
+      // Plumb compilation agent into the memory provider too — direct
+      // tool calls (update_memory, replace_memory, create_memory for
+      // entity types) now mark dirty automatically.
+      if (memoryProvider) {
+        (memoryProvider as { setCompilationAgent?: (a: typeof compilationAgent) => void })
+          .setCompilationAgent?.(compilationAgent);
+      }
+    } catch (err) {
+      console.warn("[compilation-agent] Boot failed (non-fatal):", err);
+    }
+  }
+
   // 11. Start the scheduled task ticker
   const scheduler = new Scheduler({
     db,
     engine: constitutionEngine,
     multiRelay,
     memoryProvider,
+    enrichmentWorker,
+    compilationAgent,
   });
   scheduler.start();
 

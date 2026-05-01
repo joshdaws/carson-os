@@ -1,5 +1,46 @@
 # TODOS
 
+## v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)
+- **What:** `ClaudeAgentSdkAdapter.healthCheck()` at `server/src/services/subprocess-adapter.ts:841-848` runs `which claude` to confirm CLI presence. The Agent SDK doesn't use the `claude` CLI at runtime — it's an npm package (`@anthropic-ai/claude-agent-sdk`) that talks to Anthropic via OAuth. The CLI probe is a copy-paste vestige from `ClaudeCodeAdapter`.
+- **Why:** Under launchd the service's PATH is `/Users/{user}/.nvm/.../bin:/usr/local/bin:/usr/bin:/bin`. Users who installed `claude` via the official installer (which puts it at `~/.local/bin/claude`) get a CLI that's not on the launchd PATH. `which claude` returns non-zero → `/api/health` reports `adapter.healthy: false` even though SDK runtime is fine. Surfaced 2026-05-01 during /land-and-deploy on the v0.5.0 PR.
+- **Fix:** Replace the `which` probe with a real liveness check. Two options:
+  1. Cheap: just `return true` — module-load already proved availability. Probe becomes "did the module import succeed."
+  2. Better: call a no-arg SDK function (e.g., model listing or a dry-run init) to confirm the OAuth token is valid and the SDK can reach Anthropic.
+- **Pros:** /api/health stops lying. Downstream consumers (canary monitoring, deploy verification) trust the answer. Removes a confusing on-call false alarm.
+- **Cons:** Option 2 costs an API call per health check — fine if rate-limited, bad if hammered.
+- **Recommended:** Option 1 (return true on module presence) for now. If the SDK ever gains a real `ping()` or `validateAuth()` method, swap in Option 2.
+- **Depends on:** None.
+
+## v0.5.1 — Eliminate QMD `SQLITE_CONSTRAINT_PRIMARYKEY` reindex errors
+- **What:** `qmd update` (subprocess invoked from `qmd-provider.ts:runReindex`) intermittently throws `SQLITE_CONSTRAINT_PRIMARYKEY` on `insertDocument(collection, path, title, hash, createdAt, modifiedAt)`. The error is caught and warned at `qmd-provider.ts:661`, so search keeps working, but rows that hit the constraint are silently dropped from QMD's index — potential gaps where memories exist on disk but don't surface in `search_memory` results.
+- **Why:** Pre-existing issue. A 2026-04-29 attempt added in-process reindex coalescing (`qmd-provider.ts:85-92, 645-669`) — at most one `qmd update` in flight, one queued. That fixed same-process burst races but the error persisted (32 occurrences in stderr.log across the file's history; some post-coalescing-fix). Most likely cause: `qmd update` itself does `INSERT` instead of `INSERT OR REPLACE` / `UPSERT` on `(collection, path)`. When the row already exists with different content, the insert collides instead of updating.
+- **Diagnostic next steps:**
+  1. Read QMD's source (`/Users/joshdaws/.nvm/versions/node/v22.18.0/lib/node_modules/@tobilu/qmd/dist/store.js:1502`) to confirm INSERT-vs-UPSERT.
+  2. Reproduce locally: pick one entity, save it twice in succession with content changes, confirm the second save triggers the constraint.
+  3. Capture which paths are hitting the constraint (the error message doesn't include them today — wrap the runReindex catch to inspect/log them).
+- **Fix options:**
+  1. **Pre-emptive cache delete** (defensive, slow): `qmd remove <collection>` before each `qmd update` so the inserts are always fresh. Throws away incremental indexing speed.
+  2. **Switch qmd command** to a variant that does upsert. Check `qmd --help` for an `--upsert` or `--reset` flag.
+  3. **Patch upstream**: fork `@tobilu/qmd`, change INSERT → INSERT OR REPLACE, send a PR to the maintainer.
+  4. **Replace QMD** with a native SQLite-backed indexer maintained inside CarsonOS. Larger scope but eliminates the third-party-tool footgun entirely.
+- **Pros:** Closes a silent data-correctness hole. Search becomes reliable instead of "usually works, sometimes misses things."
+- **Cons:** Each fix has tradeoffs. Option 1 is fastest to ship but slowest at runtime. Option 4 is the cleanest long-term but is the biggest scope.
+- **Recommended:** Option 2 first (cheapest if it exists). Fall back to Option 1 if no upsert flag. Schedule Option 4 for v0.6+ if QMD continues to be a footgun.
+- **Depends on:** None.
+
+## v0.5.1 — System update self-awareness (CoS proposes the update)
+- **What:** CarsonOS becomes aware of its own pending updates and surfaces them in-voice through the Chief of Staff. Four pieces:
+  1. Boot-time check (cached daily at `~/.carsonos/.update-check`) compares local `VERSION` against `origin/main:VERSION`. When behind, writes `update_available: { from, to, changelog_excerpt }` to `instance_settings` (or a dedicated state row).
+  2. Chief of Staff system prompt gains a section: if `update_available` is set, mention it casually on the user's next interaction, explain what the update does in plain English using the changelog excerpt, and offer to apply it.
+  3. New system tool `apply_system_update` wraps `./scripts/update-service.sh`. Trust-gated to parent-level members only. Tool returns immediately with a "restarting now" payload; the host process exits during the script.
+  4. The post-restart wake leans on the existing DelegatorReply infrastructure — when CoS comes back up, replay finds the pending in-voice notification and CoS tells the user "update applied, here's what changed."
+- **Why:** Today (v0.5.0) the update path is "user remembers to run a shell script." That works for one developer; it doesn't work for the actual product (a family AI staff). The Chief of Staff already manages household-level concerns; updates fit naturally there. Self-modifying systems should be aware of their own modification state, not delegate it to ambient knowledge.
+- **Pros:** Closes the loop on the v0.4→v0.5 manual-QA pain. Future updates self-announce. Pairs cleanly with the v0.5 DelegatorReply + workspace crash-safety + watch-fix work — the foundation is exactly right for "agent restarts itself and reports back in voice."
+- **Cons:** New surface area: boot check, new state, new prompt section, new tool, trust-level gate. ~200-400 lines + tests. Risk: if `apply_system_update` ever runs unintentionally (prompt injection on the changelog excerpt? a member with elevated trust the user didn't intend?), it restarts the family runtime.
+- **Context:** Surfaced 2026-05-01 during /land-and-deploy on the v0.5.0 PR. The merge step lands code on main but doesn't actually update the live instance — that's still a manual `./scripts/update-service.sh`. Designed scope deferred from v0.5.0 because the v0.4 instance can't benefit from it (the awareness must already be present); v0.5.0 → v0.5.1+ updates can.
+- **Security note:** the changelog excerpt that flows into the CoS prompt is a trust-boundary surface. Sanitize before injection; consider keeping it short (first N lines of the new CHANGELOG entry) and stripping markdown/HTML.
+- **Depends on:** v0.5.0 shipped (DelegatorReply for in-voice post-restart, workspace crash-safety, tsx watch fix all already in place).
+
 ## v0.5 — Specialist-path abort-controller parity (cancel doesn't stop specialist compute)
 - **What:** Mirror the v0.4 Developer-task cancel infrastructure on the specialist (non-Developer) path. Register an `AbortController` at `dispatcher.executeSpecialistTask` start, stash it in `inFlightAborts`, thread it into `adapter.execute`, and handle the aborted-mid-stream case the same way `executeDeveloperTask` does.
 - **Why:** v0.4's mid-release refinement fixed the "cancelled task flips back to completed" bug for Developer tasks by wiring the abort through the Agent SDK. The specialist path (Lex, Nora, any non-`tools`/`project`/`core` specialty) got the cancel-sticky DB guard via the shared `finalizeTerminalTask`, so the status row is safe, but the specialist's SDK query keeps running to completion and burns tokens before its result is dropped. Specialist tasks are usually short (research one-liners) so low practical impact today, but the invariant is inconsistent between paths.
@@ -16,7 +57,7 @@
 - **Context:** Surfaced 2026-04-24 during the /codex review of PR 3 and called out explicitly in Josh's "are we making this DRY" pushback. Scoped to v0.5 to avoid dragging mid-release refinements past the v0.4 merge window.
 - **Depends on:** Could land alongside the specialist-path abort-controller parity item above — same area, same diff.
 
-## v0.5 — Scope ctx.db in custom-tool handlers (tool_secrets exfil risk)
+## [COMPLETED v0.5.0] v0.5 — Scope ctx.db in custom-tool handlers (tool_secrets exfil risk)
 - **What:** Replace `ctx.db` in `CustomToolHandlerContext` with scoped helpers (`ctx.getSecret`, `ctx.storeSecret`, `ctx.listTools`, etc.) or a Proxy that injects `householdId` into queries. Also restrict `node:fs` in the esbuild bundle (`packages: 'external'` currently allows `fs.readFileSync`), so the handler can't `readFileSync('~/.carsonos/.secret')` to lift the AES master key.
 - **Why:** A Developer with `specialty='tools'` + `canCreateActiveTools=true` can author a script tool whose handler does `ctx.db.select().from(toolSecrets)` to dump every household's encrypted secret rows, then reads `~/.carsonos/.secret` (32-byte master key) from disk and decrypts. Single-family today = low practical risk, but the scoping gap is live code.
 - **Pros:** Closes the cross-household data exfil primitive; enforces the principle of least privilege for tool handlers.
@@ -24,7 +65,7 @@
 - **Context:** Surfaced 2026-04-23 during v0.4 /review (RT-05). v0.4 mitigation: the tools-specialty operating_instructions (in `specialty-templates/tools.md`) ask the Developer not to do this, but that's guidance, not a gate.
 - **Depends on:** None.
 
-## v0.5 — Apply-update must preserve script-tool approval invariant
+## [COMPLETED v0.5.0] v0.5 — Apply-update must preserve script-tool approval invariant
 - **What:** `POST /api/tools/custom/:id/apply-update` currently re-fetches `source_url`, promotes the new files, and sets `status='active'` unconditionally. For `kind='script'` tools that aren't authored by the Chief of Staff, this should re-enter `pending_approval` instead of silently going live.
 - **Why:** A malicious upstream skill source can mutate its `handler.ts` and, on the next "Apply Update" click, instantly run its new code in-process. The /create path gates this behind the approval queue; /apply-update doesn't.
 - **Pros:** Closes the supply-chain gap on installed script tools. Same invariant applies whether code enters via create, update, or apply-update.
@@ -32,7 +73,7 @@
 - **Context:** Surfaced 2026-04-23 during v0.4 /review (RT-07).
 - **Depends on:** None.
 
-## v0.5 — Workspace provision crash-safety (orphan branches block retry)
+## [COMPLETED v0.5.0] v0.5 — Workspace provision crash-safety (orphan branches block retry)
 - **What:** Swap the order in `dispatcher.executeDeveloperTask` so the DB UPDATE marking the task in_progress happens BEFORE `git worktree add`. If the server crashes between the two, the task stays pending (next boot re-queues) instead of orphaning a `carson/<slug>` branch + worktree dir that permanently blocks any re-try with the same title.
 - **Why:** Re-running a failed Dev task with the same title currently hits `E_BRANCH_EXISTS` forever because the stale branch isn't torn down until `task.cancelled` fires. A principal who re-queues a failed task has to manually `git branch -D` + `git worktree prune`.
 - **Pros:** Crash-recovery correctness; removes a real footgun for principals.
@@ -170,6 +211,14 @@
 - **Cons:** Asking son to decide "chat with my agent vs delegate to Mozart" adds mental overhead. Might want an automatic heuristic in the personal agent: "if this is more than ~5 min of work, offer to hand to Mozart."
 - **Context:** Complements the music-pack tools (above). Brother's version is all-subagent; CarsonOS benefits from the split.
 - **Depends on:** v0.4 delegation flow shipped. Music-pack tools (above) — Mozart wraps them in a specialist system prompt.
+
+## v5.X — HEARTBEAT.md per agent (deferred from v5 CEO review 2026-04-27)
+- **What:** Per-agent declarative cadence file at `~/.carsonos/agents/{slug}/HEARTBEAT.md` describing every-message hooks, daily/weekly tasks, quiet hours, schedule staggering. From gbrain's soul-audit pattern.
+- **Why:** Single auditable surface for "here's when this agent does what" instead of cadence scattered across cron, scheduler, and skill descriptions.
+- **Pros:** Auditable, version-controllable, fits the identity-files-on-disk story (USER.md / PERSONALITY.md / RESOLVER.md).
+- **Cons:** **Likely solves no problem.** The existing scheduled-tasks system already works as the source-of-truth for agent cadence; a declarative file adds drift surface without addressing a real need. Calibrated learning: prefer data-as-source-of-truth over config-file-as-source-of-truth when the data already exists.
+- **Context:** Deferred from v5 SELECTIVE EXPANSION cherry-pick #4. Revisit ONLY IF scheduled tasks prove insufficient for some specific cadence requirement that can't be expressed as a schedule entry. Probably never.
+- **Depends on:** scheduled-tasks system staying as-is and continuing to be the right primitive.
 
 ## Future — Suno integration
 - **What:** Direct Suno generation from within CarsonOS. Let the music agent generate a demo and deliver the MP3 back in Telegram.

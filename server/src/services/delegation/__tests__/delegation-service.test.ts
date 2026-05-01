@@ -216,6 +216,111 @@ describe("DelegationService — handleDelegateTaskCall", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("E_AGENT_NOT_FOUND");
   });
+
+  it("workspace='system' auto-resolves to the carson-os project (no projectId required)", async () => {
+    const { projects } = await import("@carsonos/db");
+    const [carson] = await db
+      .insert(projects)
+      .values({
+        householdId: ids.householdId,
+        name: "carson-os",
+        path: "/Users/test/projects/carson-os",
+        defaultBranch: "main",
+      })
+      .returning();
+    await db.insert(delegationEdges).values({ fromAgentId: ids.cosId, toAgentId: ids.bobId });
+
+    const { svc } = makeService(db);
+    const result = await svc.handleDelegateTaskCall({
+      fromAgentId: ids.cosId,
+      householdId: ids.householdId,
+      toAgentName: "Bob",
+      goal: "fix the dispatcher's host-restart recovery path",
+      workspace: "system",
+      requestedByMember: ids.principalId,
+    });
+
+    expect(result.ok).toBe(true);
+    const [task] = await db.select().from(tasks).where(eq(tasks.agentId, ids.bobId));
+    expect(task.workspaceKind).toBe("worktree");
+    expect(task.projectId).toBe(carson.id);
+  });
+
+  it("workspace='system' rejects when carson-os isn't registered", async () => {
+    await db.insert(delegationEdges).values({ fromAgentId: ids.cosId, toAgentId: ids.bobId });
+    const { svc } = makeService(db);
+    const result = await svc.handleDelegateTaskCall({
+      fromAgentId: ids.cosId,
+      householdId: ids.householdId,
+      toAgentName: "Bob",
+      goal: "fix something in CarsonOS",
+      workspace: "system",
+      requestedByMember: ids.principalId,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("E_PROJECT_NOT_FOUND");
+      expect(result.error).toContain("register_project");
+    }
+  });
+
+  it("workspace='tools' is rejected when goal references a registered project (forces re-routing)", async () => {
+    const { projects } = await import("@carsonos/db");
+    await db
+      .insert(projects)
+      .values({
+        householdId: ids.householdId,
+        name: "carson-os",
+        path: "/Users/test/projects/carson-os",
+        defaultBranch: "main",
+      })
+      .returning();
+    await db.insert(delegationEdges).values({ fromAgentId: ids.cosId, toAgentId: ids.bobId });
+
+    const { svc } = makeService(db);
+    const result = await svc.handleDelegateTaskCall({
+      fromAgentId: ids.cosId,
+      householdId: ids.householdId,
+      toAgentName: "Bob",
+      goal: "Fix voice message localPath in carson-os multi-relay-manager.ts",
+      workspace: "tools",
+      requestedByMember: ids.principalId,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("workspace='system'");
+      expect(result.error).toContain("carson-os");
+    }
+  });
+
+  it("workspace='tools' still allows brand-new tool builds whose goal doesn't reference any registered project", async () => {
+    const { projects } = await import("@carsonos/db");
+    await db
+      .insert(projects)
+      .values({
+        householdId: ids.householdId,
+        name: "carson-os",
+        path: "/Users/test/projects/carson-os",
+        defaultBranch: "main",
+      })
+      .returning();
+    await db.insert(delegationEdges).values({ fromAgentId: ids.cosId, toAgentId: ids.bobId });
+
+    const { svc } = makeService(db);
+    const result = await svc.handleDelegateTaskCall({
+      fromAgentId: ids.cosId,
+      householdId: ids.householdId,
+      toAgentName: "Bob",
+      goal: "Build a Todoist sync tool",
+      workspace: "tools",
+      requestedByMember: ids.principalId,
+    });
+
+    expect(result.ok).toBe(true);
+    const [task] = await db.select().from(tasks).where(eq(tasks.agentId, ids.bobId));
+    expect(task.workspaceKind).toBe("tool_sandbox");
+  });
 });
 
 describe("DelegationService — handleHireApproval / Rejection race gate", () => {
