@@ -1,5 +1,33 @@
 # TODOS
 
+## v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)
+- **What:** `ClaudeAgentSdkAdapter.healthCheck()` at `server/src/services/subprocess-adapter.ts:841-848` runs `which claude` to confirm CLI presence. The Agent SDK doesn't use the `claude` CLI at runtime — it's an npm package (`@anthropic-ai/claude-agent-sdk`) that talks to Anthropic via OAuth. The CLI probe is a copy-paste vestige from `ClaudeCodeAdapter`.
+- **Why:** Under launchd the service's PATH is `/Users/{user}/.nvm/.../bin:/usr/local/bin:/usr/bin:/bin`. Users who installed `claude` via the official installer (which puts it at `~/.local/bin/claude`) get a CLI that's not on the launchd PATH. `which claude` returns non-zero → `/api/health` reports `adapter.healthy: false` even though SDK runtime is fine. Surfaced 2026-05-01 during /land-and-deploy on the v0.5.0 PR.
+- **Fix:** Replace the `which` probe with a real liveness check. Two options:
+  1. Cheap: just `return true` — module-load already proved availability. Probe becomes "did the module import succeed."
+  2. Better: call a no-arg SDK function (e.g., model listing or a dry-run init) to confirm the OAuth token is valid and the SDK can reach Anthropic.
+- **Pros:** /api/health stops lying. Downstream consumers (canary monitoring, deploy verification) trust the answer. Removes a confusing on-call false alarm.
+- **Cons:** Option 2 costs an API call per health check — fine if rate-limited, bad if hammered.
+- **Recommended:** Option 1 (return true on module presence) for now. If the SDK ever gains a real `ping()` or `validateAuth()` method, swap in Option 2.
+- **Depends on:** None.
+
+## v0.5.1 — Eliminate QMD `SQLITE_CONSTRAINT_PRIMARYKEY` reindex errors
+- **What:** `qmd update` (subprocess invoked from `qmd-provider.ts:runReindex`) intermittently throws `SQLITE_CONSTRAINT_PRIMARYKEY` on `insertDocument(collection, path, title, hash, createdAt, modifiedAt)`. The error is caught and warned at `qmd-provider.ts:661`, so search keeps working, but rows that hit the constraint are silently dropped from QMD's index — potential gaps where memories exist on disk but don't surface in `search_memory` results.
+- **Why:** Pre-existing issue. A 2026-04-29 attempt added in-process reindex coalescing (`qmd-provider.ts:85-92, 645-669`) — at most one `qmd update` in flight, one queued. That fixed same-process burst races but the error persisted (32 occurrences in stderr.log across the file's history; some post-coalescing-fix). Most likely cause: `qmd update` itself does `INSERT` instead of `INSERT OR REPLACE` / `UPSERT` on `(collection, path)`. When the row already exists with different content, the insert collides instead of updating.
+- **Diagnostic next steps:**
+  1. Read QMD's source (`/Users/joshdaws/.nvm/versions/node/v22.18.0/lib/node_modules/@tobilu/qmd/dist/store.js:1502`) to confirm INSERT-vs-UPSERT.
+  2. Reproduce locally: pick one entity, save it twice in succession with content changes, confirm the second save triggers the constraint.
+  3. Capture which paths are hitting the constraint (the error message doesn't include them today — wrap the runReindex catch to inspect/log them).
+- **Fix options:**
+  1. **Pre-emptive cache delete** (defensive, slow): `qmd remove <collection>` before each `qmd update` so the inserts are always fresh. Throws away incremental indexing speed.
+  2. **Switch qmd command** to a variant that does upsert. Check `qmd --help` for an `--upsert` or `--reset` flag.
+  3. **Patch upstream**: fork `@tobilu/qmd`, change INSERT → INSERT OR REPLACE, send a PR to the maintainer.
+  4. **Replace QMD** with a native SQLite-backed indexer maintained inside CarsonOS. Larger scope but eliminates the third-party-tool footgun entirely.
+- **Pros:** Closes a silent data-correctness hole. Search becomes reliable instead of "usually works, sometimes misses things."
+- **Cons:** Each fix has tradeoffs. Option 1 is fastest to ship but slowest at runtime. Option 4 is the cleanest long-term but is the biggest scope.
+- **Recommended:** Option 2 first (cheapest if it exists). Fall back to Option 1 if no upsert flag. Schedule Option 4 for v0.6+ if QMD continues to be a footgun.
+- **Depends on:** None.
+
 ## v0.5.1 — System update self-awareness (CoS proposes the update)
 - **What:** CarsonOS becomes aware of its own pending updates and surfaces them in-voice through the Chief of Staff. Four pieces:
   1. Boot-time check (cached daily at `~/.carsonos/.update-check`) compares local `VERSION` against `origin/main:VERSION`. When behind, writes `update_available: { from, to, changelog_excerpt }` to `instance_settings` (or a dedicated state row).
