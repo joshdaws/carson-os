@@ -415,6 +415,14 @@ async function main() {
     toolRegistry,
     multiRelay,
     signalRelay,
+    // Pass through for /api/health → QMD reindex health surface. AppDeps
+    // exposes `memoryProvider?: ReindexHealthSource | null`; only providers
+    // that implement getReindexHealth get surfaced.
+    memoryProvider:
+      memoryProvider &&
+      typeof (memoryProvider as { getReindexHealth?: unknown }).getReindexHealth === "function"
+        ? (memoryProvider as unknown as import("./routes/health.js").ReindexHealthSource)
+        : null,
   });
 
   // 9. Create HTTP server and attach WebSocket

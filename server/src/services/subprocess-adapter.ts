@@ -838,13 +838,18 @@ class ClaudeAgentSdkAdapter implements Adapter {
     };
   }
 
+  /**
+   * The Agent SDK is an npm package (`@anthropic-ai/claude-agent-sdk`) that
+   * talks to Anthropic via OAuth. It does NOT shell out to the `claude` CLI
+   * at runtime — unlike `ClaudeCodeAdapter`, which does. Probing for the CLI
+   * here was a copy-paste vestige that returned false-negatives on hosts
+   * where the CLI is installed somewhere other than the launchd service
+   * PATH (e.g., the official installer's `~/.local/bin/claude`). The SDK
+   * module already loaded successfully if we got this far — that's the only
+   * runtime dependency this adapter has.
+   */
   async healthCheck(): Promise<boolean> {
-    try {
-      execFileSync(WHICH_CMD, ["claude"], { stdio: "pipe" });
-      return true;
-    } catch {
-      return false;
-    }
+    return true;
   }
 }
 
