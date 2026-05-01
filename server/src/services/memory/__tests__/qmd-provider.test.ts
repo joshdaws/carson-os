@@ -253,3 +253,82 @@ describe("QmdMemoryProvider.reindex coalescing", () => {
     }
   });
 });
+
+// ── Reindex health (TODO-2: observability + self-heal) ────────────────
+
+describe("formatReindexError", () => {
+  it("returns the bare message when no stderr is present", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    expect(formatReindexError(new Error("Command failed: qmd update"))).toBe(
+      "Command failed: qmd update",
+    );
+  });
+
+  it("appends qmd's stderr trace when present (string form)", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("Command failed: qmd update") as Error & { stderr: string };
+    err.stderr =
+      "SqliteError: constraint failed\n    at insertDocument (.../store.js:1502:6)\n  code: 'SQLITE_CONSTRAINT_PRIMARYKEY'";
+    const out = formatReindexError(err);
+    expect(out).toContain("Command failed: qmd update");
+    expect(out).toContain("--- qmd stderr ---");
+    expect(out).toContain("SQLITE_CONSTRAINT_PRIMARYKEY");
+  });
+
+  it("decodes Buffer stderr from execFileAsync", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("Command failed") as Error & { stderr: Buffer };
+    err.stderr = Buffer.from("collection brain, path notes/foo.md", "utf8");
+    expect(formatReindexError(err)).toContain("collection brain, path notes/foo.md");
+  });
+
+  it("trims trailing whitespace from stderr block", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("Command failed") as Error & { stderr: string };
+    err.stderr = "  SqliteError: constraint failed\n\n\n";
+    const out = formatReindexError(err);
+    // Single newline plus the trimmed payload, no trailing whitespace.
+    expect(out.endsWith("constraint failed")).toBe(true);
+  });
+
+  it("handles non-Error throws (string, undefined)", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    expect(formatReindexError("oops")).toBe("oops");
+    expect(formatReindexError(undefined)).toBe("undefined");
+  });
+
+  it("ignores empty stderr (whitespace-only) — returns plain message", async () => {
+    const { formatReindexError } = await import("../qmd-provider.js");
+    const err = new Error("plain error") as Error & { stderr: string };
+    err.stderr = "   \n\n  ";
+    expect(formatReindexError(err)).toBe("plain error");
+  });
+});
+
+describe("QmdMemoryProvider.getReindexHealth", () => {
+  it("starts at zero errors with null lastError", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "qmd-test-"));
+    try {
+      const provider = new QmdMemoryProvider(tmp);
+      const health = provider.getReindexHealth();
+      expect(health.errorCount).toBe(0);
+      expect(health.lastError).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the same shape /api/health expects", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "qmd-test-"));
+    try {
+      const provider = new QmdMemoryProvider(tmp);
+      const health = provider.getReindexHealth();
+      expect(typeof health.errorCount).toBe("number");
+      expect(health.lastError === null || typeof health.lastError.at === "string").toBe(
+        true,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

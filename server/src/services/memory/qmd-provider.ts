@@ -83,13 +83,28 @@ export class QmdMemoryProvider implements MemoryProvider {
   private compilationAgent: import("./compilation-agent.js").CompilationAgent | null = null;
   /**
    * QMD reindex coalescing. `qmd update` is a subprocess that touches
-   * QMD's own SQLite index. Two parallel runs collide on its primary
-   * key. Coalesce: at most one in-flight run; up to one queued. This
-   * eliminates the SQLITE_CONSTRAINT_PRIMARYKEY errors observed during
-   * burst saves (eng surfaced 2026-04-29).
+   * QMD's own SQLite index (~/.cache/qmd/index.sqlite). Concurrent runs —
+   * either same-process bursts or cross-process collisions — can produce
+   * SQLITE_CONSTRAINT_PRIMARYKEY errors during the per-collection insert
+   * loop. The in-process coalescer caps simultaneous runs at one (plus
+   * one queued) to eliminate the same-process case.
+   *
+   * Cross-process races (e.g., user runs `qmd update` manually while the
+   * service is also running) are rarer and not addressed here. The error
+   * is self-healing: `reindexCollection` iterates the file system fresh
+   * each invocation, so a failed run is recovered by the next successful
+   * one. Eng diagnosis 2026-05-01: zero duplicate (collection, path)
+   * pairs in the live index, zero inactive rows, sqlite_sequence in sync
+   * with max(id). The errors observed in stderr.log were transient and
+   * did not leave the index in a corrupt state.
+   *
+   * `reindexErrorCount` is exposed via /api/health so future occurrences
+   * are visible without grepping logs.
    */
   private reindexInFlight: Promise<void> | null = null;
   private reindexQueued = false;
+  private reindexErrorCount = 0;
+  private lastReindexError: { at: string; message: string } | null = null;
 
   constructor(rootDir: string, db?: import("@carsonos/db").Db) {
     this.rootDir = rootDir;
@@ -651,25 +666,79 @@ export class QmdMemoryProvider implements MemoryProvider {
     return this.reindexInFlight;
   }
 
+  /**
+   * Snapshot of the reindex subprocess health. Read by the /api/health
+   * route so the user sees "QMD reindex has failed N times" instead of
+   * having to grep stderr.log to find out something was off.
+   *
+   * `errorCount` increments per failed `qmd update` invocation. The error
+   * is self-healing — the next successful run re-iterates the file system
+   * and recovers anything missed — but a non-zero count is a signal worth
+   * investigating, particularly if it's growing over time.
+   */
+  getReindexHealth(): {
+    errorCount: number;
+    lastError: { at: string; message: string } | null;
+  } {
+    return {
+      errorCount: this.reindexErrorCount,
+      lastError: this.lastReindexError,
+    };
+  }
+
   private async runReindex(): Promise<void> {
     try {
       await execFileAsync(QMD_BIN, ["update"], {
         timeout: UPDATE_TIMEOUT_MS,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[memory] QMD reindex error:", msg);
+      const detailed = formatReindexError(err);
+      this.reindexErrorCount += 1;
+      this.lastReindexError = { at: new Date().toISOString(), message: detailed };
+      console.warn(
+        `[memory] QMD reindex error (count=${this.reindexErrorCount}):`,
+        detailed,
+      );
     }
     this.reindexInFlight = null;
     if (this.reindexQueued) {
       this.reindexQueued = false;
       // Fire-and-forget the queued run. Errors caught inside runReindex.
+      // This is also the self-heal path: a transient subprocess failure
+      // is recovered by the next successful invocation, since `qmd update`
+      // re-iterates the file system on every run.
       void this.reindex();
     }
   }
 }
 
 // ── Pure helpers ───────────────────────────────────────────────────
+
+/**
+ * Format a thrown error from `execFileAsync(qmd, update)` into a single
+ * detailed line that includes the qmd subprocess's stderr trace, when
+ * present. The qmd CLI writes the full SQLite error stack (including
+ * SQLITE_CONSTRAINT_PRIMARYKEY context — which collection, which file
+ * triggered it) to stderr, and `child_process` exposes that as `err.stderr`.
+ *
+ * Without this, runReindex used to log just the top-level message
+ * ("Command failed: qmd update"), making post-hoc debugging impossible.
+ *
+ * Pure function so tests can pin the format without spawning subprocesses.
+ */
+export function formatReindexError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stderr = (err as { stderr?: Buffer | string } | undefined)?.stderr;
+  const stderrText =
+    typeof stderr === "string"
+      ? stderr
+      : Buffer.isBuffer(stderr)
+        ? stderr.toString("utf8")
+        : "";
+  return stderrText.trim()
+    ? `${msg}\n--- qmd stderr ---\n${stderrText.trim()}`
+    : msg;
+}
 
 /**
  * Strip a single leading `# heading` line from a body, plus any blank

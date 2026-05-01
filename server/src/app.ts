@@ -58,6 +58,8 @@ export interface AppDeps {
   toolRegistry: ToolRegistry;
   multiRelay?: MultiRelayManager;
   signalRelay?: SignalRelayManager;
+  /** Optional. When provided, /api/health surfaces QMD reindex health. */
+  memoryProvider?: { getReindexHealth: () => { errorCount: number; lastError: { at: string; message: string } | null } } | null;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -117,7 +119,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
 
   // --------------- routes ---------------
 
-  app.use("/api/health", createHealthRoutes({ adapter }));
+  app.use("/api/health", createHealthRoutes({ adapter, memoryProvider: deps.memoryProvider ?? null }));
   app.use("/api/households", createHouseholdRoutes(db));
   app.use("/api/households", createMemberRoutes(db));
   app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay, delegationService: deps.delegationService }));
