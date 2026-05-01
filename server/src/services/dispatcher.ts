@@ -78,10 +78,11 @@ export class Dispatcher {
   /** Tracks provisioned workspaces for in-flight tasks so cancel can tear them down. */
   private workspaceByTaskId = new Map<string, ProvisionedWorkspace>();
 
-  /** Tracks AbortControllers for in-flight Developer tasks so cancel can stop
-   * the Agent SDK query (and the underlying CLI subprocess) instead of letting
-   * compute run until it finishes and clobbers the `cancelled` status on the
-   * way out. Populated in executeDeveloperTask, cleared when the task exits
+  /** Tracks AbortControllers for in-flight Developer AND specialist tasks so
+   * cancel can stop the Agent SDK query (and the underlying CLI subprocess)
+   * instead of letting compute run until it finishes and clobbers the
+   * `cancelled` status on the way out. Populated in both executeDeveloperTask
+   * and executeSpecialistTask (TODO-1, v0.5.2), cleared when the task exits
    * any terminal state. */
   private inFlightAborts = new Map<string, AbortController>();
 
@@ -1093,6 +1094,16 @@ export class Dispatcher {
     const startedAt = new Date();
     const userMsg = task.description ? `${task.title}\n\n${task.description}` : task.title;
 
+    // v0.5.2 (TODO-1): Mirror the Developer-path abort wiring so cancel
+    // actually stops the SDK query instead of letting it run to completion
+    // before the result gets dropped. Status-row safety is already covered
+    // by finalizeTerminalTask's cancel-sticky guard, but the in-flight
+    // compute kept burning until the SDK finished. With this controller
+    // registered, handleCancelBroadcast aborts the underlying CLI subprocess
+    // immediately.
+    const abortController = new AbortController();
+    this.inFlightAborts.set(taskId, abortController);
+
     let adapterResult: { content: string } | null = null;
     let adapterError: string | null = null;
     try {
@@ -1105,9 +1116,35 @@ export class Dispatcher {
         model: agent.model,
         // No cwd (no workspace). No maxTurns override — the env-driven 50
         // default is appropriate for conversation-driven specialists.
+        abortController,
       });
     } catch (err) {
       adapterError = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.inFlightAborts.delete(taskId);
+    }
+
+    // Re-read the row so a cancel that landed during execute() short-
+    // circuits before notifier.prepare flips status back to terminal.
+    // Same pattern as executeDeveloperTask above.
+    const [currentState] = await this.db
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1);
+    const wasCancelled =
+      currentState?.status === "cancelled" || abortController.signal.aborted;
+
+    if (wasCancelled) {
+      await this.logEvent(
+        taskId,
+        "cancelled",
+        agent.id,
+        "Specialist task cancelled by user",
+        { specialty, reason: "cancelled by user" },
+      );
+      await this.drainSpecialistQueue(slotKey, agent);
+      return;
     }
 
     const terminalStatus: "completed" | "failed" = adapterError ? "failed" : "completed";
@@ -1146,7 +1183,7 @@ export class Dispatcher {
       summaryCard: card,
     };
 
-    await this.finalizeTerminalTask({
+    const finalized = await this.finalizeTerminalTask({
       taskId,
       agent,
       task,
@@ -1158,9 +1195,16 @@ export class Dispatcher {
       payload,
       adapterErrorForLog: adapterError,
     });
-    // Specialist tasks don't currently support cancel-in-flight abort (future
-    // work), so a refused preparedUpdate on this path is unreachable today.
-    // drainSpecialistQueue always runs.
+
+    // If a cancel landed between the wasCancelled re-read and prepare(),
+    // notifier.prepare's cancel-sticky guard refuses the terminal write.
+    // Drain the queue and bail without firing the completion/failure
+    // side effects — same shape as executeDeveloperTask.
+    if (!finalized.preparedUpdate) {
+      await this.drainSpecialistQueue(slotKey, agent);
+      return;
+    }
+
     await this.drainSpecialistQueue(slotKey, agent);
   }
 
