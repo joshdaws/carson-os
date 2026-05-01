@@ -133,7 +133,17 @@ export async function checkForUpdate(
   // gate works even when we're up-to-date.
   await writeSetting(db, KEY_LAST_CHECKED, { at: new Date().toISOString() });
 
-  if (compareVersions(remoteVersion, localVersion) <= 0) {
+  let cmp: number;
+  try {
+    cmp = compareVersions(remoteVersion, localVersion);
+  } catch (err) {
+    console.warn(
+      "[update-check] cannot compare versions:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+  if (cmp <= 0) {
     // We're current or ahead. Clear any stale "available" row so the
     // CoS prompt doesn't keep proposing an update that's already shipped.
     await deleteSetting(db, KEY_UPDATE_AVAILABLE);
@@ -224,9 +234,33 @@ export async function announceUpdateApplied(
     return;
   }
 
-  if (compareVersions(current, pending.to) < 0) {
+  let cmp: number;
+  try {
+    cmp = compareVersions(current, pending.to);
+  } catch (err) {
+    console.warn(
+      "[update-check] post-restart: cannot compare versions, skipping announcement:",
+      err instanceof Error ? err.message : String(err),
+    );
+    // Don't clear pending — the next boot may have a sane VERSION.
+    return;
+  }
+  if (cmp < 0) {
     console.warn(
       `[update-check] post-restart: requested v${pending.to} but running v${current}; update appears to have failed. Clearing pending row.`,
+    );
+    await clearUpdatePending(db);
+    return;
+  }
+  if (cmp > 0) {
+    // We're AHEAD of pending.to — someone pulled a newer version manually
+    // (outside the apply_system_update path) before the post-restart
+    // announcement could fire. The cached changelog excerpt is for the
+    // version we PASSED, not the version we landed on. Don't announce
+    // with stale content; clear the row and let checkForUpdate decide
+    // what to surface next.
+    console.warn(
+      `[update-check] post-restart: running v${current} ahead of pending.to v${pending.to}; clearing stale pending row without announcing (user pulled newer manually).`,
     );
     await clearUpdatePending(db);
     return;
@@ -337,10 +371,22 @@ export async function announceUpdateApplied(
 /**
  * Compare two CarsonOS versions. Returns -1 if a < b, 0 if equal, 1 if a > b.
  * Handles both 3-digit (legacy) and 4-digit shapes by zero-padding.
+ *
+ * Throws when either input has a non-numeric segment (e.g. "0.5.1-beta",
+ * "0.5.x"). NaN comparisons silently return false, which would have made
+ * compareVersions return 0 (equal) for any pair containing a NaN — and a
+ * stale-but-equal pending row could fire the post-restart announcement
+ * with the wrong content. Callers handle the throw via try/catch and
+ * treat it as "can't compare → don't announce / don't claim out-of-date."
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const pa = a.split(".").map(Number);
   const pb = b.split(".").map(Number);
+  if (pa.some(Number.isNaN) || pb.some(Number.isNaN)) {
+    throw new Error(
+      `compareVersions: non-numeric segment in '${a}' vs '${b}'; refusing to silently treat as equal`,
+    );
+  }
   const max = Math.max(pa.length, pb.length);
   for (let i = 0; i < max; i++) {
     const ai = pa[i] ?? 0;

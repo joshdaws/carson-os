@@ -231,3 +231,221 @@ describe("checkForUpdate", () => {
     expect(fetchCount).toBeGreaterThan(firstCount);
   });
 });
+
+// ── compareVersions: NaN-rejecting behavior (review fix) ──────────
+
+describe("compareVersions: rejects non-numeric segments", () => {
+  it("throws on segments that don't parse as numbers", () => {
+    expect(() => compareVersions("0.5.1-beta", "0.5.0")).toThrow(/non-numeric/);
+    expect(() => compareVersions("0.5.0", "0.5.x")).toThrow(/non-numeric/);
+    expect(() => compareVersions("not.a.version", "0.0.0")).toThrow();
+  });
+
+  it("does NOT throw on legitimate dotted-numeric shapes", () => {
+    expect(() => compareVersions("0.5.0", "0.5.1")).not.toThrow();
+    expect(() => compareVersions("0.5", "1.0.0.0")).not.toThrow();
+  });
+});
+
+// ── checkForUpdate: malformed local VERSION survives ──────────────
+
+describe("checkForUpdate: malformed local VERSION", () => {
+  let db: Db;
+  beforeEach(() => {
+    db = createDb(":memory:");
+  });
+
+  it("returns null instead of throwing when local VERSION is malformed", async () => {
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/VERSION")) return new Response("0.5.1");
+      return new Response(SAMPLE_CHANGELOG);
+    }) as typeof fetch;
+
+    // Local "0.5.1-beta" would have silently compared as equal under the
+    // old (NaN-tolerant) compareVersions. The new throw-and-catch path
+    // surfaces this as null, not equal-to-remote.
+    const result = await checkForUpdate(db, {
+      currentVersion: "0.5.1-beta",
+      fetcher,
+      force: true,
+    });
+    expect(result).toBeNull();
+  });
+});
+
+// ── apply_system_update trust gate (review fix MEDIUM #6) ─────────
+
+describe("apply_system_update trust gate", () => {
+  let db: Db;
+  let parentMemberId: string;
+  let kidMemberId: string;
+  let householdId: string;
+  let cosAgentId: string;
+  let otherHouseholdMemberId: string;
+
+  beforeEach(async () => {
+    db = createDb(":memory:");
+
+    const { households, familyMembers, staffAgents } = await import("@carsonos/db");
+    const { eq } = await import("drizzle-orm");
+
+    const [household] = await db
+      .insert(households)
+      .values({ name: "Test Household" })
+      .returning();
+    householdId = household.id;
+
+    const [parent] = await db
+      .insert(familyMembers)
+      .values({
+        householdId,
+        name: "Parent",
+        role: "parent",
+        age: 40,
+      })
+      .returning();
+    parentMemberId = parent.id;
+
+    const [kid] = await db
+      .insert(familyMembers)
+      .values({
+        householdId,
+        name: "Kid",
+        role: "child",
+        age: 10,
+      })
+      .returning();
+    kidMemberId = kid.id;
+
+    // Member from a DIFFERENT household, used to test the household
+    // scoping clause on the member lookup (review HIGH #3).
+    const [otherHousehold] = await db
+      .insert(households)
+      .values({ name: "Other Household" })
+      .returning();
+    const [otherParent] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: otherHousehold.id,
+        name: "Other Parent",
+        role: "parent",
+        age: 42,
+      })
+      .returning();
+    otherHouseholdMemberId = otherParent.id;
+
+    const [cos] = await db
+      .insert(staffAgents)
+      .values({
+        householdId,
+        name: "Carson",
+        staffRole: "head_butler",
+        roleContent: "CoS for tests",
+        isHeadButler: true,
+      })
+      .returning();
+    cosAgentId = cos.id;
+
+    // Seed an update_available row so the handler's first check passes.
+    const { writeUpdatePending } = await import("../system-update-check.js");
+    void writeUpdatePending; // silence import-only warning
+    const { instanceSettings } = await import("@carsonos/db");
+    await db.insert(instanceSettings).values({
+      id: crypto.randomUUID(),
+      key: "system.update_available",
+      value: {
+        from: "0.5.0",
+        to: "0.5.1",
+        fetchedAt: new Date().toISOString(),
+        changelogExcerpt: "test changelog",
+      },
+    });
+
+    // Touch eq to satisfy import-only check.
+    void eq;
+  });
+
+  it("refuses when isChiefOfStaff is false (non-CoS agent)", async () => {
+    const { handleAgentTool } = await import("../agent-tools.js");
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: parentMemberId,
+        memberName: "Parent",
+        householdId,
+        isChiefOfStaff: false,
+      },
+      "apply_system_update",
+      {},
+    );
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/Chief of Staff/i);
+  });
+
+  it("refuses when the requesting member is a kid (role !== 'parent')", async () => {
+    const { handleAgentTool } = await import("../agent-tools.js");
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: kidMemberId,
+        memberName: "Kid",
+        householdId,
+        isChiefOfStaff: true,
+      },
+      "apply_system_update",
+      {},
+    );
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/parent/i);
+    expect(result.content).toContain("Kid");
+  });
+
+  it("refuses when the memberId resolves to a different household (cross-household auth gap)", async () => {
+    const { handleAgentTool } = await import("../agent-tools.js");
+    // CoS in our household + memberId from the OTHER household. The
+    // member exists in the DB but belongs to a different household.
+    // The household-scoped lookup should return zero rows.
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: otherHouseholdMemberId,
+        memberName: "Other Parent",
+        householdId, // OUR household
+        isChiefOfStaff: true,
+      },
+      "apply_system_update",
+      {},
+    );
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/resolve the requesting member/i);
+  });
+
+  it("refuses when there is no update available", async () => {
+    // Clear the seeded update_available row so the handler bails early.
+    const { instanceSettings } = await import("@carsonos/db");
+    const { eq } = await import("drizzle-orm");
+    await db
+      .delete(instanceSettings)
+      .where(eq(instanceSettings.key, "system.update_available"));
+
+    const { handleAgentTool } = await import("../agent-tools.js");
+    const result = await handleAgentTool(
+      {
+        db,
+        agentId: cosAgentId,
+        memberId: parentMemberId,
+        memberName: "Parent",
+        householdId,
+        isChiefOfStaff: true,
+      },
+      "apply_system_update",
+      {},
+    );
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/No CarsonOS update is currently available/i);
+  });
+});

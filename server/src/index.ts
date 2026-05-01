@@ -394,29 +394,6 @@ async function main() {
   );
   orchestrator.setAgentQueueForWake((agentId, memberId, fn) => multiRelay.enqueueAgentWork(agentId, memberId, fn));
 
-  // v0.5.1 post-restart announcement (TODO-3.5): if the previous instance
-  // wrote `system.update_pending` before restarting AND we came back up at
-  // the expected version, queue a one-shot in-voice "update applied" message
-  // from CoS to the requesting member. Fires once per boot, after multiRelay
-  // is up so the response can actually reach the user.
-  void import("./services/system-update-check.js").then(
-    ({ announceUpdateApplied }) =>
-      announceUpdateApplied(db, {
-        processMessage: (p) =>
-          constitutionEngine.processMessage({
-            ...p,
-            channel: p.channel as "telegram" | "web",
-          }),
-        sendToUser: (agentId, telegramUserId, text) =>
-          multiRelay.sendMessage(agentId, telegramUserId, text),
-      }).catch((err) =>
-        console.warn(
-          "[update-check] boot announcement failed:",
-          err instanceof Error ? err.message : String(err),
-        ),
-      ),
-  );
-
   // 7b. Signal relay (agents with signal_account + signal_daemon_port set)
   const signalRelay = new SignalRelayManager({
     db,
@@ -632,6 +609,32 @@ async function main() {
   dispatcher.replayPendingNotifications().catch((err: unknown) => {
     console.error("[engine] Phase-2 notification replay failed:", err);
   });
+
+  // v0.5.1 post-restart announcement (TODO-3.5): if the previous instance
+  // wrote `system.update_pending` before restarting AND we came back up at
+  // the expected version, queue a one-shot in-voice "update applied"
+  // message from CoS to the requesting member. Must run AFTER
+  // multiRelay.startAll() so multiRelay.sendMessage can actually reach
+  // the user — running earlier would silently fail and defer the
+  // announcement to the NEXT boot, defeating the feature on the very
+  // boot it's meant to handle.
+  void import("./services/system-update-check.js").then(
+    ({ announceUpdateApplied }) =>
+      announceUpdateApplied(db, {
+        processMessage: (p) =>
+          constitutionEngine.processMessage({
+            ...p,
+            channel: p.channel as "telegram" | "web",
+          }),
+        sendToUser: (agentId, telegramUserId, text) =>
+          multiRelay.sendMessage(agentId, telegramUserId, text),
+      }).catch((err) =>
+        console.warn(
+          "[update-check] boot announcement failed:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      ),
+  );
 
   // Hourly sweep of expired hire proposals. Boot-time pass already fired
   // inside recoverStuckTasks; this catches anything that expires during a

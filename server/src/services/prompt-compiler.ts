@@ -355,7 +355,7 @@ function compileChatPrompt(params: CompilePromptParams): string {
         "If a kid asks for the update, politely tell them to ask a parent —",
         "the tool won't let you run it on a non-parent's behalf.",
         "",
-        "## Changelog excerpt (vX → vY)",
+        `## Changelog excerpt (v${from} → v${to})`,
         "",
         changelogExcerpt || "(no changelog excerpt available — describe v" + to + " generically)",
       ].join("\n"),
