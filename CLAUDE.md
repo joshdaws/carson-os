@@ -55,3 +55,17 @@ If in doubt, prefer the smaller option. Agents are for judgment; they are not ge
 - Photos go inline to the agent's model as Anthropic image content blocks (multimodal). Uses Claude Max subscription via Agent SDK — no `ANTHROPIC_API_KEY` needed.
 - Downloaded media cached at `~/.carsonos/media/` keyed by Telegram `file_unique_id`, 1-hour TTL.
 - Per-capability size guards: image 10MB, voice/audio 20MB, doc 20MB, video 50MB. Min audio 1KB.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `joshdaws/carson-os` via the `gh` CLI. External issues are gated through the triage state machine — agents only act on `ready-for-agent`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical roles, label string equals role name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
