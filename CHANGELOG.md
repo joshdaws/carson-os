@@ -4,6 +4,24 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.1] - 2026-05-01
+
+### Added
+
+- **CarsonOS now tells you when there's an update available.** Once a day, the system checks GitHub for a newer version. When one is available, the Chief of Staff agent gets a heads-up baked into their system prompt — they'll mention it casually next time you chat ("by the way, there's a v0.5.2 update with X, Y, Z — want me to apply it?"). Only parents can trigger the actual update; kids asking for one get a polite "ask a parent" refusal.
+- **CoS can apply system updates from chat.** New `apply_system_update` tool runs `./scripts/update-service.sh` (git pull main, install deps, restart the service) when a parent confirms in chat. The tool returns immediately with "restart in progress" so the agent can tell the user what's happening before the host goes down. After the restart, CoS reads the captured "what changed" excerpt and tells the family in their own voice — closing the loop on both ends.
+- **`gmail_read` handles HTML-only emails properly.** Marketing newsletters, transactional emails, and other HTML-only messages now come back as readable text instead of empty. Links are inlined as `text [https://url]` so agents can quote the unsubscribe URL or summarize the prose. Replaces the homegrown HTML stripper with `html-to-text` configured for plain-vs-HTML precedence and embedded-HTML detection.
+- **`/api/health` surfaces QMD reindex health.** New `memory.reindex` block reports `errorCount` and `lastError` so on-call doesn't have to grep stderr.log to know whether memory indexing is healthy.
+
+### Fixed
+
+- **`/api/health` no longer reports `adapter.healthy: false` when the SDK works fine.** The probe was shelling out to `which claude` to verify CLI presence, but the Claude Agent SDK doesn't actually need the CLI at runtime. Under launchd the service PATH excludes `~/.local/bin` where the CLI installer lands, so the probe was returning false-negatives even when bots were responding correctly.
+- **QMD reindex error logs now include the actual SQLite stack trace.** Previously logged just "Command failed: qmd update" with no context about which collection or path tripped the constraint. Now appends qmd's stderr (capped at 2KB, control bytes stripped, JSON-safe) so future occurrences are debuggable without re-running the script by hand.
+
+### Why this matters
+
+v0.5.1 is the release where CarsonOS becomes aware of its own updates. From here on, each new version self-announces — you don't have to remember to run `update-service.sh`, the Chief of Staff will mention it the next time you talk to them. The trust gate keeps it parent-only; the post-restart in-voice announcement closes the loop so you actually hear "the update applied, here's what changed" instead of just noticing the bots came back online. Plus the on-call signals (`/api/health`, QMD reindex logs) tell you the truth now instead of lying or staying silent.
+
 ## [0.5.0] - 2026-05-01
 
 ### Added — Memory v0.5
