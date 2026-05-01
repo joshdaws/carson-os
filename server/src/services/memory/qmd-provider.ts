@@ -31,9 +31,19 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-const QMD_BIN = "qmd";
+const DEFAULT_QMD_BIN = "qmd";
 const SEARCH_TIMEOUT_MS = 30_000; // qmd query (hybrid) can take 5-10s
 const UPDATE_TIMEOUT_MS = 30_000;
+
+/**
+ * Backoff after consecutive `qmd update` failures (PR #41 deferred).
+ * Without this, every save/update/delete fires a new reindex even when
+ * the subprocess has been failing in a loop — burning CPU and filling
+ * stderr.log with redundant traces. After three consecutive failures,
+ * pause subprocess invocations for five minutes; reset on first success.
+ */
+const REINDEX_BACKOFF_THRESHOLD = 3;
+const REINDEX_BACKOFF_WINDOW_MS = 5 * 60 * 1000;
 
 /** v5 entity types that get two-layer pages + nightly compilation. */
 const ENTITY_TYPES = new Set<string>([
@@ -105,10 +115,25 @@ export class QmdMemoryProvider implements MemoryProvider {
   private reindexQueued = false;
   private reindexErrorCount = 0;
   private lastReindexError: { at: string; message: string } | null = null;
+  /**
+   * Consecutive `qmd update` failures since the last success. When this
+   * reaches REINDEX_BACKOFF_THRESHOLD, runReindex pauses subprocess
+   * invocations until `reindexBackoffUntil` elapses. Reset to 0 on the
+   * first success.
+   */
+  private reindexConsecutiveFailures = 0;
+  private reindexBackoffUntil: number | null = null;
+  /** Path to the qmd CLI. Tests pass a non-existent path to drive failures. */
+  private readonly qmdBin: string;
 
-  constructor(rootDir: string, db?: import("@carsonos/db").Db) {
+  constructor(
+    rootDir: string,
+    db?: import("@carsonos/db").Db,
+    opts?: { qmdBin?: string },
+  ) {
     this.rootDir = rootDir;
     this.db = db ?? null;
+    this.qmdBin = opts?.qmdBin ?? DEFAULT_QMD_BIN;
     mkdirSync(rootDir, { recursive: true });
   }
 
@@ -161,7 +186,7 @@ export class QmdMemoryProvider implements MemoryProvider {
 
     // Check if QMD already has this directory under a different name
     try {
-      const { stdout } = await execFileAsync(QMD_BIN, ["collection", "list"], {
+      const { stdout } = await execFileAsync(this.qmdBin, ["collection", "list"], {
         timeout: SEARCH_TIMEOUT_MS,
       });
 
@@ -181,7 +206,7 @@ export class QmdMemoryProvider implements MemoryProvider {
         for (const existingName of collectionNames) {
           try {
             const { stdout: showOut } = await execFileAsync(
-              QMD_BIN,
+              this.qmdBin,
               ["collection", "show", existingName],
               { timeout: SEARCH_TIMEOUT_MS },
             );
@@ -208,7 +233,7 @@ export class QmdMemoryProvider implements MemoryProvider {
 
     try {
       await execFileAsync(
-        QMD_BIN,
+        this.qmdBin,
         ["collection", "add", dir, "--name", name],
         { timeout: SEARCH_TIMEOUT_MS },
       );
@@ -336,14 +361,14 @@ export class QmdMemoryProvider implements MemoryProvider {
       let stdout: string;
       try {
         ({ stdout } = await execFileAsync(
-          QMD_BIN,
+          this.qmdBin,
           ["query", query, "--json", "-c", qmdCollection],
           { timeout: SEARCH_TIMEOUT_MS },
         ));
       } catch {
         // Hybrid query can fail if embeddings aren't ready — fall back to BM25
         ({ stdout } = await execFileAsync(
-          QMD_BIN,
+          this.qmdBin,
           ["search", query, "--json", "-c", qmdCollection],
           { timeout: SEARCH_TIMEOUT_MS },
         ));
@@ -656,8 +681,11 @@ export class QmdMemoryProvider implements MemoryProvider {
    * during an in-flight run get the same promise. This fixes
    * SQLITE_CONSTRAINT_PRIMARYKEY collisions when many save/update
    * calls fire in a burst.
+   *
+   * Public so tests can drive runReindex directly. Production code
+   * paths (save/update/delete) call it via `void this.reindex().catch(...)`.
    */
-  private reindex(): Promise<void> {
+  reindex(): Promise<void> {
     if (this.reindexInFlight) {
       this.reindexQueued = true;
       return this.reindexInFlight;
@@ -679,26 +707,57 @@ export class QmdMemoryProvider implements MemoryProvider {
   getReindexHealth(): {
     errorCount: number;
     lastError: { at: string; message: string } | null;
+    consecutiveFailures: number;
+    backoffUntil: string | null;
   } {
     return {
       errorCount: this.reindexErrorCount,
       lastError: this.lastReindexError,
+      consecutiveFailures: this.reindexConsecutiveFailures,
+      backoffUntil: this.reindexBackoffUntil
+        ? new Date(this.reindexBackoffUntil).toISOString()
+        : null,
     };
   }
 
   private async runReindex(): Promise<void> {
+    // Backoff gate: skip the subprocess invocation while we're inside
+    // the cooldown window after consecutive failures. The caller still
+    // gets a resolved promise so the save/update/delete flow doesn't
+    // block, and the queued follow-up bookkeeping below still runs so
+    // the next request after the window can re-attempt cleanly.
+    const now = Date.now();
+    if (this.reindexBackoffUntil && now < this.reindexBackoffUntil) {
+      this.reindexInFlight = null;
+      this.reindexQueued = false;
+      return;
+    }
+
     try {
-      await execFileAsync(QMD_BIN, ["update"], {
+      await execFileAsync(this.qmdBin, ["update"], {
         timeout: UPDATE_TIMEOUT_MS,
       });
+      // Success: clear consecutive-failure state so a future flap
+      // gets the full threshold's worth of retries before backing off
+      // again.
+      this.reindexConsecutiveFailures = 0;
+      this.reindexBackoffUntil = null;
     } catch (err) {
       const detailed = formatReindexError(err);
       this.reindexErrorCount += 1;
+      this.reindexConsecutiveFailures += 1;
       this.lastReindexError = { at: new Date().toISOString(), message: detailed };
-      console.warn(
-        `[memory] QMD reindex error (count=${this.reindexErrorCount}):`,
-        detailed,
-      );
+      if (this.reindexConsecutiveFailures >= REINDEX_BACKOFF_THRESHOLD) {
+        this.reindexBackoffUntil = Date.now() + REINDEX_BACKOFF_WINDOW_MS;
+        console.warn(
+          `[memory] QMD reindex backed off after ${this.reindexConsecutiveFailures} consecutive failures; pausing for ${REINDEX_BACKOFF_WINDOW_MS / 1000}s. Last error: ${detailed}`,
+        );
+      } else {
+        console.warn(
+          `[memory] QMD reindex error (count=${this.reindexErrorCount}, consecutive=${this.reindexConsecutiveFailures}):`,
+          detailed,
+        );
+      }
     }
     this.reindexInFlight = null;
     if (this.reindexQueued) {
@@ -706,7 +765,8 @@ export class QmdMemoryProvider implements MemoryProvider {
       // Fire-and-forget the queued run. Errors caught inside runReindex.
       // This is also the self-heal path: a transient subprocess failure
       // is recovered by the next successful invocation, since `qmd update`
-      // re-iterates the file system on every run.
+      // re-iterates the file system on every run. If we're now in a
+      // backoff window, the queued call is a no-op via the gate above.
       void this.reindex();
     }
   }
