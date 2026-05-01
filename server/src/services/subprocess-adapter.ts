@@ -442,8 +442,33 @@ function buildMultimodalPrompt(
   })();
 }
 
-class ClaudeAgentSdkAdapter implements Adapter {
+export class ClaudeAgentSdkAdapter implements Adapter {
   name = "claude-agent-sdk";
+
+  /**
+   * /api/health adapter probe (v0.5.2). Cached so /api/health pollers
+   * don't slam the network on every request. Cleared every probe window
+   * (success or failure) so a flap surfaces within at most one window.
+   */
+  private healthCache: { at: number; ok: boolean } | null = null;
+  private readonly fetcher: typeof fetch;
+  private readonly cacheTtlMs: number;
+  private readonly probeTimeoutMs: number;
+  private static readonly DEFAULT_CACHE_TTL_MS = 30_000;
+  private static readonly DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+  private static readonly PROBE_URL = "https://api.anthropic.com/";
+
+  constructor(opts?: {
+    fetcher?: typeof fetch;
+    cacheTtlMs?: number;
+    probeTimeoutMs?: number;
+  }) {
+    this.fetcher = opts?.fetcher ?? fetch;
+    this.cacheTtlMs =
+      opts?.cacheTtlMs ?? ClaudeAgentSdkAdapter.DEFAULT_CACHE_TTL_MS;
+    this.probeTimeoutMs =
+      opts?.probeTimeoutMs ?? ClaudeAgentSdkAdapter.DEFAULT_PROBE_TIMEOUT_MS;
+  }
 
   async execute(params: AdapterExecuteParams): Promise<AdapterExecuteResult> {
     const { systemPrompt, messages, tools, toolExecutor, model, attachments } = params;
@@ -839,17 +864,52 @@ class ClaudeAgentSdkAdapter implements Adapter {
   }
 
   /**
-   * The Agent SDK is an npm package (`@anthropic-ai/claude-agent-sdk`) that
-   * talks to Anthropic via OAuth. It does NOT shell out to the `claude` CLI
-   * at runtime — unlike `ClaudeCodeAdapter`, which does. Probing for the CLI
-   * here was a copy-paste vestige that returned false-negatives on hosts
-   * where the CLI is installed somewhere other than the launchd service
-   * PATH (e.g., the official installer's `~/.local/bin/claude`). The SDK
-   * module already loaded successfully if we got this far — that's the only
-   * runtime dependency this adapter has.
+   * Verify the SDK can actually reach Anthropic. The Agent SDK talks to
+   * Anthropic via OAuth (Claude subscription) over HTTPS; if DNS, TCP,
+   * TLS, or the API edge is down, the SDK can't make calls regardless
+   * of how cleanly the npm module loaded. The pre-v0.5.1 probe shelled
+   * out to `which claude` (a CLI binary the SDK doesn't actually use at
+   * runtime, returning false-negatives on launchd PATH); the v0.5.1 fix
+   * replaced that with `return true` (less wrong but a regression of
+   * signal value).
+   *
+   * This probe issues a HEAD to `api.anthropic.com` with a 5s timeout,
+   * caches the result for 30s, and treats any HTTP response as
+   * reachable (we're checking that we can talk to Anthropic, not that
+   * the path returns 2xx). Auth is NOT exercised — verifying the OAuth
+   * token requires a real `query()` call, which spends rate-limit
+   * budget. A revoked or expired token will still pass this probe;
+   * the next real query reveals it. Acceptable trade-off: the common
+   * failure modes (network outage, DNS/TLS issues, Anthropic edge down)
+   * are covered, and the probe doesn't burn budget on every poll.
    */
   async healthCheck(): Promise<boolean> {
-    return true;
+    const now = Date.now();
+    if (this.healthCache && now - this.healthCache.at < this.cacheTtlMs) {
+      return this.healthCache.ok;
+    }
+    const ok = await this.probeReachability();
+    this.healthCache = { at: now, ok };
+    return ok;
+  }
+
+  private async probeReachability(): Promise<boolean> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.probeTimeoutMs);
+    try {
+      const res = await this.fetcher(ClaudeAgentSdkAdapter.PROBE_URL, {
+        method: "HEAD",
+        signal: ctrl.signal,
+      });
+      // Any HTTP response — 200, 404, 401, 405, etc. — proves DNS+TCP+TLS
+      // reachability. We're verifying the network path, not endpoint
+      // semantics.
+      return res.status > 0;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
