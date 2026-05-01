@@ -241,7 +241,6 @@ export function htmlToText(html: string): string {
           ignoreHref: false,
           linkBrackets: ["[", "]"],
           noAnchorUrl: true,
-          baseUrl: undefined,
         },
       },
       // Drop images entirely — alt text alone rarely helps and tracking pixels
@@ -249,6 +248,10 @@ export function htmlToText(html: string): string {
       { selector: "img", format: "skip" },
       // Bullet-style lists.
       { selector: "ul", options: { itemPrefix: " - " } },
+      // Flatten the layout-table soup that marketing senders love so cells
+      // don't get concatenated with no separator. `dataTable` renders rows as
+      // newline-separated lines with cells joined by spaces.
+      { selector: "table", format: "dataTable" },
       // Headings: keep original case (the library uppercases h1 by default,
       // which loses signal when agents quote headings back).
       { selector: "h1", options: { uppercase: false } },
@@ -291,24 +294,38 @@ export function pickEmailBody(msg: Record<string, unknown>): {
     typeof msg.text === "string" && msg.text.trim()
       ? msg.text.trim()
       : typeof msg.body === "string" && msg.body.trim() && !looksLikeHtml(msg.body)
-      ? (msg.body as string).trim()
+      ? msg.body.trim()
       : "";
   if (plain) return { text: plain, fromHtml: false };
 
   const html =
     typeof msg.html === "string" && msg.html.trim()
-      ? (msg.html as string)
+      ? msg.html
       : typeof msg.body === "string" && looksLikeHtml(msg.body)
-      ? (msg.body as string)
+      ? msg.body
       : "";
   if (html) return { text: htmlToText(html), fromHtml: true };
 
   return { text: "", fromHtml: false };
 }
 
-/** Heuristic: does this string look like HTML rather than plain text? */
-function looksLikeHtml(s: string): boolean {
-  return /<\s*(html|body|div|p|br|span|table|a\s|img\s|h[1-6])\b/i.test(s);
+/**
+ * Heuristic: does this string look like HTML rather than plain text?
+ *
+ * Catches the common shapes we see in the wild:
+ *   - full documents with <html>/<body>/<head>/<!DOCTYPE …>
+ *   - block elements (div, p, br, table, ul/ol/li, h1-h6, blockquote, pre)
+ *   - inline formatting fragments (strong, em, b, i, u, span, a, img)
+ *   - HTML comments (`<!-- … -->`)
+ *
+ * Exported for unit tests so we can pin the borderline cases.
+ */
+export function looksLikeHtml(s: string): boolean {
+  if (!s) return false;
+  // <!DOCTYPE …> / <!-- … --> — declarations and comments are HTML-only syntax.
+  if (/<!(?:DOCTYPE\b|--)/i.test(s)) return true;
+  // Tag names: block + inline + a/img with attribute or self-close.
+  return /<\s*\/?\s*(html|head|body|div|p|br|span|table|tr|td|th|thead|tbody|tfoot|ul|ol|li|h[1-6]|blockquote|pre|code|hr|article|section|header|footer|nav|main|aside|figure|figcaption|strong|em|b|i|u|s|small|sub|sup|mark|del|ins|font|center|a|img|style|script)\b/i.test(s);
 }
 
 // ── Handler ────────────────────────────────────────────────────────
@@ -376,7 +393,7 @@ export function createGmailToolHandler(
               );
               const picked = pickEmailBody(htmlMsg);
               text = picked.text;
-              fromHtml = picked.fromHtml || fromHtml;
+              fromHtml = picked.fromHtml;
             } catch {
               // Fall through to "(empty …)" below.
             }
