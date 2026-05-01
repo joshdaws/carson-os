@@ -839,9 +839,72 @@ function validateHttpConfig(http: HttpConfig): ToolResult | null {
   return null;
 }
 
+/**
+ * Modules that give a script handler primitives the sandbox is supposed to
+ * deny: filesystem reads of the AES master key (~/.carsonos/.secret),
+ * subprocess execution, raw network sockets, and runtime path discovery.
+ * Rejected at create + update time before the handler is ever bundled or
+ * loaded, so a malicious or compromised upstream can't slip them in.
+ *
+ * `node:path` is allowed (legitimate for url/json work). `node:url`,
+ * `node:crypto`, `node:buffer`, `node:stream` are allowed (pure or scoped).
+ */
+const FORBIDDEN_HANDLER_MODULES = [
+  "fs",
+  "fs/promises",
+  "node:fs",
+  "node:fs/promises",
+  "child_process",
+  "node:child_process",
+  "os",
+  "node:os",
+  "net",
+  "node:net",
+  "tls",
+  "node:tls",
+  "dgram",
+  "node:dgram",
+  "cluster",
+  "node:cluster",
+  "worker_threads",
+  "node:worker_threads",
+  "v8",
+  "node:v8",
+  "vm",
+  "node:vm",
+];
+
+export function scanForbiddenImports(handlerCode: string): string | null {
+  // Match: import ... from "X", import("X"), require("X"). Both single and
+  // double quotes. Whitespace tolerant. The forbidden list is small so
+  // brute-forcing each against three patterns is fine.
+  for (const mod of FORBIDDEN_HANDLER_MODULES) {
+    const escaped = mod.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`\\bfrom\\s*["']${escaped}["']`),
+      new RegExp(`\\bimport\\s*\\(\\s*["']${escaped}["']\\s*\\)`),
+      new RegExp(`\\brequire\\s*\\(\\s*["']${escaped}["']\\s*\\)`),
+    ];
+    if (patterns.some((re) => re.test(handlerCode))) return mod;
+  }
+  return null;
+}
+
 async function validateScriptHandler(handlerCode: string): Promise<ToolResult | null> {
   if (!handlerCode.trim()) {
     return errResult("validation_error", "handler_code must be non-empty TypeScript. Include an 'export async function handler(input, ctx)' definition.");
+  }
+
+  // TODO-3: scoped sandbox. ctx.db was removed and these node: builtins are
+  // now denied at validation time. Handlers needing data access should use
+  // ctx.fetch (against the local API), ctx.getSecret, or ctx.memory; truly
+  // privileged work should be promoted to a system tool, not a custom one.
+  const forbidden = scanForbiddenImports(handlerCode);
+  if (forbidden) {
+    return errResult(
+      "validation_error",
+      `handler_code imports the disallowed module '${forbidden}'. Custom-tool handlers run in a scoped sandbox and may not use filesystem, subprocess, raw network, OS, vm, worker_threads, or v8 primitives. Use ctx.fetch for HTTP calls, ctx.getSecret for credentials, and ctx.memory for memory access.`,
+    );
   }
 
   try {

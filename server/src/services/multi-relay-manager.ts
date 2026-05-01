@@ -348,9 +348,17 @@ export class MultiRelayManager {
           if (extraction) {
             // Real transcript vs. "could not be transcribed" fallback
             const isRealTranscript = !extraction.text.startsWith("[Voice message");
+            // Surface the cached audio path so any tool the agent has
+            // (analyze_audio, transcribe, custom audio handlers) can read
+            // the original file. Document/document-text already do this in
+            // the extraction header; voice/audio didn't, so the agent saw
+            // a transcript with no way to operate on the source bytes.
+            const audioPathHint = extraction.localPath
+              ? `\n\n[Audio file cached at: ${extraction.localPath}]`
+              : "";
             const fullText = isRealTranscript
-              ? `[Voice transcript]\n\n${extraction.text}`
-              : extraction.text;
+              ? `[Voice transcript]\n\n${extraction.text}${audioPathHint}`
+              : `${extraction.text}${audioPathHint}`;
             await this.handleMessage(ctx, agentId, agent.name, fullText);
           } else {
             await ctx.reply("I couldn't process that voice message. Please try again or send it as text.");

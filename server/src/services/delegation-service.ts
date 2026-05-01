@@ -60,9 +60,13 @@ export interface DelegateTaskCallInput {
   context?: string;
   /** Required for project/core specialties. */
   projectId?: string;
-  /** Per-task workspace override. 'tools' → sandbox; 'project' → worktree of
-   * the projectId. If omitted, falls back to the specialist's hired specialty. */
-  workspace?: "tools" | "project";
+  /** Per-task workspace override.
+   *  - 'tools'   → sandbox at ~/.carsonos/sandbox/{runId}/ (no projectId).
+   *  - 'project' → worktree of `projectId`.
+   *  - 'system'  → worktree of the CarsonOS project (auto-resolved by name; no projectId needed).
+   *
+   *  If omitted, falls back to the specialist's hired specialty. */
+  workspace?: "tools" | "project" | "system";
   /** Member on whose behalf this delegation runs (for notification routing). */
   requestedByMember: string;
   /** The caller agent's current task row, if it's inside one. Used for depth-2
@@ -300,15 +304,48 @@ export class DelegationService {
       };
     }
 
-    // Resolve project (for project/core specialty)
-    if (input.projectId) {
+    // 'system' is sugar for 'project' targeting the CarsonOS project — auto-
+    // resolve so the caller doesn't have to look up its projectId. Anything
+    // named 'carson-os' or 'carsonos' wins. Falls through to E_PROJECT_NOT_FOUND
+    // with a register_project hint when nothing is registered.
+    let resolvedProjectId = input.projectId;
+    if (input.workspace === "system") {
+      if (input.projectId) {
+        return {
+          ok: false,
+          error:
+            "workspace='system' auto-resolves to the CarsonOS project — don't pass projectId. Use workspace='project'+projectId for other codebases.",
+          code: "E_PROJECT_NOT_FOUND",
+        };
+      }
+      const { projects } = await import("@carsonos/db");
+      const candidates = await this.db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(eq(projects.householdId, input.householdId));
+      const carson = candidates.find(
+        (p) => p.name === "carson-os" || p.name === "carsonos",
+      );
+      if (!carson) {
+        return {
+          ok: false,
+          error:
+            "workspace='system' requires a registered project named 'carson-os' (or 'carsonos'). Run register_project first.",
+          code: "E_PROJECT_NOT_FOUND",
+        };
+      }
+      resolvedProjectId = carson.id;
+    }
+
+    // Resolve project (for project/system workspace)
+    if (resolvedProjectId) {
       const { projects } = await import("@carsonos/db");
       const [project] = await this.db
         .select()
         .from(projects)
         .where(
           and(
-            eq(projects.id, input.projectId),
+            eq(projects.id, resolvedProjectId),
             eq(projects.householdId, input.householdId),
           ),
         )
@@ -316,7 +353,7 @@ export class DelegationService {
       if (!project) {
         return {
           ok: false,
-          error: `project ${input.projectId} not found in this household.`,
+          error: `project ${resolvedProjectId} not found in this household.`,
           code: "E_PROJECT_NOT_FOUND",
         };
       }
@@ -330,15 +367,48 @@ export class DelegationService {
 
     // Workspace is the calling agent's choice per task. Falls back to the
     // specialist's hired specialty if the caller didn't specify (back-compat).
-    // 'tools' → sandbox at ~/.carsonos/sandbox/{runId}/; 'project' → fresh git
-    // worktree of input.projectId. The fallback path mirrors the historical
-    // behavior: tools-specialty Devs went to sandbox, everything else to a
-    // worktree iff projectId resolved.
+    // 'tools' → sandbox at ~/.carsonos/sandbox/{runId}/; 'project'/'system' →
+    // fresh git worktree of resolvedProjectId. 'system' was already collapsed
+    // to a project above; treat it as 'project' from here on.
+    const requestedWorkspace: "tools" | "project" | "system" | undefined =
+      input.workspace;
     const effectiveWorkspace: "tools" | "project" =
-      input.workspace ??
-      (target.specialty === "tools" ? "tools" : "project");
+      requestedWorkspace === "system"
+        ? "project"
+        : requestedWorkspace ??
+          (target.specialty === "tools" ? "tools" : "project");
     const workspaceKindForTask: "tool_sandbox" | "worktree" =
       effectiveWorkspace === "tools" ? "tool_sandbox" : "worktree";
+
+    // Guardrail: 'tools' is for brand-new sandboxed work. If the goal/context
+    // references a registered project (by name or path), the caller almost
+    // certainly meant 'project' or 'system'. Reject so the agent re-routes
+    // instead of editing the live source under the dev server's watcher.
+    if (effectiveWorkspace === "tools") {
+      const { projects } = await import("@carsonos/db");
+      const allProjects = await this.db
+        .select({ name: projects.name, path: projects.path })
+        .from(projects)
+        .where(eq(projects.householdId, input.householdId));
+      const haystack = `${input.goal}\n${input.context ?? ""}`.toLowerCase();
+      const hit = allProjects.find((p) => {
+        const name = p.name.toLowerCase();
+        const path = p.path.toLowerCase();
+        const nameRe = new RegExp(`\\b${escapeRegex(name)}\\b`);
+        return nameRe.test(haystack) || (path.length > 3 && haystack.includes(path));
+      });
+      if (hit) {
+        const isCarson = hit.name === "carson-os" || hit.name === "carsonos";
+        const suggestion = isCarson
+          ? "workspace='system'"
+          : `workspace='project' with projectId for '${hit.name}'`;
+        return {
+          ok: false,
+          error: `workspace='tools' is for new sandboxed work, but this task references the registered project '${hit.name}'. Re-call delegate_task with ${suggestion} so the work happens in a worktree (off the live source) instead.`,
+          code: "E_PROJECT_NOT_FOUND",
+        };
+      }
+    }
 
     const childTask = await this.taskEngine.createTask({
       householdId: input.householdId,
@@ -349,7 +419,7 @@ export class DelegationService {
       description: input.context,
       requiresApproval: false,
       delegationDepth: callerDepth + 1,
-      projectId: input.projectId,
+      projectId: resolvedProjectId,
       workspaceKind: workspaceKindForTask,
       // Developer tasks run with no wall-clock timeout (design premise 9a).
       timeoutSec: isDeveloperTarget ? null : undefined,
@@ -365,7 +435,7 @@ export class DelegationService {
         fromAgent: caller.name,
         toAgent: target.name,
         specialty: target.specialty,
-        projectId: input.projectId ?? null,
+        projectId: resolvedProjectId ?? null,
         contextPreview: input.context?.slice(0, 200),
       },
     );
@@ -1614,4 +1684,8 @@ function composeHireCardText(args: {
 
   lines.push("", `_Approval auto-expires in 24h_`);
   return lines.join("\n");
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

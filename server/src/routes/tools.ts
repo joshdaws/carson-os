@@ -446,22 +446,56 @@ export function createToolRoutes(deps: ToolRouteDeps): Router {
         return;
       }
 
+      // Approval invariant (TODO-4): apply-update for script-kind tools
+      // re-enters `pending_approval` unless the creator is Chief of Staff.
+      // The /create path already gates fresh installs this way; without a
+      // matching gate here, a malicious upstream can mutate handler.ts and
+      // run its new code in-process the moment a user clicks Apply Update.
+      // Prompt and HTTP tools are inert (no in-process execution) and stay
+      // on the existing direct-to-active behavior.
+      let creatorStaffRole: string | null = null;
+      if (row.kind === "script") {
+        const [creator] = db
+          .select({ staffRole: staffAgents.staffRole })
+          .from(staffAgents)
+          .where(eq(staffAgents.id, row.createdByAgentId))
+          .all();
+        creatorStaffRole = creator?.staffRole ?? null;
+      }
+      const requiresApproval =
+        row.kind === "script" && creatorStaffRole !== "chief_of_staff";
+      const newStatus = requiresApproval ? "pending_approval" : "active";
+
       db.update(customTools)
         .set({
-          approvedContentHash: entry.contentHash,
+          // Only mark the new content "approved" when it actually goes live.
+          // For pending_approval the content isn't approved yet — leaving
+          // approvedContentHash unchanged keeps the previous approval as the
+          // last known good state until a human acts on the queued review.
+          approvedContentHash: requiresApproval ? row.approvedContentHash : entry.contentHash,
           generation: row.generation + 1,
           schemaVersion: row.schemaVersion + 1,
-          status: "active",
+          status: newStatus,
           lastError: null,
           updatedAt: new Date(),
         })
         .where(eq(customTools.id, row.id))
         .run();
 
-      try { await loadCustomTools(db, toolRegistry); }
-      catch (err) { console.error("[tools] Registry reload after update failed:", err); }
+      // Skip registry reload when the new content is gated — we don't want
+      // pending code in the live executor map.
+      if (!requiresApproval) {
+        try { await loadCustomTools(db, toolRegistry); }
+        catch (err) { console.error("[tools] Registry reload after update failed:", err); }
+      }
 
-      res.json({ ok: true, applied: true, newHash: entry.contentHash });
+      res.json({
+        ok: true,
+        applied: true,
+        newHash: entry.contentHash,
+        status: newStatus,
+        requiresApproval,
+      });
     } finally {
       cleanupStaging(result.stagingRoot);
     }

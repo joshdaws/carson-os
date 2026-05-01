@@ -1,11 +1,12 @@
 /**
- * Default memory schema — defines the 7 memory types agents can work with.
+ * Default memory schema — defines the 14 memory types agents can work with.
  *
  * Each type has a description (for the agent prompt) and frontmatter
- * fields (for structured YAML headers on markdown files).
+ * fields (for structured YAML headers on markdown files). v5.0 adds the
+ * `concept` type and a set of common fields (importance, corrects,
+ * superseded_by) that apply to every memory regardless of type.
  *
  * Parents can override this schema in the dashboard (post-MVP).
- * For v1.0, this is the only schema.
  */
 
 import type { MemorySchema } from "@carsonos/shared";
@@ -143,6 +144,41 @@ export const DEFAULT_MEMORY_SCHEMA: MemorySchema = {
         { name: "topics", type: "string[]", description: "Relevant topic tags" },
       ],
     },
+    {
+      type: "concept",
+      description: "A reusable mental model, framework, or family value that predates and outlasts specific decisions. New in v5.0. Distinct from `preference` (taste-shaped, individual), `decision` (a moment-in-time call), and `fact` (observable claim).",
+      fields: [
+        { name: "topics", type: "string[]", description: "Relevant topic tags" },
+        { name: "scope", type: "enum", enumValues: ["household", "personal", "domain"], description: "Whose mental model is this" },
+      ],
+    },
+  ],
+  commonFields: [
+    {
+      name: "importance",
+      type: "number",
+      description: "Atom importance, 1–10 (default 5). Corrections are 10. The compilation agent top-bills high-importance atoms in the regenerable compiled view above the `---` line.",
+    },
+    {
+      name: "corrects",
+      type: "string",
+      description: "Atom ID this entry corrects. Use the `correct_memory` tool when fixing a prior atom — it sets this field plus `importance: 10` and links the original via `superseded_by`.",
+    },
+    {
+      name: "superseded_by",
+      type: "string",
+      description: "Atom ID that supersedes this entry. Set automatically when a correction lands.",
+    },
+    {
+      name: "verbatim",
+      type: "string",
+      description: "Set to true when the body should be preserved exactly — never paraphrase. Pair with `verbatim_source` for attribution. A verbatim quote can be any type (decision, preference, concept, etc.) — verbatim is a field, not a type.",
+    },
+    {
+      name: "verbatim_source",
+      type: "string",
+      description: "Who said the verbatim content. Required when `verbatim: true`.",
+    },
   ],
 };
 
@@ -172,6 +208,16 @@ export function buildMemorySchemaInstructions(schema: MemorySchema): string {
     lines.push("");
   }
 
+  if (schema.commonFields && schema.commonFields.length > 0) {
+    lines.push("**Common fields** (apply to every memory type):");
+    for (const f of schema.commonFields) {
+      const req = f.required ? " (required)" : "";
+      const vals = f.enumValues ? ` [${f.enumValues.join(", ")}]` : "";
+      lines.push(`  - ${f.name}: ${f.type}${vals}${req} — ${f.description}`);
+    }
+    lines.push("");
+  }
+
   lines.push(
     "## How to use memory",
     "",
@@ -191,11 +237,26 @@ export function buildMemorySchemaInstructions(schema: MemorySchema): string {
     "**When NOT to save:** Don't save things that are trivially obvious from context,",
     "things you just said, or things already covered by their profile.",
     "",
-    "Tools:",
-    "- `search_memory` — search before answering AND before saving",
-    "- `save_memory` — save new memories (search first to avoid duplicates)",
-    "- `update_memory` — update an existing memory with new info (safer than delete+save)",
-    "- `delete_memory` — remove outdated, incorrect, or wrong memories",
+    "**Background enrichment.** A background worker captures atoms from your",
+    "conversation turns automatically — entities mentioned, factual claims, dated",
+    "events, commitments. You do NOT need to manually save every fact during",
+    "natural conversation. The worker handles routine capture. Use the explicit",
+    "tools below when you need to act deliberately on a specific memory.",
+    "",
+    "Tools (CRUD-shaped):",
+    "- `search_memory` — find existing memories. Search before write.",
+    "- `read_memory` — fetch full body of a memory found via `search_memory`.",
+    "- `get_backlinks` — list memories that reference a given slug via `[[wikilink]]`.",
+    "- `create_memory` — make a NEW memory. Always search first to avoid duplicates.",
+    "- `update_memory` — append new info to an existing memory. For entity types",
+    "  (person/project/place/media/relationship/commitment/goal/concept) the new",
+    "  content lands as a Timeline atom with provenance — original is preserved.",
+    "  For flat types (fact/preference/event/decision/routine/skill) it replaces",
+    "  the body. Set `importance: 10` to flag a correction; the compilation agent",
+    "  top-bills high-importance atoms in the regenerated compiled view.",
+    "- `replace_memory` — wholesale replace. Discards all prior content. Only use",
+    "  when the prior memory was completely wrong (rare).",
+    "- `delete_memory` — remove a memory entirely.",
   );
 
   return lines.join("\n");

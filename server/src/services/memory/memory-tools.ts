@@ -47,9 +47,9 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "save_memory",
+    name: "create_memory",
     description:
-      "Save something to memory. IMPORTANT: Always search_memory first to check for existing entries on the same topic. If one exists, use update_memory instead. Never create duplicates. Save only lasting facts worth remembering — not every conversational detail. Use 'personal' scope for things specific to this person (their preferences, their schedule, their goals). Use 'household' scope for things that affect the whole family (family events, shared decisions, household rules).",
+      "Create a NEW memory. Always search_memory first — if any existing memory covers the same person/project/topic, use update_memory instead. Use 'personal' scope for the member you're talking to, 'household' for things affecting the whole family. The 14 types: fact (verifiable claim), preference (taste/value), event (one-shot dated happening), routine (recurring pattern), decision (moment-in-time choice), commitment (active promise), goal (aspiration), skill (capability), person (human entity), project (multi-step effort), media (book/movie/etc), place (location), relationship (connection between two), concept (mental model/family value).",
     input_schema: {
       type: "object",
       properties: {
@@ -58,9 +58,9 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
           enum: [
             "fact", "preference", "event", "decision", "commitment",
             "person", "project", "media", "place", "routine",
-            "relationship", "goal", "skill",
+            "relationship", "goal", "skill", "concept",
           ],
-          description: "The type of memory to save.",
+          description: "The type of memory to create.",
         },
         title: {
           type: "string",
@@ -70,7 +70,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         content: {
           type: "string",
           description:
-            "The full memory content. Be detailed enough to be useful later.",
+            "The full memory content. Be detailed enough to be useful later. Don't include a `# heading` line — storage adds that.",
         },
         scope: {
           type: "string",
@@ -81,7 +81,7 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         frontmatter: {
           type: "object",
           description:
-            "Additional structured fields for this memory type (e.g., topics, date, status). See memory schema for available fields per type.",
+            "Additional structured fields (topics, date, status, etc.). See memory schema for fields per type.",
         },
       },
       required: ["type", "title", "content"],
@@ -90,35 +90,73 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: "update_memory",
     description:
-      "Update an existing memory with new or corrected information. Use this instead of delete+save when a memory exists but needs to be enriched or corrected. Preserves the original entry and updates it in place — no data loss.",
+      "Update an existing memory by APPENDING new content to it. For entity types (person/project/place/media/relationship/commitment/goal/concept), the content lands as a new atom in the Timeline section with provenance — the original is preserved (atoms-canonical). For flat types (fact/preference/event/decision/routine/skill), the content REPLACES the body. Either way, the entity is marked dirty so the compiled view re-renders shortly. Use this for: a) new info about an existing entity ('AD also writes a Substack' → atom append), or b) correcting a wrong fact (set importance=10 to flag as a correction). For 'throw it all out, the whole memory was wrong' use replace_memory instead.",
     input_schema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "The memory ID to update (from search results).",
+          description: "The memory ID to update (from search_memory results).",
         },
         collection: {
           type: "string",
           description:
             "Which collection the memory is in. Matches the collection name from search results.",
         },
-        title: {
-          type: "string",
-          description: "New title (optional — keeps existing if not provided).",
-        },
         content: {
           type: "string",
           description:
-            "New content (optional — keeps existing if not provided). Provide the full updated content, not just the diff.",
+            "The new info to append (entity types) or the new body (flat types). Don't include a `# heading` line.",
+        },
+        importance: {
+          type: "number",
+          description:
+            "Atom importance 1-10 (default 5). Use 10 for corrections — they get top-billing in the compiled view above the line.",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Optional. Why you're updating (e.g., 'Josh corrected spelling', 'parent verified', 'new info from today'). Surfaces in the atom block.",
         },
         frontmatter: {
           type: "object",
           description:
-            "Updated frontmatter fields to merge (optional). Only provided fields are changed.",
+            "Optional frontmatter fields to merge (extend topics, set aliases, etc.). Shallow merge — arrays are replaced wholesale.",
         },
       },
-      required: ["id", "collection"],
+      required: ["id", "collection", "content"],
+    },
+  },
+  {
+    name: "replace_memory",
+    description:
+      "WHOLESALE replace an existing memory. Throws away all prior content (including the atom timeline for entity types) and writes the new body in its place. Use only when the prior memory was completely wrong or no longer represents anything worth keeping — e.g., the user says 'no, you got that totally wrong, let me restart this entry.' For routine corrections to a single fact, use update_memory with importance=10 instead. The frontmatter (id, type, created, etc.) is preserved.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to replace.",
+        },
+        collection: {
+          type: "string",
+          description: "Which collection the memory is in.",
+        },
+        content: {
+          type: "string",
+          description:
+            "The new body, replacing whatever was there. Don't include a `# heading` line.",
+        },
+        title: {
+          type: "string",
+          description: "Optional new title.",
+        },
+        frontmatter: {
+          type: "object",
+          description: "Optional frontmatter fields to merge.",
+        },
+      },
+      required: ["id", "collection", "content"],
     },
   },
   {
@@ -159,6 +197,22 @@ export const MEMORY_TOOLS: ToolDefinition[] = [
         },
       },
       required: ["id", "collection"],
+    },
+  },
+  {
+    name: "get_backlinks",
+    description:
+      "List the memories that reference a given slug via `[[wikilink]]` syntax. Useful when answering 'who/what is connected to X?' or surfacing context the user didn't explicitly ask for. Returns up to 20 backlinks with the type of relationship (parent, spouse, friend, lives_at, works_at, attends_school, likes, or generic 'references').",
+    input_schema: {
+      type: "object",
+      properties: {
+        slug: {
+          type: "string",
+          description:
+            "The memory slug to find backlinks for (e.g., 'grant-daws', 'lincoln-elementary'). Slug format: kebab-case lowercase, no slashes/dots/underscores.",
+        },
+      },
+      required: ["slug"],
     },
   },
 ];
@@ -205,17 +259,24 @@ export function buildToolExecutor(
         case "search_memory":
           result = await handleSearchMemory(ctx, input);
           break;
-        case "save_memory":
-          result = await handleSaveMemory(ctx, input);
+        case "create_memory":
+        case "save_memory": // legacy alias — remove after one release
+          result = await handleCreateMemory(ctx, input);
           break;
         case "update_memory":
           result = await handleUpdateMemory(ctx, input);
+          break;
+        case "replace_memory":
+          result = await handleReplaceMemory(ctx, input);
           break;
         case "delete_memory":
           result = await handleDeleteMemory(ctx, input);
           break;
         case "read_memory":
           result = await handleReadMemory(ctx, input);
+          break;
+        case "get_backlinks":
+          result = await handleGetBacklinks(ctx, input);
           break;
         default:
           result = { content: `Unknown tool: ${name}`, is_error: true };
@@ -293,7 +354,7 @@ async function handleSearchMemory(
   return { content: formatted };
 }
 
-async function handleSaveMemory(
+async function handleCreateMemory(
   ctx: ToolContext,
   input: Record<string, unknown>,
 ): Promise<ToolResult> {
@@ -309,46 +370,172 @@ async function handleSaveMemory(
   // Add source metadata
   frontmatter.source = frontmatter.source ?? ctx.memberName;
 
+  // For entity types, give the file the v5 two-layer skeleton (placeholder
+  // compiled view + Timeline + first atom) so subsequent updates append
+  // cleanly. Flat types get a plain body.
+  const body = isEntityType(type) ? wrapAsEntitySkeleton(content, ctx.memberName) : content;
+
   const { id, filePath } = await ctx.memoryProvider.save(collection, {
     type,
     title,
-    content,
+    content: body,
     frontmatter,
   });
 
   return {
-    content: `Memory saved: "${title}" (id: ${id}) in ${collection}. File: ${filePath}`,
+    content: `Memory created: "${title}" (id: ${id}) in ${collection}. File: ${filePath}`,
   };
 }
 
+/**
+ * Update an existing memory by APPENDING new content. For entity types
+ * the content lands as a new atom in the Timeline section with full
+ * provenance; the original is preserved (atoms-canonical). For flat
+ * types the content REPLACES the body.
+ */
 async function handleUpdateMemory(
   ctx: ToolContext,
   input: Record<string, unknown>,
 ): Promise<ToolResult> {
   const id = input.id as string;
   const collection = input.collection as string;
-  const title = input.title as string | undefined;
-  const content = input.content as string | undefined;
-  const frontmatter = input.frontmatter as Record<string, unknown> | undefined;
+  const content = input.content as string;
+  const importanceRaw = input.importance;
+  const importance =
+    typeof importanceRaw === "number" && importanceRaw >= 1 && importanceRaw <= 10
+      ? Math.round(importanceRaw)
+      : 5;
+  const reason = input.reason as string | undefined;
+  const incomingFrontmatter = (input.frontmatter as Record<string, unknown>) ?? {};
 
-  // Validate collection access
   if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
     return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
   }
-
-  if (!title && !content && !frontmatter) {
-    return { content: "Nothing to update — provide at least title, content, or frontmatter." };
+  if (!content || content.trim().length === 0) {
+    return { content: "update_memory requires `content`.", is_error: true };
   }
+
+  const existing = await ctx.memoryProvider.read(collection, id);
+  if (!existing) {
+    return { content: `Memory "${id}" not found in collection "${collection}".`, is_error: true };
+  }
+
+  const type = String(existing.frontmatter.type ?? "");
+  const isEntity = isEntityType(type);
+
+  let newBody: string;
+  if (isEntity) {
+    // Atoms-canonical: append a new atom block. Source defaults to
+    // 'agent' (this turn's source) — the worker uses 'enrichment-worker'
+    // for its own appends; corrections set importance: 10.
+    const today = new Date().toISOString().slice(0, 10);
+    const source = importance === 10 ? "correction" : "agent";
+    const atomBlock = formatAtomBlock(today, source, ctx.memberName, importance, reason, content.trim());
+    newBody = existing.content.replace(/\s*$/, "") + "\n\n" + atomBlock + "\n";
+  } else {
+    // Flat types: replace body wholesale.
+    newBody = content;
+  }
+
+  const newFrontmatter = {
+    ...incomingFrontmatter,
+    ...(importance === 10 ? { last_corrected_at: new Date().toISOString().slice(0, 10) } : {}),
+  };
 
   const { id: updatedId, filePath } = await ctx.memoryProvider.update(
     collection,
     id,
-    { title, content, frontmatter },
+    { content: newBody, frontmatter: newFrontmatter },
   );
 
   return {
-    content: `Memory updated: "${title ?? updatedId}" (id: ${updatedId}) in ${collection}. File: ${filePath}`,
+    content: `Memory updated: "${existing.title}" (id: ${updatedId}) in ${collection}.${isEntity ? ` Atom appended (importance: ${importance}).` : ""} File: ${filePath}`,
   };
+}
+
+/**
+ * Wholesale replace an existing memory's body. Frontmatter is merged.
+ * For entity types this throws away the prior atom timeline — only use
+ * when the prior memory was completely wrong. Marks dirty.
+ */
+async function handleReplaceMemory(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const id = input.id as string;
+  const collection = input.collection as string;
+  const content = input.content as string;
+  const title = input.title as string | undefined;
+  const frontmatter = input.frontmatter as Record<string, unknown> | undefined;
+
+  if (ctx.allowedCollections && !ctx.allowedCollections.includes(collection)) {
+    return { content: `You don't have access to the "${collection}" collection.`, is_error: true };
+  }
+  if (!content || content.trim().length === 0) {
+    return { content: "replace_memory requires `content`.", is_error: true };
+  }
+
+  const existing = await ctx.memoryProvider.read(collection, id);
+  if (!existing) {
+    return { content: `Memory "${id}" not found in collection "${collection}".`, is_error: true };
+  }
+
+  const type = String(existing.frontmatter.type ?? "");
+  const isEntity = isEntityType(type);
+
+  // For entity types, wrap the new body in the v5 two-layer skeleton —
+  // placeholder + `---` + Timeline + first atom carrying the new content.
+  const newBody = isEntity
+    ? wrapAsEntitySkeleton(content, ctx.memberName)
+    : content;
+
+  const { id: updatedId, filePath } = await ctx.memoryProvider.update(
+    collection,
+    id,
+    { title, content: newBody, frontmatter },
+  );
+
+  return {
+    content: `Memory replaced: "${title ?? existing.title}" (id: ${updatedId}) in ${collection}. Prior content discarded. File: ${filePath}`,
+  };
+}
+
+// ── Atom + entity helpers ───────────────────────────────────────────
+
+const ENTITY_TYPES = new Set([
+  "person", "project", "place", "media",
+  "relationship", "commitment", "goal", "concept",
+]);
+
+function isEntityType(type: string): boolean {
+  return ENTITY_TYPES.has(type);
+}
+
+function formatAtomBlock(
+  date: string,
+  source: string,
+  by: string,
+  importance: number,
+  reason: string | undefined,
+  content: string,
+): string {
+  const header = `### ${date} | source: ${source} | by: ${by} | importance: ${importance}`;
+  const reasonLine = reason ? `\n_Reason:_ ${reason}\n` : "";
+  return `${header}${reasonLine}\n${content}`;
+}
+
+function wrapAsEntitySkeleton(content: string, memberName: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const atomBlock = formatAtomBlock(today, "manual", memberName, 5, undefined, content);
+  return [
+    "(Compiled view — provisional. The compilation agent regenerates this from the atoms below shortly. Until then, treat the timeline below as canonical.)",
+    "",
+    "---",
+    "",
+    "## Timeline",
+    "",
+    atomBlock,
+  ].join("\n");
 }
 
 async function handleDeleteMemory(
@@ -394,3 +581,32 @@ async function handleReadMemory(
     content: `[${collection}] ${entry.title} (id: ${entry.id})\n\n--- frontmatter ---\n${fmLines}\n\n--- content ---\n${entry.content}`,
   };
 }
+
+/** List memories that reference a given slug via [[wikilink]]. */
+async function handleGetBacklinks(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<ToolResult> {
+  const slug = input.slug as string;
+  if (!slug || slug.trim().length === 0) {
+    return { content: "Slug cannot be empty.", is_error: true };
+  }
+
+  const { getBacklinks } = await import("./memory-links.js");
+  const backlinks = await getBacklinks(ctx.db, slug);
+
+  if (backlinks.length === 0) {
+    return { content: `No backlinks found for "${slug}".` };
+  }
+
+  const limited = backlinks.slice(0, 20);
+  const lines = limited.map(
+    (b) => `- [${b.fromCollection}] ${b.fromSlug} (${b.linkType}${b.source !== "markdown" ? `, source: ${b.source}` : ""})`,
+  );
+  const more = backlinks.length > 20 ? `\n\n(${backlinks.length - 20} more not shown)` : "";
+
+  return {
+    content: `${backlinks.length} memory/memories link to "${slug}":\n\n${lines.join("\n")}${more}`,
+  };
+}
+

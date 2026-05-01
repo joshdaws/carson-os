@@ -11,6 +11,14 @@ export const households = sqliteTable("households", {
     .$defaultFn(() => crypto.randomUUID()),
   name: text("name").notNull(),
   timezone: text("timezone").notNull().default("America/New_York"),
+  /** v0.5: master switch for the background enrichment worker. */
+  enrichmentEnabled: integer("enrichment_enabled", { mode: "boolean" }).notNull().default(true),
+  /** v0.5: master switch for the nightly compilation agent. */
+  compilationEnabled: integer("compilation_enabled", { mode: "boolean" }).notNull().default(true),
+  /** v0.5: cap dirty-entity processing per nightly compilation tick (default 20, eng-review). */
+  compilationBatchSizePerTick: integer("compilation_batch_size_per_tick").notNull().default(20),
+  /** v0.5: how long quiet must hold before a worker can run (default 90s, eng-review). */
+  backgroundYieldThresholdSeconds: integer("background_yield_threshold_seconds").notNull().default(90),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().default(nowEpoch),
 });
@@ -590,5 +598,115 @@ export const toolSecrets = sqliteTable(
   (t) => [
     index("tool_secrets_household_idx").on(t.householdId),
     uniqueIndex("tool_secrets_household_key_unique").on(t.householdId, t.keyName),
+  ]
+);
+
+// ── 19. memoryLinks ─────────────────────────────────────────────────
+
+/**
+ * Cache of `[[slug]]` wikilinks extracted from memory bodies. Backs
+ * the `get_backlinks` MCP tool and the search-ranking backlink boost.
+ * Source-scoped reconciliation: only `source='markdown'` rows are
+ * touched on save/update, so manual `add_link` calls survive a
+ * `qmd reindex`. Rebuildable by re-walking the memory dir.
+ *
+ * New in v0.5.0 (Phase 2 of v5 memory).
+ */
+export const memoryLinks = sqliteTable(
+  "memory_links",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    fromSlug: text("from_slug").notNull(),       // slug of the memory containing the link
+    fromCollection: text("from_collection").notNull(),
+    toSlug: text("to_slug").notNull(),           // slug being linked to
+    toCollection: text("to_collection"),         // optional — unknown until reconciliation
+    linkType: text("link_type").notNull().default("references"),
+    /** `markdown` | `manual` | `inferred`. Reconciliation only touches `markdown`. */
+    source: text("source").notNull().default("markdown"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    index("memory_links_to_slug_idx").on(t.toSlug),
+    index("memory_links_from_idx").on(t.fromSlug, t.fromCollection),
+    index("memory_links_source_idx").on(t.source),
+  ]
+);
+
+// ── 20. enrichmentQueue ─────────────────────────────────────────────
+
+/**
+ * Queue of conversation turns waiting to be enriched by the
+ * background worker. After every agent turn, the (message+reply)
+ * pair is appended here. The worker claims items in batches via
+ * lock_token + lock_until so concurrent ticks don't double-process.
+ * SHA-256 content_fingerprint deduplicates retries.
+ *
+ * New in v0.5.0 (Phase 2 of v5 memory).
+ */
+export const enrichmentQueue = sqliteTable(
+  "enrichment_queue",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    householdId: text("household_id").notNull().references(() => households.id),
+    memberId: text("member_id").references(() => familyMembers.id),
+    agentId: text("agent_id").references(() => staffAgents.id),
+    /** SHA-256 of the payload for retry dedup. */
+    contentFingerprint: text("content_fingerprint").notNull(),
+    /** `pending` | `claimed` | `done` | `failed` */
+    status: text("status").notNull().default("pending"),
+    /** Random token a worker holds while processing. Cleared on done/fail. */
+    lockToken: text("lock_token"),
+    /** Timestamp when the current lock expires. After this, the row is reclaimable. */
+    lockUntil: integer("lock_until", { mode: "timestamp" }),
+    attempts: integer("attempts").notNull().default(0),
+    /** Last error string when status='failed' or while retrying. */
+    lastError: text("last_error"),
+    /** JSON: { message, reply, channel, conversation_id, captured_at }. */
+    payload: text("payload", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+    processedAt: integer("processed_at", { mode: "timestamp" }),
+  },
+  (t) => [
+    index("enrichment_queue_status_idx").on(t.status),
+    uniqueIndex("enrichment_queue_fingerprint_unique").on(t.contentFingerprint),
+    index("enrichment_queue_household_idx").on(t.householdId),
+  ]
+);
+
+// ── 21. compilationState ────────────────────────────────────────────
+
+/**
+ * Per-entity tracking for the nightly compilation agent. Each row
+ * represents an entity-type memory page. The dirty flag uses a
+ * compare-and-swap (CAS) pattern: read dirty_at → regenerate →
+ * conditionally clear dirty_at IF it still matches the snapshot.
+ * That way a new atom appended during regen leaves the row dirty
+ * for the next compilation tick (eng-review critical gap #2).
+ *
+ * New in v0.5.0 (Phase 2 of v5 memory).
+ */
+export const compilationState = sqliteTable(
+  "compilation_state",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    entitySlug: text("entity_slug").notNull(),
+    entityCollection: text("entity_collection").notNull(),
+    /** When the most recent atom was appended. NULL means clean / never dirty. */
+    dirtyAt: integer("dirty_at", { mode: "timestamp" }),
+    /** When the compiled view was last successfully regenerated. */
+    lastCompiledAt: integer("last_compiled_at", { mode: "timestamp" }),
+    /** Last error string from a failed compilation attempt (cleared on success). */
+    lastError: text("last_error"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
+  },
+  (t) => [
+    uniqueIndex("compilation_state_entity_unique").on(t.entitySlug, t.entityCollection),
+    index("compilation_state_dirty_idx").on(t.dirtyAt),
   ]
 );

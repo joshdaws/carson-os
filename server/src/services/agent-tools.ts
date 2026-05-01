@@ -30,6 +30,10 @@ export interface AgentToolContext {
   /** Required for grant/revoke tools. Optional because the type is shared with
    *  a few other call paths that don't need it. */
   toolRegistry?: ToolRegistry;
+  /** Data dir root. When set, identity-mutating handlers (update_personality)
+   *  also write to PERSONALITY.md so file-based reads stay consistent.
+   *  Optional during the v0.5.0 transition. */
+  dataDir?: string;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────
@@ -257,6 +261,26 @@ async function handleUpdatePersonality(ctx: AgentToolContext, input: Record<stri
   if (!personality.trim()) return { content: "Personality cannot be empty.", is_error: true };
 
   await ctx.db.update(staffAgents).set({ soulContent: personality, updatedAt: new Date() }).where(eq(staffAgents.id, ctx.agentId));
+
+  // Mirror into PERSONALITY.md when dataDir is plumbed (v0.5.0+). Reads
+  // prefer the file; without this mirror, the next read would return
+  // stale content. Best-effort — file errors don't fail the update.
+  if (ctx.dataDir) {
+    try {
+      const [agent] = await ctx.db
+        .select({ name: staffAgents.name })
+        .from(staffAgents)
+        .where(eq(staffAgents.id, ctx.agentId))
+        .limit(1);
+      if (agent) {
+        const { writePersonalityMd, slugifyName } = await import("./identity-files.js");
+        writePersonalityMd(ctx.dataDir, slugifyName(agent.name), personality);
+      }
+    } catch (err) {
+      console.warn(`[agent-tools] Failed to mirror personality to PERSONALITY.md:`, err);
+    }
+  }
+
   console.log(`[agent-tools] Personality updated for agent ${ctx.agentId}: ${reason}`);
   return { content: `Personality updated. Takes effect next conversation.\nReason: ${reason}` };
 }
