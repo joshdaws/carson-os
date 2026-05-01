@@ -25,7 +25,7 @@ import type { Db } from "@carsonos/db";
 import { tasks, taskEvents, staffAgents, projects } from "@carsonos/db";
 import type { Adapter } from "./subprocess-adapter.js";
 import type { BroadcastFn, AppEvent } from "./event-bus.js";
-import { WorkspaceProvider, slugify, type ProvisionedWorkspace } from "./delegation/workspace.js";
+import { WorkspaceProvider, slugify, type ProvisionedWorkspace, type ProvisionInput } from "./delegation/workspace.js";
 import { DelegationNotifier, type NotifyPayload } from "./delegation/notifier.js";
 import { DelegatorReply } from "./delegation/delegator-reply.js";
 import { composeSummaryCard, renderSummaryCardText, type DeveloperSpecialty } from "./delegation/summary-card.js";
@@ -228,6 +228,36 @@ export class Dispatcher {
       // agent gets a "server restarted — task didn't finish" message. For
       // non-Developer tasks, preserve the v0.1 auto-re-queue.
       if (isDeveloper && this.notifier) {
+        // Best-effort teardown using the persisted workspace metadata. With
+        // TODO-5's DB-then-git ordering, the row was claimed BEFORE git ran,
+        // so a crash during provision still leaves enough metadata here to
+        // remove a partial worktree and free the carson/<slug> branch.
+        // Without this, retrying a task with the same title hits
+        // E_BRANCH_EXISTS forever.
+        if (this.workspace && task.workspacePath) {
+          let repoPath: string | undefined;
+          if (task.workspaceKind === "worktree" && task.projectId) {
+            const [proj] = await this.db
+              .select({ path: projects.path })
+              .from(projects)
+              .where(eq(projects.id, task.projectId))
+              .limit(1);
+            repoPath = proj?.path;
+          }
+          const partial: ProvisionedWorkspace =
+            task.workspaceKind === "worktree"
+              ? {
+                  kind: "worktree",
+                  path: task.workspacePath,
+                  branch: task.workspaceBranch ?? undefined,
+                  repoPath,
+                }
+              : { kind: "tool_sandbox", path: task.workspacePath };
+          await this.workspace.teardown(partial).catch((err) =>
+            console.error(`[dispatcher] recovery teardown for ${task.id} failed:`, err),
+          );
+        }
+
         const specialty =
           task.workspaceKind === "tool_sandbox" ? "tools" : "project";
         const card = composeSummaryCard({
@@ -569,7 +599,16 @@ export class Dispatcher {
       return;
     }
 
-    // -- 2. Provision workspace --------------------------------------
+    // -- 2. Pre-claim row + provision workspace ----------------------
+    // Order is DB-then-git (TODO-5 crash-safety): we predict the workspace
+    // path/branch deterministically, write them to the row alongside
+    // status='in_progress', AND ONLY THEN call git worktree add. If the host
+    // dies between the DB write and provision succeeding, recoverStuckTasks
+    // sees the in_progress row with workspace metadata and can teardown
+    // whatever partial state git left behind, instead of orphaning a
+    // carson/<slug> branch that permanently blocks retries with the same
+    // title. If provision throws, we catch and call failDeveloperTask after
+    // a best-effort teardown of the predicted path.
     if (!this.workspace) {
       await this.failDeveloperTask(
         task,
@@ -581,24 +620,76 @@ export class Dispatcher {
       return;
     }
 
+    const provisionInput: ProvisionInput =
+      workspaceKindResolved === "tool_sandbox"
+        ? { kind: "tool_sandbox", runId: taskId }
+        : {
+            kind: "worktree",
+            projectName: project!.name,
+            projectPath: project!.path,
+            defaultBranch: project!.defaultBranch,
+            runId: taskId,
+            slug: slugify(task.title),
+          };
+    const predicted = this.workspace.predictMetadata(provisionInput);
+
+    // Conditional UPDATE so if handleCancelTask already flipped the row to
+    // `cancelled` before we claimed it (narrow race between the dispatcher
+    // picking the task up and the user tapping Reject/Cancel), this write is
+    // a no-op and we bail out instead of silently overwriting the cancel.
+    const claimed = await this.db
+      .update(tasks)
+      .set({
+        status: "in_progress",
+        workspaceKind: workspaceKindResolved,
+        workspacePath: predicted.path,
+        workspaceBranch: predicted.branch ?? null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
+      .returning({ id: tasks.id });
+
+    if (claimed.length === 0) {
+      // The cancel path won. Bail before provisioning — there's no workspace
+      // yet to clean up.
+      await this.logEvent(
+        taskId,
+        "cancelled",
+        agent.id,
+        "Developer task cancelled before start",
+        { specialty, reason: "cancelled before in_progress" },
+      );
+      await this.drainDeveloperQueue(slotKey, agent);
+      return;
+    }
+
+    // Register AbortController before provision so a cancel mid-`git
+    // worktree add` has a handle to abort against (provision is awaited so
+    // abort can't actually short-circuit it today, but registering here
+    // keeps the bookkeeping consistent and ready for future async work).
+    const abortController = new AbortController();
+    this.inFlightAborts.set(taskId, abortController);
+
     let workspace: ProvisionedWorkspace;
     try {
-      if (workspaceKindResolved === "tool_sandbox") {
-        workspace = await this.workspace.provision({
-          kind: "tool_sandbox",
-          runId: taskId,
-        });
-      } else {
-        workspace = await this.workspace.provision({
-          kind: "worktree",
-          projectName: project!.name,
-          projectPath: project!.path,
-          defaultBranch: project!.defaultBranch,
-          runId: taskId,
-          slug: slugify(task.title),
-        });
-      }
+      workspace = await this.workspace.provision(provisionInput);
     } catch (err) {
+      // Best-effort teardown using the predicted metadata. If git left a
+      // partial worktree dir, this cleans it up so the next retry isn't
+      // blocked by E_WORKTREE_EXISTS.
+      const partial: ProvisionedWorkspace =
+        workspaceKindResolved === "worktree"
+          ? {
+              kind: "worktree",
+              path: predicted.path,
+              branch: predicted.branch,
+              repoPath: project!.path,
+            }
+          : { kind: "tool_sandbox", path: predicted.path };
+      await this.workspace.teardown(partial).catch((tdErr) =>
+        console.error(`[dispatcher] teardown after provision failure for ${taskId}:`, tdErr),
+      );
+      this.inFlightAborts.delete(taskId);
       await this.failDeveloperTask(
         task,
         agent,
@@ -610,47 +701,6 @@ export class Dispatcher {
     }
 
     this.workspaceByTaskId.set(taskId, workspace);
-
-    // Register the AbortController BEFORE we write in_progress so a cancel
-    // that lands in this window can still find something to abort. The
-    // controller stays in the map until the finally{} block after execute().
-    // Pre-register so handleCancelBroadcast (which fires sync from the
-    // cancel_task broadcast) has a handle even if its broadcast arrives
-    // before adapter.execute is called.
-    const abortController = new AbortController();
-    this.inFlightAborts.set(taskId, abortController);
-
-    // -- 3. Persist workspace metadata + transition to in_progress ---
-    // Conditional UPDATE so if handleCancelTask already flipped the row to
-    // `cancelled` before we claimed it (narrow race between the dispatcher
-    // picking the task up and the user tapping Reject/Cancel), this write is
-    // a no-op and we bail out instead of silently overwriting the cancel.
-    const claimed = await this.db
-      .update(tasks)
-      .set({
-        status: "in_progress",
-        workspaceKind: workspace.kind,
-        workspacePath: workspace.path,
-        workspaceBranch: workspace.branch ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, taskId), ne(tasks.status, "cancelled")))
-      .returning({ id: tasks.id });
-
-    if (claimed.length === 0) {
-      // The cancel path won. Our pre-registered controller has already been
-      // aborted by handleCancelBroadcast; cleanup + bail.
-      this.inFlightAborts.delete(taskId);
-      await this.logEvent(
-        taskId,
-        "cancelled",
-        agent.id,
-        "Developer task cancelled before start",
-        { specialty, reason: "cancelled before in_progress" },
-      );
-      await this.drainDeveloperQueue(slotKey, agent);
-      return;
-    }
 
     await this.logEvent(taskId, "started", agent.id, `Developer task started (${specialty})`, {
       workspaceKind: workspace.kind,

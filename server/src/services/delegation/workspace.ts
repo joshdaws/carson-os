@@ -101,6 +101,22 @@ export class WorkspaceProvider {
       : this.provisionToolSandbox(input);
   }
 
+  /**
+   * Predict where a workspace WILL live, without doing any IO. Used by the
+   * dispatcher to pre-claim the task row in 'in_progress' with the eventual
+   * path/branch BEFORE calling provision(), so a crash during provision
+   * leaves enough metadata for boot recovery to teardown the partial
+   * workspace instead of orphaning it forever (TODO-5: workspace provision
+   * crash-safety).
+   */
+  predictMetadata(input: ProvisionInput): { path: string; branch?: string } {
+    if (input.kind === "worktree") {
+      const path = resolve(join(this.worktreeRoot(input.projectName), input.runId));
+      return { path, branch: `carson/${input.slug}` };
+    }
+    return { path: resolve(join(this.sandboxRoot(), input.runId)) };
+  }
+
   async teardown(workspace: ProvisionedWorkspace): Promise<void> {
     if (!workspace.path) return;
     if (workspace.kind === "worktree") {
