@@ -610,6 +610,32 @@ async function main() {
     console.error("[engine] Phase-2 notification replay failed:", err);
   });
 
+  // v0.5.1 post-restart announcement (TODO-3.5): if the previous instance
+  // wrote `system.update_pending` before restarting AND we came back up at
+  // the expected version, queue a one-shot in-voice "update applied"
+  // message from CoS to the requesting member. Must run AFTER
+  // multiRelay.startAll() so multiRelay.sendMessage can actually reach
+  // the user — running earlier would silently fail and defer the
+  // announcement to the NEXT boot, defeating the feature on the very
+  // boot it's meant to handle.
+  void import("./services/system-update-check.js").then(
+    ({ announceUpdateApplied }) =>
+      announceUpdateApplied(db, {
+        processMessage: (p) =>
+          constitutionEngine.processMessage({
+            ...p,
+            channel: p.channel as "telegram" | "web",
+          }),
+        sendToUser: (agentId, telegramUserId, text) =>
+          multiRelay.sendMessage(agentId, telegramUserId, text),
+      }).catch((err) =>
+        console.warn(
+          "[update-check] boot announcement failed:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      ),
+  );
+
   // Hourly sweep of expired hire proposals. Boot-time pass already fired
   // inside recoverStuckTasks; this catches anything that expires during a
   // long-running session (past the 24h TTL) without waiting for the next
@@ -686,6 +712,20 @@ async function main() {
     compilationAgent,
   });
   scheduler.start();
+
+  // v0.5.1: kick off a non-blocking update check at boot so the CoS knows
+  // about pending updates on the first conversation, not 60s after boot.
+  // Inner function self-throttles to 24h via instance_settings TTL.
+  if (process.env.CARSONOS_DISABLE_UPDATE_CHECK !== "1") {
+    void import("./services/system-update-check.js")
+      .then(({ checkForUpdate }) => checkForUpdate(db))
+      .catch((err) =>
+        console.warn(
+          "[update-check] boot check failed:",
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
+  }
 
   // Start listening on loopback only
   server.listen(config.port, "127.0.0.1", () => {

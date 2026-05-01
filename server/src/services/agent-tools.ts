@@ -198,7 +198,22 @@ export const STAFF_TOOLS: ToolDefinition[] = [
   },
 ];
 
-export const AGENT_TOOLS: ToolDefinition[] = [...SELF_TOOLS, ...STAFF_TOOLS];
+/**
+ * System-level tools — touch the host process (e.g., restart for an update).
+ * Stricter trust gate than STAFF_TOOLS: requires CoS AND a parent-role member.
+ * A kid asking the CoS to update CarsonOS gets politely refused; a parent
+ * asking gets the actual restart.
+ */
+export const SYSTEM_TOOLS: ToolDefinition[] = [
+  {
+    name: "apply_system_update",
+    description:
+      "Apply the available CarsonOS update. Pulls main, installs dependencies, and restarts the family runtime. The host will go offline briefly during the restart; the family will see bots stop responding for ~30-60 seconds. Only call this when a parent has explicitly asked you to apply the update — kids cannot trigger it (the tool will refuse). Returns immediately with 'restart in progress'; the actual restart happens in a detached subprocess. After the restart you'll come back up and tell the family what changed (the boot path queues that announcement automatically).",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+];
+
+export const AGENT_TOOLS: ToolDefinition[] = [...SELF_TOOLS, ...STAFF_TOOLS, ...SYSTEM_TOOLS];
 
 // ── Handler ───────────────────────────────────────────────────────
 
@@ -211,6 +226,42 @@ export async function handleAgentTool(
   const staffToolNames = STAFF_TOOLS.map((t) => t.name);
   if (staffToolNames.includes(name) && !ctx.isChiefOfStaff) {
     return { content: "Only the Chief of Staff can manage other agents.", is_error: true };
+  }
+
+  // Gate system tools (apply_system_update) to CoS + parent-role member.
+  // A kid chatting with Carson can't trigger the family runtime to restart;
+  // they get a polite "ask a parent" refusal. The member-role lookup is
+  // cheap and the refusal message tells the agent how to proceed.
+  const systemToolNames = SYSTEM_TOOLS.map((t) => t.name);
+  if (systemToolNames.includes(name)) {
+    if (!ctx.isChiefOfStaff) {
+      return {
+        content:
+          "apply_system_update is only available to the Chief of Staff. Personal agents can ask CoS to apply the update on their member's behalf, but only if a parent is asking.",
+        is_error: true,
+      };
+    }
+    // Scope the lookup with householdId — defense-in-depth so a CoS in
+    // household A can never authorize an update on behalf of a member from
+    // household B even if memberId somehow gets crossed. Single-family
+    // CarsonOS rarely sees this race, but the guard is one extra clause.
+    const [member] = await ctx.db
+      .select({ role: familyMembers.role, name: familyMembers.name })
+      .from(familyMembers)
+      .where(and(
+        eq(familyMembers.id, ctx.memberId),
+        eq(familyMembers.householdId, ctx.householdId),
+      ))
+      .limit(1);
+    if (!member) {
+      return { content: "Could not resolve the requesting member.", is_error: true };
+    }
+    if (member.role !== "parent") {
+      return {
+        content: `${member.name} is a ${member.role}, not a parent. Updates can only be applied at a parent's request — politely tell them to ask a parent instead.`,
+        is_error: true,
+      };
+    }
   }
 
   switch (name) {
@@ -226,8 +277,116 @@ export async function handleAgentTool(
     case "list_agent_tools": return handleListAgentTools(ctx, input);
     case "grant_tool_to_agent": return handleGrantToolToAgent(ctx, input);
     case "revoke_tool_from_agent": return handleRevokeToolFromAgent(ctx, input);
+    case "apply_system_update": return handleApplySystemUpdate(ctx);
     default: return { content: `Unknown agent tool: ${name}`, is_error: true };
   }
+}
+
+// ── apply_system_update handler ────────────────────────────────────
+
+/**
+ * Apply the pending CarsonOS update by writing a `update_pending` state
+ * row and spawning `./scripts/update-service.sh` as a detached subprocess.
+ *
+ * The detached spawn matters: the script will eventually run
+ * `launchctl bootstrap` to restart `com.carsonos.server`, which kills THIS
+ * process. By detaching with `stdio: 'ignore'` we ensure the script
+ * survives the parent exit and completes the restart.
+ *
+ * The handler returns immediately with "restart in progress" so the
+ * agent has a final response to give the user before their session dies.
+ * The post-restart announcement (TODO-3.5) is what closes the loop in
+ * voice on the new instance.
+ */
+async function handleApplySystemUpdate(ctx: AgentToolContext): Promise<ToolResult> {
+  // Resolve which update we're applying. Read the live state — don't
+  // trust the agent's prompt-bound copy of from/to, which could be stale
+  // if the user reshipped between the CoS reading the prompt and calling
+  // the tool.
+  const { readUpdateAvailable, writeUpdatePending } = await import(
+    "./system-update-check.js"
+  );
+  const available = await readUpdateAvailable(ctx.db);
+  if (!available) {
+    return {
+      content:
+        "No CarsonOS update is currently available. The update-check may not have run yet, or the system is already current. Try again later or ask the user if there's an update they're expecting.",
+      is_error: true,
+    };
+  }
+
+  // Locate the script. Resolve from the running server's __dirname so
+  // we work both in tsx-watch (running from server/src/) and after a
+  // tsc build (running from server/dist/). The script lives at the repo
+  // root: server/src/services/.. → repo root.
+  const { spawn } = await import("node:child_process");
+  const { join } = await import("node:path");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const scriptPath = join(import.meta.dirname, "..", "..", "..", "scripts", "update-service.sh");
+
+  // Capture the script's stdout + stderr to a timestamped log so partial
+  // failures (git pull error, pnpm install error, launchctl kickstart
+  // error) leave a forensic trail. Without this redirect the script
+  // ran with stdio:'ignore' and no logs landed anywhere — debugging
+  // a half-applied update would require re-running the script by hand.
+  const logDir = join(os.homedir(), ".carsonos", "logs");
+  fs.mkdirSync(logDir, { recursive: true });
+  const tsForFile = new Date().toISOString().replace(/[:.]/g, "-");
+  const logPath = join(logDir, `update-${tsForFile}.log`);
+
+  // Spawn FIRST. Only after the OS confirms the child started do we
+  // write update_pending — otherwise a missing/EACCES script would
+  // leave a poison row in instance_settings that makes the next CoS
+  // turn re-propose the update against a system that won't apply it.
+  let child: ReturnType<typeof spawn>;
+  try {
+    const logFd = fs.openSync(logPath, "a");
+    child = spawn(scriptPath, [], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+    child.unref();
+    // The fd is now owned by the spawned child via dup2 inside spawn —
+    // close our reference so the parent doesn't keep it open.
+    fs.closeSync(logFd);
+  } catch (err) {
+    return {
+      content: `Failed to spawn update script: ${err instanceof Error ? err.message : String(err)}. No update was triggered. Verify ${scriptPath} exists and is executable.`,
+      is_error: true,
+    };
+  }
+
+  // Spawn succeeded (the OS reported a pid). Now persist update_pending
+  // so the post-restart announcement can fire. If this DB write fails,
+  // the update will still apply but the new instance won't know to
+  // announce it — log loudly so the operator can investigate.
+  try {
+    await writeUpdatePending(ctx.db, {
+      from: available.from,
+      to: available.to,
+      changelogExcerpt: available.changelogExcerpt,
+      requestedAt: new Date().toISOString(),
+      householdId: ctx.householdId,
+      requestedByMemberId: ctx.memberId,
+    });
+  } catch (err) {
+    console.error(
+      `[apply-update] CRITICAL: spawn succeeded but writeUpdatePending failed:`,
+      err,
+      `— the restart will proceed but the post-restart announcement will not fire.`,
+    );
+    // Don't abort — the update IS in flight, the user just won't get
+    // the in-voice announcement on the new instance.
+  }
+
+  console.log(
+    `[apply-update] kicked off update v${available.from} → v${available.to} (requested by member ${ctx.memberId}) — pid ${child.pid}, log ${logPath}`,
+  );
+
+  return {
+    content: `Restart in progress. Pulling main, installing dependencies, and restarting com.carsonos.server. Tell ${ctx.memberName} the family runtime will be offline briefly (about 30-60 seconds) while it updates from v${available.from} to v${available.to}, then comes back up. After the restart, you'll automatically tell them what changed. (Script log: ${logPath})`,
+  };
 }
 
 // ── Self-management handlers ──────────────────────────────────────

@@ -44,6 +44,7 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
+import { readUpdateAvailable } from "./system-update-check.js";
 import { loadUserMd, loadPersonalityMd, slugifyName } from "./identity-files.js";
 import { activityLog, toolSecrets } from "@carsonos/db";
 import { decryptSecret, redactSecrets } from "./custom-tools/secrets.js";
@@ -605,6 +606,24 @@ export class ConstitutionEngine {
     const userMdContent = this.dataDir ? loadUserMd(this.dataDir, memberSlug) : null;
     const personalityMdContent = this.dataDir ? loadPersonalityMd(this.dataDir, agentSlug) : null;
 
+    // Chief-of-Staff-only sections. Determined here so we can decide
+    // whether to fetch the (DB-backed) update-available state — personal
+    // agents and specialists never see it.
+    const isCoSForPrompt = agent.isHeadButler || agent.staffRole === "head_butler";
+    let updateAvailable = null as Awaited<ReturnType<typeof readUpdateAvailable>>;
+    if (isCoSForPrompt) {
+      try {
+        updateAvailable = await readUpdateAvailable(this.db);
+      } catch (err) {
+        // Don't block a turn on instance_settings read errors. CoS just
+        // won't surface the update on this turn; next turn retries.
+        console.warn(
+          "[constitution-engine] readUpdateAvailable failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
     const systemPrompt = compileSystemPrompt({
       mode: "chat",
       roleContent: agent.roleContent ?? "",
@@ -625,6 +644,13 @@ export class ConstitutionEngine {
       enabledSkills: enabledSkills ?? null,
       householdName: household?.name ?? null,
       householdMembers: allMembers ?? null,
+      updateAvailable: updateAvailable
+        ? {
+            from: updateAvailable.from,
+            to: updateAvailable.to,
+            changelogExcerpt: updateAvailable.changelogExcerpt,
+          }
+        : null,
     });
     perf.promptMs = Date.now() - promptStart;
 
