@@ -28,9 +28,15 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { instanceSettings } from "@carsonos/db";
+import {
+  conversations,
+  familyMembers,
+  instanceSettings,
+  messages,
+  staffAgents,
+} from "@carsonos/db";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -87,12 +93,17 @@ export async function checkForUpdate(
   options: CheckOptions = {},
 ): Promise<UpdateAvailable | null> {
   // Cache gate: skip the network call if we ran in the last 24h, unless
-  // the caller forces a fresh check.
+  // the caller forces a fresh check. The `delta >= 0` clause guards
+  // against clock skew — a future `lastAt` (NTP correction backwards,
+  // operator setting the system clock forward then back) would otherwise
+  // make `delta < TTL` pass and pin the cache until wall-clock catches
+  // up, which can be effectively forever.
   if (!options.force) {
     const last = await readSetting(db, KEY_LAST_CHECKED);
     if (last && typeof last === "object" && "at" in last) {
       const lastAt = new Date((last as { at: string }).at).getTime();
-      if (Number.isFinite(lastAt) && Date.now() - lastAt < CHECK_TTL_MS) {
+      const delta = Date.now() - lastAt;
+      if (Number.isFinite(lastAt) && delta >= 0 && delta < CHECK_TTL_MS) {
         // Cache hit. Return the previously-recorded available state if any.
         const cached = await readSetting(db, KEY_UPDATE_AVAILABLE);
         return isUpdateAvailable(cached) ? cached : null;
@@ -191,7 +202,11 @@ export async function clearUpdatePending(db: Db): Promise<void> {
  * and the sender delivers the result via the matching telegram bot.
  */
 export interface AnnounceUpdateAppliedDeps {
-  /** ConstitutionEngine.processMessage, narrowed. */
+  /** ConstitutionEngine.processMessage, narrowed. The channel is chosen
+   *  here based on the member's primary push transport: "telegram" when
+   *  telegramUserId is set, otherwise "web". The web path doesn't push —
+   *  processMessage's persistence into the conversation IS the delivery
+   *  (the user sees it on next UI open). */
   processMessage: (input: {
     agentId: string;
     memberId: string;
@@ -199,7 +214,10 @@ export interface AnnounceUpdateAppliedDeps {
     message: string;
     channel: "telegram" | "web";
   }) => Promise<{ blocked?: boolean; response?: string }>;
-  /** multiRelay.sendMessage(agentId, telegramUserId, text). */
+  /** multiRelay.sendMessage(agentId, telegramUserId, text). Only invoked
+   *  when channel === "telegram"; web members are delivered passively
+   *  via the conversation persistence above. Signal-only members fall
+   *  through to web for now (TODO-6 handles Signal explicitly). */
   sendToUser: (
     agentId: string,
     telegramUserId: string,
@@ -266,12 +284,7 @@ export async function announceUpdateApplied(
     return;
   }
 
-  // Look up the household's CoS and the requesting member's telegram id.
-  // Local imports kept here so the static import surface of system-update-
-  // check.ts stays minimal.
-  const { staffAgents, familyMembers } = await import("@carsonos/db");
-  const { eq, and } = await import("drizzle-orm");
-
+  // Look up the household's CoS and the requesting member.
   const [cos] = await db
     .select({ id: staffAgents.id })
     .from(staffAgents)
@@ -306,13 +319,12 @@ export async function announceUpdateApplied(
     await clearUpdatePending(db);
     return;
   }
-  if (!member.telegramUserId) {
-    console.warn(
-      `[update-check] post-restart: ${member.name} has no telegram_user_id; skipping announcement`,
-    );
-    await clearUpdatePending(db);
-    return;
-  }
+  // Pick the member's primary push channel. Telegram if a telegramUserId
+  // is set; otherwise fall back to web — processMessage's persistence
+  // into the web conversation IS the delivery (the user sees it on
+  // next UI open). Signal-only members fall through to web for now;
+  // explicit signal-push delivery is TODO-6.
+  const channel: "telegram" | "web" = member.telegramUserId ? "telegram" : "web";
 
   // Build a plain-prose system trigger. The trigger format mirrors
   // wakeDelegator's pattern: tagged key:value lines, no sentinel format,
@@ -338,7 +350,7 @@ export async function announceUpdateApplied(
       memberId: member.id,
       householdId: pending.householdId,
       message: trigger,
-      channel: "telegram",
+      channel,
     });
     if (result.blocked) {
       console.warn("[update-check] post-restart: engine blocked the announcement turn");
@@ -352,10 +364,31 @@ export async function announceUpdateApplied(
       console.warn("[update-check] post-restart: engine returned empty response");
       return;
     }
-    await deps.sendToUser(cos.id, member.telegramUserId, text);
+    if (channel === "telegram") {
+      // member.telegramUserId is non-null here (the channel pick above
+      // gates on it). Push via the agent's bot.
+      await deps.sendToUser(cos.id, member.telegramUserId!, text);
+    } else {
+      // For web, processMessage already persisted the assistant response
+      // into the web conversation row; no push needed. But it ALSO
+      // persisted our trigger as role="user" before generating the
+      // response, and the trigger is system-injected — not a real user
+      // keystroke. Leaving it in the conversation would show the user a
+      // user-bubble with the raw trigger text the next time they open
+      // the UI. Strip it. Telegram doesn't need this scrub: the
+      // telegram client renders bot replies and doesn't surface the
+      // user-side history of bot conversations to its viewer.
+      await stripWebChannelTrigger(
+        db,
+        cos.id,
+        member.id,
+        pending.householdId,
+        trigger,
+      );
+    }
     await clearUpdatePending(db);
     console.log(
-      `[update-check] post-restart announcement delivered to ${member.name} (v${pending.from} → v${current})`,
+      `[update-check] post-restart announcement delivered to ${member.name} via ${channel} (v${pending.from} → v${current})`,
     );
   } catch (err) {
     console.warn(
@@ -494,6 +527,52 @@ async function writeSetting(db: Db, key: string, value: unknown): Promise<void> 
 
 async function deleteSetting(db: Db, key: string): Promise<void> {
   await db.delete(instanceSettings).where(eq(instanceSettings.key, key));
+}
+
+/**
+ * Remove the system-injected trigger row that processMessage wrote into
+ * the web conversation as role="user" before generating its response.
+ * Used only on the web announcement path; telegram doesn't need it
+ * because the telegram viewer shows bot replies, not the user-side
+ * history of bot conversations.
+ */
+async function stripWebChannelTrigger(
+  db: Db,
+  agentId: string,
+  memberId: string,
+  householdId: string,
+  trigger: string,
+): Promise<void> {
+  // The (agentId, memberId, householdId, channel) tuple is unique per
+  // ConstitutionEngine.getOrCreateConversation, but the schema has no
+  // UNIQUE constraint to enforce it. Order by lastMessageAt desc so we
+  // always target the freshest row even if duplicates ever creep in
+  // (legacy data, future schema change). Otherwise the strip could
+  // delete from an old conversation while the trigger sits visible in
+  // the active one.
+  const [conv] = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.agentId, agentId),
+        eq(conversations.memberId, memberId),
+        eq(conversations.householdId, householdId),
+        eq(conversations.channel, "web"),
+      ),
+    )
+    .orderBy(desc(conversations.lastMessageAt))
+    .limit(1);
+  if (!conv) return;
+  await db
+    .delete(messages)
+    .where(
+      and(
+        eq(messages.conversationId, conv.id),
+        eq(messages.role, "user"),
+        eq(messages.content, trigger),
+      ),
+    );
 }
 
 function isUpdateAvailable(v: unknown): v is UpdateAvailable {

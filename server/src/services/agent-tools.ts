@@ -358,14 +358,27 @@ async function handleApplySystemUpdate(ctx: AgentToolContext): Promise<ToolResul
   }
 
   // Spawn succeeded (the OS reported a pid). Now persist update_pending
-  // so the post-restart announcement can fire. If this DB write fails,
-  // the update will still apply but the new instance won't know to
-  // announce it — log loudly so the operator can investigate.
+  // so the post-restart announcement can fire. Re-read update_available
+  // immediately before the write to pick up any concurrent scheduler-
+  // tick rewrite — e.g., main bumped from 0.5.1 to 0.5.2 between our
+  // pre-spawn read and now. The script is going to git-pull main, so
+  // the freshest known `to` matches what we'll actually land on; using
+  // the stale snapshot would make announceUpdateApplied see
+  // cmp(current, pending.to) > 0 on the post-restart boot and skip the
+  // announcement. If the row was cleared between read and re-read (the
+  // tick decided we're current — rare, only if local VERSION moved),
+  // fall back to the snapshot since spawn already kicked off and we
+  // still want the announcement to fire. SQLite is single-writer, so
+  // re-reading right before write narrows the race window to negligible.
+  // If this write fails, the update will still apply but the new
+  // instance won't know to announce it — log loudly.
   try {
+    const fresh = await readUpdateAvailable(ctx.db);
+    const target = fresh ?? available;
     await writeUpdatePending(ctx.db, {
-      from: available.from,
-      to: available.to,
-      changelogExcerpt: available.changelogExcerpt,
+      from: target.from,
+      to: target.to,
+      changelogExcerpt: target.changelogExcerpt,
       requestedAt: new Date().toISOString(),
       householdId: ctx.householdId,
       requestedByMemberId: ctx.memberId,
