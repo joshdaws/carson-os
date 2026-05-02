@@ -27,6 +27,10 @@ export interface ReindexHealthSource {
   getReindexHealth(): {
     errorCount: number;
     lastError: { at: string; message: string } | null;
+    /** v0.5.2: consecutive failures since last success. */
+    consecutiveFailures?: number;
+    /** v0.5.2: ISO timestamp when subprocess attempts resume; null when not backed off. */
+    backoffUntil?: string | null;
   };
 }
 
