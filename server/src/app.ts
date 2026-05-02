@@ -97,9 +97,18 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   // caller has to know + spoof the header explicitly, and browser-initiated
   // requests from our UI always include it automatically. GET/HEAD/OPTIONS
   // bypass the check so read-only traffic stays unaffected.
+  //
+  // /api/approval/redeem is exempted (v0.5.2 / TODO-6): it is reached via a
+  // Signal deep-link that opens an external browser session NOT logged in
+  // to the dashboard, so the Origin/Referer almost certainly won't match.
+  // The HMAC-signed token in the request body IS the auth for that
+  // endpoint — the same-origin gate would just block the documented
+  // tunneled flow (CARSONOS_PUBLIC_BASE_URL) without adding security.
   const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  const SAME_ORIGIN_EXEMPT = new Set(["/approval/redeem"]);
   app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     if (!STATE_CHANGING.has(req.method)) return next();
+    if (SAME_ORIGIN_EXEMPT.has(req.path)) return next();
     const origin = req.get("origin") ?? "";
     const referer = req.get("referer") ?? "";
     const refererOk = allowedOrigins.some((o) => referer.startsWith(o + "/"));
