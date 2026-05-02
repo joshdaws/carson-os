@@ -4,6 +4,33 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.2] - 2026-05-02
+
+### Security
+
+- **`/api/settings` no longer returns saved secret values in responses.** `GET /api/settings`, `PUT /api/settings/:key`, and `PUT /api/settings` were echoing the stored values of `ANTHROPIC_API_KEY` and `GROQ_API_KEY` back to the dashboard — anyone who could reach loopback (a local Bash agent, a misconfigured tunnel) could read the family's API keys by hitting the endpoint. Responses now redact saved secret values to empty strings and surface a separate `savedSecretKeys` array so the UI can show "Saved" / "Replace saved key" without hydrating the secret into the DOM. The Settings UI's password fields stay empty for already-saved secrets and only allow reveal-eye on user-typed replacement values. Closes issue #47.
+
+### Added
+
+- **Signal-only family members can approve hire proposals.** Before, the proposal card never landed for Signal users (no inline buttons), and the reconciler retried forever with no user-facing surface. Now the agent's Signal message includes two HMAC-signed deep-links — Approve and Reject. Tap either one, hit a confirmation page, click Confirm. Same materialization path as Telegram inline buttons or the Web UI: a Developer or specialist materializes, the original user request auto-delegates if one was passed, and the agent's next conversation history reflects the hire (so the next turn doesn't say "X isn't on staff yet"). For phones outside the LAN, set `CARSONOS_PUBLIC_BASE_URL` to a tunnel URL (Tailscale, cloudflared) and the deep-links work from anywhere.
+- **`/api/health` actually verifies Anthropic reachability now.** The v0.5.1 fix made the probe stop lying about the CLI; this release replaces the unconditional `return true` with a real HEAD probe to api.anthropic.com (5s timeout, 30s cache, both success and failure cached so a flap doesn't hammer the network). 5xx responses count as unhealthy — when Anthropic's edge is up but broken, `/api/health` reports the truth instead of misleading on-call.
+- **QMD reindex backs off after consecutive failures.** Three subprocess failures in a row pause `qmd update` invocations for five minutes; the first success resets state. Without this, every save/update/delete fired a fresh subprocess even when the binary had been failing in a loop. `getReindexHealth()` now also surfaces `consecutiveFailures` and `backoffUntil` so `/api/health` shows the pause state without grepping logs.
+
+### Fixed
+
+- **Cancelling a specialist task actually stops the SDK query now.** Previously, hitting cancel on a Specialist (Lex, Nora, any non-Developer) flipped the DB status row to `cancelled` but left the underlying agent query running until it finished — burning tokens and then dropping the result. The Developer path got this fix in v0.4; specialists got the matching abort-controller wiring this release.
+- **System-update self-awareness hardening.** The CoS-proposes-update flow shipped in v0.5.1 had four loose ends: dynamic imports re-resolving on every scheduler tick, a tick/apply race that could write a stale changelog excerpt to the pending row, the post-restart announcement hardcoded to Telegram (web members got nothing), and a clock-skew window that could pin the cache forever after an NTP correction backwards. All four closed.
+- **Web-channel announcements no longer show a system-trigger as a user message.** When the post-restart announcement targets a web member, the engine persists the trigger as a `role="user"` row before generating the response. The web UI would have shown the operator a "user" bubble they didn't type. The web announce path now scrubs the trigger row after delivery.
+- **Bulk `PUT /api/settings` hydrates platform secrets immediately.** The single-key path already patched `process.env` on save so voice transcription would pick up a new `GROQ_API_KEY` without a restart; the bulk path was missing that step. Now both paths behave identically.
+
+### Changed
+
+- **Dispatcher's two execute paths collapsed into one.** `executeDeveloperTask` and `executeSpecialistTask` shared most of their bodies (started log, tool resolution, adapter execute, cancel re-read, summary card, finalize, drain) but each ran its own copy. New `WorkspaceStrategy` descriptor + a single `runStrategy` method run the shared pipeline once. Future cancel/wake/notifier refinements touch one method instead of two. Behavior is preserved end-to-end (test count went up because each previously-PR'd item brought its own coverage).
+
+### Why this matters
+
+v0.5.2 closes the loop on a feature the v0.5 family runtime had been advertising but quietly half-supporting: Signal as a first-class transport. Before this release, Signal users could chat but couldn't approve hire proposals — meaning a Signal-only member couldn't get a tutor, a coach, or a Developer at all without switching to Telegram. Now they can. Plus the operator-facing signals (`/api/health`, QMD reindex backoff) tell the truth instead of lying or staying silent, the dispatcher refactor sets up cancel/wake/budget refinements to land in a single place going forward, and the Settings API stops handing your API keys back to anyone who hits loopback.
+
 ## [0.5.1] - 2026-05-01
 
 ### Added
