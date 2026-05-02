@@ -686,6 +686,20 @@ export class QmdMemoryProvider implements MemoryProvider {
    * paths (save/update/delete) call it via `void this.reindex().catch(...)`.
    */
   reindex(): Promise<void> {
+    // Backoff gate: skip the subprocess invocation while we're inside
+    // the cooldown window after consecutive failures. The caller still
+    // gets a resolved promise so save/update/delete doesn't block.
+    //
+    // The gate lives here (in the public entry) rather than inside
+    // runReindex so the synchronous `return Promise.resolve()` doesn't
+    // collide with `this.reindexInFlight = this.runReindex()` below.
+    // (Bug fix: the previous implementation set reindexInFlight=null
+    // synchronously inside runReindex, but reindex() then overwrote
+    // it with the resolved promise — wedging the coalescer until
+    // process restart. See review: codex P1, 2026-05-02.)
+    if (this.reindexBackoffUntil && Date.now() < this.reindexBackoffUntil) {
+      return Promise.resolve();
+    }
     if (this.reindexInFlight) {
       this.reindexQueued = true;
       return this.reindexInFlight;
@@ -721,18 +735,10 @@ export class QmdMemoryProvider implements MemoryProvider {
   }
 
   private async runReindex(): Promise<void> {
-    // Backoff gate: skip the subprocess invocation while we're inside
-    // the cooldown window after consecutive failures. The caller still
-    // gets a resolved promise so the save/update/delete flow doesn't
-    // block, and the queued follow-up bookkeeping below still runs so
-    // the next request after the window can re-attempt cleanly.
-    const now = Date.now();
-    if (this.reindexBackoffUntil && now < this.reindexBackoffUntil) {
-      this.reindexInFlight = null;
-      this.reindexQueued = false;
-      return;
-    }
-
+    // Backoff gate moved to reindex() (the public entry) so the
+    // synchronous-skip path doesn't fight with reindexInFlight
+    // assignment. By the time runReindex starts, the gate has
+    // already passed.
     try {
       await execFileAsync(this.qmdBin, ["update"], {
         timeout: UPDATE_TIMEOUT_MS,
