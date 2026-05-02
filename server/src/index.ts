@@ -518,32 +518,55 @@ async function main() {
           .from(familyMembers)
           .where(eq(familyMembers.id, task.requestedBy))
           .limit(1);
-        if (!member?.telegramUserId) return;
+        if (!member) return;
+        // Pick the member's primary push channel (matches notifierSend
+        // routing). v0.5.2 / TODO-6: Signal-only members reach here
+        // when they approved via the deep-link flow; their follow-up
+        // confirmation goes via Signal too.
+        const channel: "telegram" | "signal" | null = member.telegramUserId
+          ? "telegram"
+          : member.signalUuid
+            ? "signal"
+            : null;
+        if (!channel) return;
 
-        // Stamp the approval card with "✅ Approved" and strip the buttons.
-        // Telegram-path approvals already do this via ctx.editMessageText in
-        // the callback_query handler; this is idempotent-enough (editing to
-        // the same text just returns "not modified"), and it's the ONLY way
-        // to update the card when approval came through the Web UI instead.
-        // Previously the web-approval path left live Approve/Reject buttons
-        // sitting in Telegram — user would tap one later and race the flow.
-        const [notif] = await db
-          .select({ deliveredMessageId: delegationNotifications.deliveredMessageId, payload: delegationNotifications.payload })
-          .from(delegationNotifications)
-          .where(
-            and(
-              eq(delegationNotifications.taskId, data.taskId),
-              eq(delegationNotifications.kind, "hire_proposal"),
-            ),
-          )
-          .limit(1);
-        if (notif?.deliveredMessageId) {
-          const originalText =
-            (notif.payload && typeof notif.payload === "object" && "text" in (notif.payload as Record<string, unknown>)
-              ? String((notif.payload as Record<string, unknown>).text ?? "")
-              : "") || "";
-          const stampedText = `✅ Approved\n\n${originalText}`;
-          await multiRelay.editMessage(task.agentId, member.telegramUserId, notif.deliveredMessageId, stampedText).catch(() => {});
+        // Send a follow-up confirmation message via the member's channel.
+        // Telegram supports markdown-ish formatting; Signal renders plain
+        // text (signalRelay handles any escaping).
+        const sendConfirmation = async (text: string): Promise<void> => {
+          if (channel === "telegram") {
+            await multiRelay.sendMessage(task.agentId, member.telegramUserId!, text);
+          } else {
+            await signalRelay.sendMessage(task.agentId, member.signalUuid!, text);
+          }
+        };
+
+        // Telegram-only: stamp the approval card with "✅ Approved" and
+        // strip the buttons. The callback_query handler already does
+        // this in-place when approval came via Telegram inline button;
+        // this path covers Web-UI and Signal-deep-link approvals where
+        // the original Telegram card (if there was one) would otherwise
+        // sit with live buttons. Signal cards are plain text — nothing
+        // to edit on Signal.
+        if (channel === "telegram") {
+          const [notif] = await db
+            .select({ deliveredMessageId: delegationNotifications.deliveredMessageId, payload: delegationNotifications.payload })
+            .from(delegationNotifications)
+            .where(
+              and(
+                eq(delegationNotifications.taskId, data.taskId),
+                eq(delegationNotifications.kind, "hire_proposal"),
+              ),
+            )
+            .limit(1);
+          if (notif?.deliveredMessageId) {
+            const originalText =
+              (notif.payload && typeof notif.payload === "object" && "text" in (notif.payload as Record<string, unknown>)
+                ? String((notif.payload as Record<string, unknown>).text ?? "")
+                : "") || "";
+            const stampedText = `✅ Approved\n\n${originalText}`;
+            await multiRelay.editMessage(task.agentId, member.telegramUserId!, notif.deliveredMessageId, stampedText).catch(() => {});
+          }
         }
 
         // Pull originalUserRequest out of the hire-proposal metadata. If the
@@ -564,7 +587,7 @@ async function main() {
           const text =
             `✅ **${data.name}** is on staff — ${data.specialty} specialist.\n\n` +
             `Tell me what you want them to work on and I'll delegate it.`;
-          await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          await sendConfirmation(text);
           // Thread the announcement into the agent's conversation so the
           // next turn's resumed SDK session sees "X is on staff" in
           // history. Without this, the system prompt built at session-
@@ -576,7 +599,7 @@ async function main() {
             developerAgentId: data.developerAgentId,
             name: data.name,
             specialty: data.specialty,
-          });
+          }, channel);
           return;
         }
 
@@ -600,13 +623,13 @@ async function main() {
             `✅ **${data.name}** is on staff.\n\n` +
             `I tried to auto-delegate your request (_${originalUserRequest.slice(0, 120)}${originalUserRequest.length > 120 ? "…" : ""}_) but hit: ${delegated.error}\n\n` +
             `Just tell me what you want them to do and I'll retry.`;
-          await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+          await sendConfirmation(text);
           await threadHireAnnouncement(db, task.agentId, member.id, text, {
             kind: "hire-approved-auto-delegate-failed",
             developerAgentId: data.developerAgentId,
             name: data.name,
             specialty: data.specialty,
-          });
+          }, channel);
           return;
         }
 
@@ -614,14 +637,14 @@ async function main() {
           `✅ **${data.name}** is on staff — putting them on it now.\n\n` +
           `_${originalUserRequest}_\n\n` +
           `I'll ping you when they're done. Say "kill ${data.name}'s task" to cancel.`;
-        await multiRelay.sendMessage(task.agentId, member.telegramUserId, text);
+        await sendConfirmation(text);
         await threadHireAnnouncement(db, task.agentId, member.id, text, {
           kind: "hire-approved-auto-delegated",
           developerAgentId: data.developerAgentId,
           name: data.name,
           specialty: data.specialty,
           runId: delegated.runId,
-        });
+        }, channel);
       } catch (err) {
         console.error("[events] hire.approved follow-up failed:", err);
       }
@@ -854,15 +877,16 @@ async function threadHireAnnouncement(
   memberId: string,
   text: string,
   metadata: Record<string, unknown>,
+  channel: "telegram" | "signal" = "telegram",
 ): Promise<void> {
   try {
     // Conversation key in the runtime is (agentId, memberId, householdId,
-    // channel) — see ConstitutionEngine.getOrCreateConversation. The
-    // next turn that must see this announcement is the resumed Telegram
-    // turn, so scope to channel="telegram" explicitly. Writing to the
-    // wrong conversation row (e.g., a web conversation when the next
-    // turn comes through Telegram) reintroduces the stale-staff-cache
-    // bug we're closing.
+    // channel) — see ConstitutionEngine.getOrCreateConversation. Scope
+    // to the channel the user actually transacts on so the next turn's
+    // resumed SDK session sees "X is on staff" in history. Writing to
+    // the wrong conversation row reintroduces the stale-staff-cache bug
+    // (Carson telling the user "X isn't on staff yet" right after he
+    // confirmed the hire).
     const [conversation] = await db
       .select({ id: conversations.id })
       .from(conversations)
@@ -870,7 +894,7 @@ async function threadHireAnnouncement(
         and(
           eq(conversations.agentId, agentId),
           eq(conversations.memberId, memberId),
-          eq(conversations.channel, "telegram"),
+          eq(conversations.channel, channel),
         ),
       )
       .orderBy(desc(conversations.lastMessageAt))
