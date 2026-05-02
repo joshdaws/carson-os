@@ -28,7 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import {
   conversations,
@@ -543,6 +543,13 @@ async function stripWebChannelTrigger(
   householdId: string,
   trigger: string,
 ): Promise<void> {
+  // The (agentId, memberId, householdId, channel) tuple is unique per
+  // ConstitutionEngine.getOrCreateConversation, but the schema has no
+  // UNIQUE constraint to enforce it. Order by lastMessageAt desc so we
+  // always target the freshest row even if duplicates ever creep in
+  // (legacy data, future schema change). Otherwise the strip could
+  // delete from an old conversation while the trigger sits visible in
+  // the active one.
   const [conv] = await db
     .select({ id: conversations.id })
     .from(conversations)
@@ -554,6 +561,7 @@ async function stripWebChannelTrigger(
         eq(conversations.channel, "web"),
       ),
     )
+    .orderBy(desc(conversations.lastMessageAt))
     .limit(1);
   if (!conv) return;
   await db
