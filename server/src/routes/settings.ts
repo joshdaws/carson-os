@@ -155,6 +155,21 @@ export function createSettingsRoutes(db: Db): Router {
         });
       }
 
+      // Same env-hydration as the single-key PUT path: a deliberate UI
+      // save should take effect in the running process immediately.
+      // Without this, a bulk-saved GROQ_API_KEY would write to the DB
+      // but voice transcription wouldn't pick it up until the next
+      // server restart. (Review fix: Claude I1, 2026-05-02.)
+      if (isHydratableEnvKey(key)) {
+        if (typeof value === "string" && value.length > 0) {
+          process.env[key] = value;
+          console.log(`[settings] ${key} updated and applied to process.env`);
+        } else {
+          delete process.env[key];
+          console.log(`[settings] ${key} cleared from process.env`);
+        }
+      }
+
       results[key] = value;
     }
 

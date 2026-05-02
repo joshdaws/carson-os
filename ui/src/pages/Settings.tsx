@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -114,6 +114,22 @@ function PasswordField({
 }) {
   const [visible, setVisible] = useState(false);
   const [replacing, setReplacing] = useState(false);
+
+  // Reset the "replacing" flag when the parent clears `dirty` after a
+  // successful save (isDirty transitions from true to false). Without
+  // this, the field would stay stuck in replacement mode after Save —
+  // showing an empty input and the "will replace saved key" warning
+  // even though the new key is already saved. (Review fix: Codex P3,
+  // 2026-05-02.)
+  const prevIsDirtyRef = useRef(isDirty);
+  useEffect(() => {
+    if (prevIsDirtyRef.current && !isDirty && replacing) {
+      setReplacing(false);
+      setVisible(false);
+    }
+    prevIsDirtyRef.current = isDirty;
+  }, [isDirty, replacing]);
+
   const canReveal = value.length > 0;
   const showSavedState = hasSavedValue && !isDirty && !replacing;
   const markedForClear = hasSavedValue && isDirty && value.length === 0;
