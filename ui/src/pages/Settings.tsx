@@ -20,6 +20,9 @@ import {
   Save,
   Check,
   Mic,
+  Pencil,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -28,7 +31,13 @@ interface SettingsMap {
   [key: string]: string;
 }
 
+interface SettingsResponse {
+  settings: SettingsMap;
+  savedSecretKeys?: string[];
+}
+
 type AdapterType = "claude-code" | "codex" | "anthropic-sdk";
+type SecretSettingKey = "ANTHROPIC_API_KEY" | "GROQ_API_KEY";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -89,39 +98,162 @@ function PasswordField({
   value,
   onChange,
   placeholder,
+  hasSavedValue = false,
+  isDirty = false,
+  onClearSaved,
+  onCancelChange,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  hasSavedValue?: boolean;
+  isDirty?: boolean;
+  onClearSaved?: () => void;
+  onCancelChange?: () => void;
 }) {
   const [visible, setVisible] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const canReveal = value.length > 0;
+  const showSavedState = hasSavedValue && !isDirty && !replacing;
+  const markedForClear = hasSavedValue && isDirty && value.length === 0;
+  const showInput = !showSavedState && !markedForClear;
+
+  const cancelChange = () => {
+    setVisible(false);
+    setReplacing(false);
+    onCancelChange?.();
+  };
 
   return (
     <div>
-      <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
-        {label}
-      </label>
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Input
-            type={visible ? "text" : "password"}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={placeholder}
-            className="pr-9"
-            style={{ borderColor: "#ddd5c8" }}
-          />
-          <button
-            type="button"
-            onClick={() => setVisible(!visible)}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2"
-            style={{ color: "#8a8070" }}
-          >
-            {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-          </button>
-        </div>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <label className="text-xs font-medium" style={{ color: "#5a5a5a" }}>
+          {label}
+        </label>
+        {showSavedState && (
+          <span className="inline-flex items-center gap-1 text-[11px]" style={{ color: "#2e7d32" }}>
+            <Check className="h-3 w-3" /> Saved
+          </span>
+        )}
       </div>
+
+      {showSavedState && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div
+            className="h-9 flex-1 rounded-md border px-3 flex items-center justify-between"
+            style={{ borderColor: "#ddd5c8", background: "#faf8f4" }}
+          >
+            <span className="text-sm tracking-[0.18em]" style={{ color: "#8a8070" }}>
+              •••• •••• ••••
+            </span>
+            <span className="text-[11px]" style={{ color: "#7a7060" }}>
+              hidden
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 text-xs"
+              style={{ borderColor: "#ddd5c8" }}
+              onClick={() => setReplacing(true)}
+            >
+              <Pencil className="h-3.5 w-3.5 mr-1" /> Replace
+            </Button>
+            {onClearSaved && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 text-xs"
+                style={{ borderColor: "#ead2c8", color: "#8a3a28" }}
+                onClick={() => {
+                  setVisible(false);
+                  setReplacing(false);
+                  onClearSaved();
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" /> Clear
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {markedForClear && (
+        <div
+          className="rounded-md border px-3 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          style={{ borderColor: "#ead2c8", background: "#fff8f5" }}
+        >
+          <div>
+            <p className="text-xs font-medium" style={{ color: "#8a3a28" }}>
+              Saved key will be cleared when you save changes.
+            </p>
+            <p className="text-[11px]" style={{ color: "#9a6b5e" }}>
+              The current key remains active until Save.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs self-start sm:self-auto"
+            style={{ borderColor: "#ead2c8" }}
+            onClick={cancelChange}
+          >
+            <RotateCcw className="h-3.5 w-3.5 mr-1" /> Undo
+          </Button>
+        </div>
+      )}
+
+      {showInput && (
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Input
+                type={visible ? "text" : "password"}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder={hasSavedValue ? "Paste replacement key" : placeholder}
+                className="pr-9"
+                style={{ borderColor: "#ddd5c8" }}
+                autoComplete="new-password"
+                spellCheck={false}
+              />
+              {canReveal && (
+                <button
+                  type="button"
+                  onClick={() => setVisible(!visible)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                  style={{ color: "#8a8070" }}
+                  aria-label={visible ? "Hide value" : "Show value"}
+                >
+                  {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              )}
+            </div>
+            {hasSavedValue && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 text-xs"
+                style={{ borderColor: "#ddd5c8" }}
+                onClick={cancelChange}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+          {hasSavedValue && (
+            <p className="text-[11px] mt-1.5" style={{ color: "#7a7060" }}>
+              Saving will replace the saved key. The current key remains active until Save.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -168,13 +300,14 @@ export function SettingsPage() {
   const [dirty, setDirty] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState<Record<string, boolean>>({});
 
-  const { data: settings, isLoading } = useQuery<SettingsMap>({
+  const { data: settingsResponse, isLoading } = useQuery<SettingsResponse>({
     queryKey: ["settings"],
     queryFn: async () => {
-      const res = await api.get<{ settings: SettingsMap }>("/settings");
-      return res.settings;
+      return api.get<SettingsResponse>("/settings");
     },
   });
+  const settings = settingsResponse?.settings;
+  const savedSecretKeys = new Set(settingsResponse?.savedSecretKeys ?? []);
 
   const updateSetting = useMutation({
     mutationFn: ({ key, value }: { key: string; value: string }) =>
@@ -205,6 +338,21 @@ export function SettingsPage() {
   const setVal = (key: string, value: string) => {
     setDirty((prev) => ({ ...prev, [key]: value }));
   };
+
+  const resetVal = (key: string) => {
+    setDirty((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const secretVal = (key: SecretSettingKey): string => {
+    if (key in dirty) return dirty[key];
+    return "";
+  };
+
+  const hasSavedSecret = (key: SecretSettingKey): boolean => savedSecretKeys.has(key);
 
   const saveKey = (key: string) => {
     if (key in dirty) {
@@ -292,9 +440,13 @@ export function SettingsPage() {
         {showApiKey && (
           <PasswordField
             label="ANTHROPIC_API_KEY"
-            value={val("ANTHROPIC_API_KEY")}
+            value={secretVal("ANTHROPIC_API_KEY")}
             onChange={(v) => setVal("ANTHROPIC_API_KEY", v)}
             placeholder="sk-ant-..."
+            hasSavedValue={hasSavedSecret("ANTHROPIC_API_KEY")}
+            isDirty={"ANTHROPIC_API_KEY" in dirty}
+            onClearSaved={() => setVal("ANTHROPIC_API_KEY", "")}
+            onCancelChange={() => resetVal("ANTHROPIC_API_KEY")}
           />
         )}
 
@@ -361,9 +513,13 @@ export function SettingsPage() {
       <SettingSection title="Voice & Media" icon={Mic}>
         <PasswordField
           label="GROQ_API_KEY"
-          value={val("GROQ_API_KEY")}
+          value={secretVal("GROQ_API_KEY")}
           onChange={(v) => setVal("GROQ_API_KEY", v)}
           placeholder="gsk_..."
+          hasSavedValue={hasSavedSecret("GROQ_API_KEY")}
+          isDirty={"GROQ_API_KEY" in dirty}
+          onClearSaved={() => setVal("GROQ_API_KEY", "")}
+          onCancelChange={() => resetVal("GROQ_API_KEY")}
         />
         <p className="text-xs" style={{ color: "#7a7060" }}>
           Used by Groq Whisper to transcribe voice messages and audio

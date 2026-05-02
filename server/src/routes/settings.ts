@@ -13,6 +13,35 @@ import type { Db } from "@carsonos/db";
 import { instanceSettings, households } from "@carsonos/db";
 import { isHydratableEnvKey } from "../services/env-hydration.js";
 
+export const SECRET_SETTING_KEYS = ["ANTHROPIC_API_KEY", "GROQ_API_KEY"] as const;
+
+export function isSecretSettingKey(key: string): boolean {
+  return (SECRET_SETTING_KEYS as readonly string[]).includes(key);
+}
+
+export function publicSettingsFromRows(
+  rows: Array<{ key: string; value: unknown }>,
+): { settings: Record<string, unknown>; savedSecretKeys: string[] } {
+  const settings: Record<string, unknown> = {};
+  const savedSecretKeys: string[] = [];
+
+  for (const row of rows) {
+    if (isSecretSettingKey(row.key) && typeof row.value === "string" && row.value.length > 0) {
+      settings[row.key] = "";
+      savedSecretKeys.push(row.key);
+      continue;
+    }
+
+    settings[row.key] = row.value;
+  }
+
+  return { settings, savedSecretKeys };
+}
+
+function publicSettingsFromEntries(entries: Array<[string, unknown]>) {
+  return publicSettingsFromRows(entries.map(([key, value]) => ({ key, value })));
+}
+
 export function createSettingsRoutes(db: Db): Router {
   const router = Router();
 
@@ -20,11 +49,7 @@ export function createSettingsRoutes(db: Db): Router {
   // Augments instance settings with household data as fallbacks
   router.get("/", async (_req, res) => {
     const rows = await db.select().from(instanceSettings).all();
-
-    const settings: Record<string, unknown> = {};
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
+    const { settings, savedSecretKeys } = publicSettingsFromRows(rows);
 
     // Include household name and timezone if not overridden in instance settings
     if (!settings["HOUSEHOLD_NAME"] || !settings["TIMEZONE"]) {
@@ -35,7 +60,7 @@ export function createSettingsRoutes(db: Db): Router {
       }
     }
 
-    res.json({ settings });
+    res.json({ settings, savedSecretKeys });
   });
 
   // PUT /:key -- update a single setting
@@ -96,7 +121,7 @@ export function createSettingsRoutes(db: Db): Router {
         console.log(`[settings] ${key} cleared from process.env`);
       }
     }
-    res.json({ settings: { [key]: value } });
+    res.json(publicSettingsFromEntries([[key, value]]));
   });
 
   // PUT / -- bulk update settings
@@ -133,7 +158,7 @@ export function createSettingsRoutes(db: Db): Router {
       results[key] = value;
     }
 
-    res.json({ settings: results });
+    res.json(publicSettingsFromEntries(Object.entries(results)));
   });
 
   // GET /validate-path?path=... -- check if a directory exists on disk
