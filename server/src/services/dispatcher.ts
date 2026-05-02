@@ -733,12 +733,13 @@ export class Dispatcher {
 
     this.workspaceByTaskId.set(taskId, workspace);
 
-    // The pre-execute abort controller registered above gets re-registered
-    // by runStrategy below. The earlier set was for the (rare) provision-
-    // throws case so cancel during `git worktree add` had a handle; once
-    // provision succeeded the controller's job is over until adapter.execute
-    // starts. runStrategy drives its own abort lifecycle.
-    this.inFlightAborts.delete(taskId);
+    // Keep the existing abortController registered across the handoff to
+    // runStrategy. Previously this path deleted it and runStrategy
+    // re-registered, opening a window between provision-end and the
+    // re-registration where a cancel would find no controller in
+    // inFlightAborts and silently lose. (Codex P2 review fix, 2026-05-02:
+    // "Preserve provision-time cancellation state".) runStrategy reuses
+    // the passed controller and clears it in the same finally block.
 
     // Workspace teardown policy (unchanged):
     //   Do NOT tear down on success — tool_sandbox needs the built files
@@ -765,7 +766,11 @@ export class Dispatcher {
       inlineAdapterContent: false,
       drainQueue: () => this.drainDeveloperQueue(slotKey, agent),
     };
-    await this.runStrategy(task, agent, strategy);
+    // Pass the existing abortController so runStrategy reuses it instead
+    // of creating a new one. Closes the gap where a cancel landing
+    // between provision-end and runStrategy's internal re-registration
+    // would find no entry in inFlightAborts.
+    await this.runStrategy(task, agent, strategy, abortController);
   }
 
   private async drainDeveloperQueue(
@@ -988,6 +993,12 @@ export class Dispatcher {
     task: NonNullable<Awaited<ReturnType<Dispatcher["loadTask"]>>>,
     agent: Parameters<Dispatcher["executeDeveloperTask"]>[1],
     strategy: WorkspaceStrategy,
+    /** Optional pre-registered AbortController. The Developer path passes
+     *  the controller it set during workspace provision so cancel
+     *  semantics stay continuous across the boundary. The Specialist path
+     *  has no pre-execute work to cancel, so it doesn't pass one and
+     *  runStrategy creates its own. */
+    preRegisteredAbort?: AbortController,
   ): Promise<void> {
     const taskId = task.id;
 
@@ -1037,8 +1048,13 @@ export class Dispatcher {
     const startedAt = new Date();
     const userMsg = task.description ? `${task.title}\n\n${task.description}` : task.title;
 
-    const abortController = new AbortController();
-    this.inFlightAborts.set(taskId, abortController);
+    // Reuse the caller's pre-registered controller when present (Developer
+    // path: covers the provision → runStrategy seam). Otherwise create a
+    // fresh one and register it (Specialist path: no pre-execute work).
+    const abortController = preRegisteredAbort ?? new AbortController();
+    if (!preRegisteredAbort) {
+      this.inFlightAborts.set(taskId, abortController);
+    }
 
     let adapterResult: { content: string } | null = null;
     let adapterError: string | null = null;
