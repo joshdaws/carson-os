@@ -360,8 +360,120 @@ describe("QmdMemoryProvider.getReindexHealth", () => {
       expect(health.lastError === null || typeof health.lastError.at === "string").toBe(
         true,
       );
+      // v0.5.2 fields.
+      expect(health.consecutiveFailures).toBe(0);
+      expect(health.backoffUntil).toBeNull();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Reindex backoff (PR #41 deferred) ─────────────────────────────
+
+describe("QmdMemoryProvider — reindex subprocess + backoff", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "qmd-reindex-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("increments errorCount when the qmd binary is unavailable (real subprocess failure)", async () => {
+    // Inject a non-existent binary path so execFile fails for real.
+    // No vi.mock — the test exercises the actual child_process path.
+    const provider = new QmdMemoryProvider(tmp, undefined, {
+      qmdBin: "/nonexistent/qmd-bin-for-test",
+    });
+
+    const before = provider.getReindexHealth();
+    expect(before.errorCount).toBe(0);
+
+    await provider.reindex();
+
+    const after = provider.getReindexHealth();
+    expect(after.errorCount).toBe(1);
+    expect(after.consecutiveFailures).toBe(1);
+    expect(after.lastError).not.toBeNull();
+    expect(after.lastError!.message).toMatch(/qmd-bin-for-test|ENOENT|spawn/i);
+    // Below the threshold — no backoff yet.
+    expect(after.backoffUntil).toBeNull();
+  });
+
+  it("trips into backoff after three consecutive failures", async () => {
+    const provider = new QmdMemoryProvider(tmp, undefined, {
+      qmdBin: "/nonexistent/qmd-bin-for-test",
+    });
+
+    await provider.reindex();
+    await provider.reindex();
+    await provider.reindex();
+
+    const health = provider.getReindexHealth();
+    expect(health.consecutiveFailures).toBe(3);
+    expect(health.errorCount).toBe(3);
+    expect(health.backoffUntil).not.toBeNull();
+    // backoffUntil is within ~5min of now (allow generous slack).
+    const at = new Date(health.backoffUntil!).getTime();
+    const delta = at - Date.now();
+    expect(delta).toBeGreaterThan(0);
+    expect(delta).toBeLessThanOrEqual(5 * 60 * 1000 + 1000);
+  });
+
+  it("subsequent reindex calls during the backoff window do not increment errorCount", async () => {
+    const provider = new QmdMemoryProvider(tmp, undefined, {
+      qmdBin: "/nonexistent/qmd-bin-for-test",
+    });
+
+    // Trip into backoff (3 failures).
+    await provider.reindex();
+    await provider.reindex();
+    await provider.reindex();
+    const tripped = provider.getReindexHealth();
+    expect(tripped.errorCount).toBe(3);
+    expect(tripped.backoffUntil).not.toBeNull();
+
+    // Further calls during the window are no-ops — no subprocess spawn,
+    // no errorCount bump, no consecutiveFailures bump.
+    await provider.reindex();
+    await provider.reindex();
+    const after = provider.getReindexHealth();
+    expect(after.errorCount).toBe(3);
+    expect(after.consecutiveFailures).toBe(3);
+    expect(after.backoffUntil).toBe(tripped.backoffUntil);
+  });
+
+  it("resets consecutiveFailures + clears backoff on first successful run", async () => {
+    // Use the real `qmd` binary if available; otherwise skip. The success
+    // case is the harder branch to exercise without an environmental
+    // dependency. We stub the bin to a no-op shell command to keep the
+    // test hermetic.
+    const noopBin = process.platform === "win32" ? "cmd" : "true";
+    const provider = new QmdMemoryProvider(tmp, undefined, {
+      qmdBin: noopBin,
+    });
+
+    // Manually seed a failure history to verify the reset path.
+    (
+      provider as unknown as {
+        reindexConsecutiveFailures: number;
+        reindexBackoffUntil: number | null;
+        reindexErrorCount: number;
+      }
+    ).reindexConsecutiveFailures = 2;
+    (provider as unknown as { reindexBackoffUntil: number | null }).reindexBackoffUntil =
+      null; // not yet in backoff window — let the success path run
+
+    await provider.reindex();
+
+    const health = provider.getReindexHealth();
+    expect(health.consecutiveFailures).toBe(0);
+    expect(health.backoffUntil).toBeNull();
+    // errorCount is cumulative, not reset on success. Stays at 0 here
+    // because we seeded only consecutive (in-flight tracker), not
+    // errorCount.
   });
 });
