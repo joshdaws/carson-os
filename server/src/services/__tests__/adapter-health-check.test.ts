@@ -29,14 +29,27 @@ describe("ClaudeAgentSdkAdapter.healthCheck", () => {
     expect(await adapter.healthCheck()).toBe(true);
   });
 
-  it("treats any HTTP status as reachable, not just 2xx", async () => {
-    // The probe is checking DNS+TCP+TLS reachability — endpoint
-    // semantics (404 vs 200) are irrelevant.
-    for (const status of [200, 401, 404, 405, 500]) {
+  it("treats client-status responses as reachable (2xx/3xx/4xx)", async () => {
+    // 401/404/405 still count as reachable — they prove DNS+TCP+TLS+the
+    // Anthropic edge is up. We're verifying the network path, not
+    // endpoint semantics.
+    for (const status of [200, 301, 401, 404, 405]) {
       const fetcher = (async () =>
         new Response(null, { status })) as typeof fetch;
       const adapter = new ClaudeAgentSdkAdapter({ fetcher });
       expect(await adapter.healthCheck()).toBe(true);
+    }
+  });
+
+  it("treats 5xx responses as unhealthy (Anthropic edge up but broken)", async () => {
+    // 5xx means the edge accepted the connection but Anthropic itself
+    // is failing (overload, deploy bug, dependency outage). SDK calls
+    // would fail too — don't lie to /api/health.
+    for (const status of [500, 502, 503, 504]) {
+      const fetcher = (async () =>
+        new Response(null, { status })) as typeof fetch;
+      const adapter = new ClaudeAgentSdkAdapter({ fetcher });
+      expect(await adapter.healthCheck()).toBe(false);
     }
   });
 

@@ -901,10 +901,14 @@ export class ClaudeAgentSdkAdapter implements Adapter {
         method: "HEAD",
         signal: ctrl.signal,
       });
-      // Any HTTP response — 200, 404, 401, 405, etc. — proves DNS+TCP+TLS
-      // reachability. We're verifying the network path, not endpoint
-      // semantics.
-      return res.status > 0;
+      // Client-side responses (2xx/3xx/4xx) prove DNS+TCP+TLS+the
+      // Anthropic edge is up — we're verifying the network path, not
+      // endpoint semantics, so 401/404/405 still count as reachable.
+      // 5xx however means the edge is up but Anthropic is broken
+      // (overload, deploy bug, dependency outage), and SDK calls would
+      // fail too. Report unhealthy so /api/health doesn't lie. (Codex
+      // P2 review fix, 2026-05-02.)
+      return res.status > 0 && res.status < 500;
     } catch {
       return false;
     } finally {
