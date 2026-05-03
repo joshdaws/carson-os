@@ -102,10 +102,7 @@ export function Layout() {
     <>
       {/* Header */}
       <div className="px-5 py-5 border-b border-[#2a3040]">
-        <h1
-          className="text-lg font-bold tracking-wide"
-          style={{ color: "#e8dfd0", fontFamily: "Georgia, 'Times New Roman', serif" }}
-        >
+        <h1 className="text-lg font-bold tracking-wide font-serif text-carson-text-on-navy">
           CarsonOS
         </h1>
         <p className="text-[11px] uppercase tracking-[2px] mt-1 text-carson-text-on-navy-muted">

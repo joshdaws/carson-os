@@ -684,13 +684,7 @@ function ToolDetailPanel({
               <>
                 <div className="flex items-center gap-2 mb-1">
                   <KindIcon kind={tool.kind} />
-                  <h2
-                    className="text-[18px] font-normal"
-                    style={{
-                      color: "#1a1f2e",
-                      fontFamily: "Georgia, 'Times New Roman', serif",
-                    }}
-                  >
+                  <h2 className="text-[18px] font-normal font-serif text-carson-text-primary">
                     {tool.name}
                   </h2>
                   <StatusBadge status={tool.status} />
@@ -1672,10 +1666,7 @@ export default function ToolsPage() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <Wrench className="h-5 w-5 text-carson-text-muted" />
-            <h2
-              className="text-[22px] font-normal"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
               Custom Tools
             </h2>
           </div>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IconButton } from "@/components/ui/icon-button";
 import { PageShell } from "@/components/page-shell";
+import { FormField } from "@/components/ui/form-field";
 import {
   Select,
   SelectContent,
@@ -407,10 +408,7 @@ export function SettingsPage() {
         <div>
           <div className="flex items-center gap-2">
             <SettingsIcon className="h-5 w-5 text-carson-text-muted" />
-            <h2
-              className="text-[22px] font-normal"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
               Settings
             </h2>
           </div>
@@ -432,15 +430,15 @@ export function SettingsPage() {
 
       {/* Adapter Configuration */}
       <SettingSection title="Adapter Configuration" icon={Bot}>
-        <div>
-          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
-            Subprocess Adapter
-          </label>
+        <FormField label="Subprocess Adapter" controlId="settings-adapter">
           <Select
             value={currentAdapter}
             onValueChange={(v) => setVal("ADAPTER_TYPE", v)}
           >
-            <SelectTrigger style={{ borderColor: "#ddd5c8" }}>
+            <SelectTrigger
+              id="settings-adapter"
+              style={{ borderColor: "#ddd5c8" }}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -456,7 +454,7 @@ export function SettingsPage() {
               ))}
             </SelectContent>
           </Select>
-        </div>
+        </FormField>
 
         {showApiKey && (
           <PasswordField
@@ -486,26 +484,23 @@ export function SettingsPage() {
 
       {/* Household */}
       <SettingSection title="Household" icon={Users}>
-        <div>
-          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
-            Household Name
-          </label>
+        <FormField label="Household Name" name="household-name" autoComplete="organization">
           <Input
             value={val("HOUSEHOLD_NAME")}
             onChange={(e) => setVal("HOUSEHOLD_NAME", e.target.value)}
             placeholder="The Smith Family"
             style={{ borderColor: "#ddd5c8" }}
           />
-        </div>
-        <div>
-          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
-            Timezone
-          </label>
+        </FormField>
+        <FormField label="Timezone" controlId="settings-timezone">
           <Select
             value={val("TIMEZONE") || "America/New_York"}
             onValueChange={(v) => setVal("TIMEZONE", v)}
           >
-            <SelectTrigger style={{ borderColor: "#ddd5c8" }}>
+            <SelectTrigger
+              id="settings-timezone"
+              style={{ borderColor: "#ddd5c8" }}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -516,7 +511,7 @@ export function SettingsPage() {
               ))}
             </SelectContent>
           </Select>
-        </div>
+        </FormField>
         <div className="flex justify-end">
           <SaveButton
             dirty={"HOUSEHOLD_NAME" in dirty || "TIMEZONE" in dirty}

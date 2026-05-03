@@ -98,10 +98,7 @@ export function InterviewOverlay({
           style={{ borderColor: "#ddd5c8", background: "#ffffff" }}
         >
           <div>
-            <h3
-              className="text-base font-normal"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h3 className="text-base font-normal font-serif text-carson-text-primary">
               {title}
             </h3>
             {subtitle && (

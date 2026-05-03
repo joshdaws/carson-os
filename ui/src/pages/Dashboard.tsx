@@ -9,6 +9,7 @@ import { ChevronDown, ChevronRight, Link as LinkIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
 import { PageShell } from "@/components/page-shell";
+import { Button } from "@/components/ui/button";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -99,7 +100,6 @@ const C = {
   statusActive: "#4a7c59",
   statusPaused: "#b8860b",
   statusIdle: "var(--carson-text-muted)",
-  serif: "Georgia, 'Times New Roman', serif",
 } as const;
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -107,6 +107,22 @@ const C = {
 function formatTime(dateStr: string | number): string {
   const d = typeof dateStr === "number" ? new Date(dateStr) : new Date(dateStr);
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// Time-aware greeting for the empty-instance hero. The butler should know
+// what part of the day it is — DESIGN.md Aesthetic Direction: "walking into
+// a hotel lobby where someone already knows your name."
+//
+// Bands: 0-4 = evening (late-night/pre-dawn — "Good evening" is the
+// least-wrong of the three available greetings), 5-11 = morning,
+// 12-17 = afternoon, 18-23 = evening. Exported so the v0.5.5 regression
+// test can pin the band edges.
+export function getGreeting(now: Date = new Date()): string {
+  const hour = now.getHours();
+  if (hour < 5) return "Good evening";
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function formatStaffRole(role: string, isChief: boolean): string {
@@ -171,24 +187,21 @@ function FamilyMemberCard({
 
   return (
     <div
-      className="relative rounded-lg px-4 py-3 min-w-[140px] text-center"
+      className="relative rounded-lg px-4 py-3 min-w-[140px] text-left"
       data-member-id={member.id}
       style={{
         border: isParent ? `2px solid ${C.navy}` : `1.5px solid ${C.border}`,
         background: isParent ? C.headButlerBg : C.cardBg,
       }}
     >
-      <div
-        className="text-sm font-semibold"
-        style={{ color: C.navy }}
-      >
+      <div className="text-sm font-semibold" style={{ color: C.navy }}>
         {member.name}
       </div>
 
-      <div className="mt-1">
+      <div className="mt-1 flex items-center gap-1.5">
         <Badge
           variant="outline"
-          className="text-[10px] px-2 py-0"
+          className="text-[11px] px-2 py-0"
           style={{
             borderColor: isParent ? C.burgundy : C.border,
             color: isParent ? C.burgundy : C.textMuted,
@@ -197,18 +210,15 @@ function FamilyMemberCard({
           {member.role === "parent" ? "Parent" : "Kid"}
         </Badge>
         {member.age && (
-          <span
-            className="text-[11px] ml-1.5"
-            style={{ color: C.textMuted }}
-          >
+          <span className="text-xs" style={{ color: C.textMuted }}>
             {member.age}
           </span>
         )}
       </div>
 
-      <div className="mt-1.5 text-[10px]" style={{ color: hasAgent ? C.burgundy : C.textFaint }}>
+      <div className="mt-1.5 text-xs" style={{ color: hasAgent ? C.burgundy : C.textFaint }}>
         {hasAgent ? (
-          <span className="flex items-center justify-center gap-1">
+          <span className="flex items-center gap-1">
             <LinkIcon className="h-2.5 w-2.5" />
             {linkedAgents.map((a) => a.name).join(", ")}
           </span>
@@ -301,7 +311,7 @@ function PersonalAgentCard({
   return (
     <Link
       to={`/staff/${agent.id}`}
-      className="block rounded-lg px-4 py-3 text-center transition-shadow hover:shadow-md"
+      className="block rounded-lg px-4 py-3 text-left transition-shadow hover:shadow-md"
       data-agent-id={agent.id}
       style={{
         border: isButler ? `2px solid ${C.headButlerBorder}` : `1.5px solid ${C.border}`,
@@ -318,10 +328,10 @@ function PersonalAgentCard({
       </div>
 
       {/* Role badge + status dot */}
-      <div className="flex items-center justify-center gap-2 mt-1.5">
+      <div className="flex items-center gap-2 mt-1.5">
         <Badge
           variant="secondary"
-          className="text-[10px] px-2 py-0"
+          className="text-[11px] px-2 py-0"
           style={{
             background: isButler ? C.burgundy : undefined,
             color: isButler ? "#fff" : undefined,
@@ -339,17 +349,14 @@ function PersonalAgentCard({
 
       {/* Personality not set hint */}
       {incomplete && !isButler && (
-        <div className="mt-1.5 text-[10px]" style={{ color: C.textFaint }}>
+        <div className="mt-1.5 text-xs" style={{ color: C.textFaint }}>
           Personality not set
         </div>
       )}
 
       {/* Assigned members */}
       {assignedMembers.length > 0 && (
-        <div
-          className="text-[10px] mt-1.5 italic"
-          style={{ color: C.textFaint }}
-        >
+        <div className="text-xs mt-1.5 italic" style={{ color: C.textFaint }}>
           {isButler ? "Manages the household" : assignedMembers.join(", ")}
         </div>
       )}
@@ -448,7 +455,7 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
   return (
     <Link
       to={`/staff/${agent.id}`}
-      className="block rounded-lg px-4 py-3 text-center min-w-[130px] transition-shadow hover:shadow-md"
+      className="block rounded-lg px-4 py-3 text-left min-w-[130px] transition-shadow hover:shadow-md"
       style={{
         border: `1.5px dashed ${C.border}`,
         background: C.cardBg,
@@ -458,10 +465,10 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
         {agent.name}
       </div>
 
-      <div className="flex items-center justify-center gap-2 mt-1.5">
+      <div className="flex items-center gap-2 mt-1.5">
         <Badge
           variant="outline"
-          className="text-[10px] px-2 py-0"
+          className="text-[11px] px-2 py-0"
           style={{ borderColor: C.textFaint, color: C.textSecondary }}
         >
           {formatStaffRole(agent.staffRole, agent.isHeadButler)}
@@ -475,7 +482,7 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
 
       {incomplete && (
         <div className="mt-1.5">
-          <Badge variant="warning" className="text-[9px] px-1.5 py-0">
+          <Badge variant="warning" className="text-[11px] px-1.5 py-0">
             Setup incomplete
           </Badge>
         </div>
@@ -484,7 +491,7 @@ function InternalAgentCard({ agent }: { agent: StaffAgent }) {
       {isWorking && (
         <div className="mt-2">
           <Progress value={60} max={100} className="h-1" />
-          <div className="text-[9px] mt-0.5" style={{ color: C.textFaint }}>
+          <div className="text-xs mt-0.5" style={{ color: C.textFaint }}>
             Working...
           </div>
         </div>
@@ -698,17 +705,25 @@ function TaskStatusBadge({ status }: { status: string }) {
 export function DashboardPage() {
   // ── Data fetching ──────────────────────────────────────────────
 
-  const { data: householdData } = useQuery<HouseholdData>({
-    queryKey: ["household"],
-    queryFn: () => api.get("/households/current"),
-    retry: false,
-  });
+  // status === "pending" means "still loading"; "success" / "error" both
+  // mean the query has settled. /households/current returns 404 on a
+  // brand-new install before onboarding, so we can't gate on data alone —
+  // we'd never trip the empty-instance hero in the exact case it was
+  // built for. Gating on `status !== "pending"` lets both empty-success
+  // and 404-error count as "we know the user has nothing yet."
+  const { data: householdData, status: householdStatus } =
+    useQuery<HouseholdData>({
+      queryKey: ["household"],
+      queryFn: () => api.get("/households/current"),
+      retry: false,
+    });
 
-  const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
-    queryKey: ["staff"],
-    queryFn: () => api.get("/staff"),
-    retry: false,
-  });
+  const { data: staffData, status: staffStatus } =
+    useQuery<{ staff: StaffAgent[] }>({
+      queryKey: ["staff"],
+      queryFn: () => api.get("/staff"),
+      retry: false,
+    });
 
   const householdId = householdData?.household?.id;
 
@@ -731,7 +746,11 @@ export function DashboardPage() {
   const staff = staffData?.staff || [];
   const tasks = tasksData?.tasks || [];
   const activity = activityData?.activity || [];
-  const householdName = householdData?.household?.name || "Household";
+  // Only fall back to a brand title when the household has no name yet —
+  // the old "Household" placeholder collided with the sidebar Household nav
+  // and made it impossible to tell which page you were on
+  // (impeccable critique 2026-05-03, P1).
+  const householdName = householdData?.household?.name || "Welcome to CarsonOS";
 
   const checklist = householdData?.checklist;
   const familyAgents = staff.filter((s) => s.visibility === "family");
@@ -740,16 +759,62 @@ export function DashboardPage() {
   const agentMemberMap = buildAgentMemberMap(staff);
   const projects = buildProjects(tasks, staff);
 
+  // Empty-instance detection. A fresh install has no members and no staff
+  // at all; everything below is "0 of these, 0 of those" and reads as a
+  // configuration form. We replace it with a single butler hero that
+  // greets the user and points at the one thing to do next.
+  //
+  // Gate on `staff.length` (all staff, not just family agents) so a user
+  // who has internal-only staff configured but no household members yet
+  // doesn't see the "tell Carson who lives here" hero while the sidebar
+  // lists their agents — that mismatch was flagged in the v0.5.5 review.
+  //
+  // Both queries must have SETTLED (success or error) — not just have
+  // truthy data — before we decide. /households/current 404s on a
+  // brand-new install, so a "data !== undefined" gate would never fire
+  // for the exact target scenario. Treating "error" as settled means the
+  // hero correctly fires when the household genuinely doesn't exist yet.
+  const dataLoaded =
+    householdStatus !== "pending" && staffStatus !== "pending";
+  const isEmptyInstance =
+    dataLoaded && members.length === 0 && staff.length === 0;
+
   // ── Render ────────────────────────────────────────────────────
+
+  if (isEmptyInstance) {
+    return (
+      <PageShell maxWidth="3xl">
+        <div className="pt-12 pb-10 text-center">
+          <h1 className="text-4xl sm:text-5xl font-normal font-serif text-carson-text-primary mb-4 leading-tight">
+            {getGreeting()}.
+          </h1>
+          <p className="text-base text-carson-text-body max-w-prose mx-auto leading-relaxed mb-10 px-4">
+            Your household isn't set up yet. Tell Carson who lives here,
+            and he'll take it from there.
+          </p>
+          <Link to="/household">
+            <Button
+              size="lg"
+              className="font-medium"
+              style={{
+                background: "var(--carson-navy)",
+                color: "var(--carson-cream)",
+              }}
+            >
+              Set up your household
+            </Button>
+          </Link>
+        </div>
+        {checklist && <OnboardingChecklist checklist={checklist} />}
+      </PageShell>
+    );
+  }
 
   return (
     <PageShell maxWidth="6xl">
       {/* Page header */}
       <div className="mb-6">
-        <h2
-          className="text-[22px] font-normal"
-          style={{ color: C.navy, fontFamily: C.serif }}
-        >
+        <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
           {householdName}
         </h2>
         <p className="text-[13px] mt-1" style={{ color: C.textSecondary }}>

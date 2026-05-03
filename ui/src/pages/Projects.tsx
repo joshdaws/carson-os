@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FormField } from "@/components/ui/form-field";
 import { PageShell } from "@/components/page-shell";
 import { FolderGit2, Plus, Trash2, Check, EyeOff } from "lucide-react";
 
@@ -132,7 +133,7 @@ export function ProjectsPage() {
     <PageShell maxWidth="5xl">
       <PageShell.Header>
         <div>
-          <h1 className="text-2xl font-bold mb-1" style={{ fontFamily: "Georgia, serif" }}>
+          <h1 className="text-2xl font-bold mb-1 font-serif">
             Projects
           </h1>
           <p className="text-sm text-carson-text-body">
@@ -153,59 +154,57 @@ export function ProjectsPage() {
         <Card className="mb-6">
           <CardContent className="p-5 space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-medium block mb-1 text-carson-text-body">Name</label>
+              <FormField label="Name" required name="project-name" autoComplete="off">
                 <Input
                   placeholder="homeschool-happy"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
-              </div>
-              <div>
-                <label className="text-xs font-medium block mb-1 text-carson-text-body">Default branch</label>
+              </FormField>
+              <FormField label="Default branch" name="project-branch" autoComplete="off">
                 <Input
                   placeholder="main"
                   value={form.defaultBranch}
                   onChange={(e) => setForm({ ...form, defaultBranch: e.target.value })}
                 />
-              </div>
+              </FormField>
             </div>
-            <div>
-              <label className="text-xs font-medium block mb-1 text-carson-text-body">
-                Absolute path <span className="text-carson-text-meta">(required)</span>
-              </label>
+            <FormField
+              label="Absolute path"
+              required
+              name="project-path"
+              autoComplete="off"
+              helper="Must exist on disk; the worktree provider needs read/write access here."
+            >
               <Input
                 placeholder="/Users/you/projects/homeschool-happy"
                 value={form.path}
                 onChange={(e) => setForm({ ...form, path: e.target.value })}
               />
-            </div>
+            </FormField>
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-medium block mb-1 text-carson-text-body">Test command</label>
+              <FormField label="Test command" name="project-test-cmd" autoComplete="off">
                 <Input
                   placeholder="pnpm test"
                   value={form.testCmd}
                   onChange={(e) => setForm({ ...form, testCmd: e.target.value })}
                 />
-              </div>
-              <div>
-                <label className="text-xs font-medium block mb-1 text-carson-text-body">Dev command</label>
+              </FormField>
+              <FormField label="Dev command" name="project-dev-cmd" autoComplete="off">
                 <Input
                   placeholder="pnpm dev"
                   value={form.devCmd}
                   onChange={(e) => setForm({ ...form, devCmd: e.target.value })}
                 />
-              </div>
+              </FormField>
             </div>
-            <div>
-              <label className="text-xs font-medium block mb-1 text-carson-text-body">Repo URL (optional)</label>
+            <FormField label="Repo URL (optional)" name="project-repo-url" autoComplete="url">
               <Input
                 placeholder="https://github.com/you/repo"
                 value={form.repoUrl}
                 onChange={(e) => setForm({ ...form, repoUrl: e.target.value })}
               />
-            </div>
+            </FormField>
             {createError && (
               <div className="text-sm text-red-600">{createError}</div>
             )}

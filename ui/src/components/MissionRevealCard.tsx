@@ -34,11 +34,8 @@ export function MissionRevealCard({
       }}
     >
       <p
-        className="text-lg leading-relaxed text-center italic"
-        style={{
-          fontFamily: "'Instrument Serif', Georgia, serif",
-          color: "var(--carson-text)",
-        }}
+        className="text-lg leading-relaxed text-center italic font-serif"
+        style={{ color: "var(--carson-text)" }}
       >
         {missionStatement}
       </p>
