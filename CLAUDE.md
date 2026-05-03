@@ -33,7 +33,7 @@ pnpm test          # run all tests
 ## Testing
 
 ```bash
-pnpm test                    # all tests (153 across 8 files)
+pnpm test                    # all tests (466 across 25 files)
 pnpm --filter @carsonos/server test  # server tests only
 ```
 

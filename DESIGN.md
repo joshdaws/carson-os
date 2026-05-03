@@ -38,9 +38,12 @@
 - **Approach:** Restrained -- 1 accent (navy) + warm neutrals. Color is rare and meaningful.
 
 ### CSS Custom Properties
+
+Defined in `ui/src/globals.css`. Use these via Tailwind classes (`text-carson-text-muted`, `bg-carson-ivory`, etc.) rather than inline hex literals — a future palette tweak should land in one place. Contrast ratios are verified against the carson palette and noted inline.
+
 ```css
 :root {
-  /* Primary */
+  /* Primary palette */
   --carson-navy:     #1a1f2e;  /* primary actions, buttons, headers, Carson avatar */
   --carson-cream:    #e8dfd0;  /* text on dark backgrounds, warm highlight */
 
@@ -51,18 +54,23 @@
   /* Borders */
   --carson-border:   #ddd5c8;  /* warm borders, dividers, input outlines */
 
-  /* Text */
-  --carson-text:     #2d2a26;  /* primary body text, warm near-black */
-  --carson-muted:    #6b6358;  /* secondary text, timestamps, captions (WCAG AA) */
+  /* Semantic text tokens (v0.5.3, issue #46).
+   * One source of truth per text role; pre-v0.5.3 pages used hard-coded hex
+   * like #8a8070 / #a09080 / #888 that failed AA on cream/white/navy. */
+  --carson-text-primary:        #1a1f2e;  /* 11.2:1 on ivory — page headings */
+  --carson-text-body:           #2d2a26;  /*  9.1:1 on cream — body copy */
+  --carson-text-muted:          #6b6358;  /*  5.1:1 on white, 4.7:1 on cream — AA */
+  --carson-text-meta:           #7a7060;  /*  4.5:1 on cream — AA threshold (small text only) */
+  --carson-text-on-navy:        #e8dfd0;  /* 11.6:1 on navy — sidebar / brand */
+  --carson-text-on-navy-muted:  #b8aa95;  /*  5.0:1 on navy — sidebar section labels */
 
-  /* Semantic */
-  --carson-success:  #3d7a5f;  /* confirmed, complete, active, online */
-  --carson-warning:  #c4882f;  /* attention needed, pending, due soon */
-  --carson-error:    #b54a4a;  /* failed, blocked, error, overdue */
+  /* Status semantics (all verified AA on white) */
+  --carson-success:  #2e7d32;  /* 4.7:1 — confirmed, complete, online */
+  --carson-warning:  #a06012;  /* 5.6:1 — attention needed, pending */
+  --carson-error:    #b54a4a;  /* 4.6:1 — failed, blocked, overdue */
 
-  /* Derived */
-  --carson-hover:    #141825;  /* navy darkened for hover states */
-  --carson-focus:    #1a1f2e33; /* navy at 20% opacity for focus rings */
+  /* Legacy alias kept for the v0.5.3 transition window (out-of-tree consumers). */
+  --carson-text:     var(--carson-text-body);
 }
 ```
 
@@ -155,3 +163,5 @@
 | 2026-04-07 | DM Sans for body | Clean, geometric, slightly rounder than Inter. Pairs with Instrument Serif. Not overused like Inter/Roboto. |
 | 2026-04-07 | No shadows, borders only | Cards use warm borders for hierarchy. Shadows feel cold/techy. Borders feel domestic. |
 | 2026-04-07 | CRUD table over card grid | For data entry in chat (member lists), user prefers standard table rows with pencil/trash icons over card-based layouts. The aesthetic comes from the palette, not the grid format. |
+| 2026-05-02 | Semantic text tokens replace single `--carson-muted` (v0.5.3) | One token per role (primary / body / muted / meta / on-navy / on-navy-muted) rather than one knob for all "muted" text. Sidebar section labels were the prompt — they were 2.38:1 (fail) on navy when reusing the cream-surface muted hex. Closes audit issue #46. |
+| 2026-05-02 | Shared UI primitives: PageShell, IconButton, FormField, ConfirmDialog (v0.5.3) | Pre-v0.5.3 every page hand-rolled its top inset, icon-button hit area, label/error markup, and destructive confirmation. Mobile clipped headings, icon-only controls were 28-36px with no accessible names, and three different confirmation patterns shipped side-by-side. Primitives live at `ui/src/components/page-shell.tsx` and `ui/src/components/ui/{icon-button,form-field,confirm-dialog}.tsx`. Closes audit issues #43, #45, #49, #50. |
