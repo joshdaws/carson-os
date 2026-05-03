@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, Link as LinkIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { OnboardingChecklist } from "@/components/OnboardingChecklist";
+import { PageShell } from "@/components/page-shell";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -75,7 +76,9 @@ interface ActivityEntry {
 }
 
 // ── Color palette ─────────────────────────────────────────────────
-// Warm Downton palette, consistent with Layout.tsx sidebar colors
+// Warm Downton palette, consistent with Layout.tsx sidebar colors.
+// v0.5.3: text colors point at the semantic --carson-text-* tokens
+// (issue #46) so contrast is AA-verified in one place.
 
 const C = {
   navy: "#1a1f2e",
@@ -86,8 +89,8 @@ const C = {
   burgundyDeep: "#6b4f3e",
   textPrimary: "#2c2c2c",
   textSecondary: "#6a6050",
-  textMuted: "#8a8070",
-  textFaint: "#a09080",
+  textMuted: "var(--carson-text-muted)",
+  textFaint: "var(--carson-text-meta)",
   border: "#ddd5c8",
   borderLight: "#eee8dd",
   cardBg: "#faf8f4",
@@ -95,7 +98,7 @@ const C = {
   headButlerBorder: "#8b6f4e",
   statusActive: "#4a7c59",
   statusPaused: "#b8860b",
-  statusIdle: "#8a8070",
+  statusIdle: "var(--carson-text-muted)",
   serif: "Georgia, 'Times New Roman', serif",
 } as const;
 
@@ -740,7 +743,7 @@ export function DashboardPage() {
   // ── Render ────────────────────────────────────────────────────
 
   return (
-    <div className="p-6 lg:p-8 max-w-7xl">
+    <PageShell maxWidth="6xl">
       {/* Page header */}
       <div className="mb-6">
         <h2
@@ -810,6 +813,6 @@ export function DashboardPage() {
           {/* Active Projects — hidden until delegation MVP */}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

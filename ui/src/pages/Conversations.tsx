@@ -4,7 +4,6 @@ import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,6 +16,8 @@ import {
 import { cn } from "@/lib/utils";
 import { MessageSquare, Send, User, Bot, ArrowLeft, Plus, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageShell } from "@/components/page-shell";
+import { IconButton } from "@/components/ui/icon-button";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -129,8 +130,8 @@ function ConversationRow({
     >
       <div className="flex items-center gap-2 mb-1">
         <div
-          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
-          style={{ background: "#f0ede6", color: "#8a8070" }}
+          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 text-carson-text-muted"
+          style={{ background: "#f0ede6" }}
         >
           {conversation.memberName.charAt(0)}
         </div>
@@ -138,15 +139,15 @@ function ConversationRow({
           <span className="font-medium text-sm truncate block" style={{ color: "#1a1f2e" }}>
             {conversation.memberName}
           </span>
-          <span className="text-[10px]" style={{ color: "#a09080" }}>
+          <span className="text-[10px] text-carson-text-meta">
             {conversation.agentName || "Unknown"} &middot; {conversation.channel}
           </span>
         </div>
-        <span className="text-[10px] shrink-0" style={{ color: "#a09080" }}>
+        <span className="text-[10px] shrink-0 text-carson-text-meta">
           {relativeTime(conversation.lastMessageAt ?? conversation.startedAt)}
         </span>
       </div>
-      <p className="text-xs truncate pl-9" style={{ color: "#8a8070" }}>
+      <p className="text-xs truncate pl-9 text-carson-text-muted">
         {conversation.lastMessage || "No messages yet"}
       </p>
     </button>
@@ -163,8 +164,8 @@ function MessageBubble({ message }: { message: Message }) {
     return (
       <div className="flex justify-center my-2">
         <span
-          className="text-[10px] px-3 py-1 rounded-full"
-          style={{ background: "#f0ede6", color: "#8a8070" }}
+          className="text-[10px] px-3 py-1 rounded-full text-carson-text-muted"
+          style={{ background: "#f0ede6" }}
         >
           {message.content}
         </span>
@@ -226,7 +227,7 @@ function MessageBubble({ message }: { message: Message }) {
         <div
           className={cn("flex items-center gap-2 mt-1", isUser ? "justify-end" : "justify-start")}
         >
-          <span className="text-[10px]" style={{ color: "#a09080" }}>
+          <span className="text-[10px] text-carson-text-meta">
             {formatTime(message.createdAt)}
           </span>
           {message.policyEvent && (
@@ -395,11 +396,11 @@ export function ConversationsPage() {
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-7xl h-[calc(100vh-48px)]">
+    <PageShell maxWidth="6xl" className="flex flex-col h-screen">
       {/* Header */}
       <div className="mb-4">
         <div className="flex items-center gap-2">
-          <MessageSquare className="h-5 w-5" style={{ color: "#8a8070" }} />
+          <MessageSquare className="h-5 w-5 text-carson-text-muted" />
           <h2
             className="text-[22px] font-normal"
             style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
@@ -407,13 +408,13 @@ export function ConversationsPage() {
             Conversations
           </h2>
         </div>
-        <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+        <p className="text-[13px] mt-1 text-carson-text-meta">
           {conversations.length} conversation{conversations.length !== 1 ? "s" : ""}
         </p>
       </div>
 
       {/* Main split view -- responsive: mobile shows one panel at a time */}
-      <div className="flex gap-4 h-[calc(100%-80px)] min-h-[500px]">
+      <div className="flex gap-4 flex-1 min-h-[500px] overflow-hidden">
         {/* Left: conversation list (hidden on mobile when a conversation is selected) */}
         <Card
           className={cn(
@@ -428,7 +429,7 @@ export function ConversationsPage() {
             <div className="flex gap-1.5">
               <Select value={memberFilter} onValueChange={setMemberFilter}>
                 <SelectTrigger className="h-8 text-xs flex-1" style={{ borderColor: "#ddd5c8" }}>
-                  <User className="h-3 w-3 mr-1.5" style={{ color: "#8a8070" }} />
+                  <User className="h-3 w-3 mr-1.5 text-carson-text-muted" />
                   <SelectValue placeholder="All members" />
                 </SelectTrigger>
                 <SelectContent>
@@ -438,20 +439,19 @@ export function ConversationsPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button
-                size="sm"
+              <IconButton
                 variant="outline"
-                className="h-8 w-8 p-0 shrink-0"
-                style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
-                title="New conversation"
+                size="sm"
+                aria-label={showNewChat ? "Cancel new conversation" : "New conversation"}
+                className="shrink-0"
                 onClick={() => setShowNewChat((v) => !v)}
               >
-                {showNewChat ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-              </Button>
+                {showNewChat ? <X /> : <Plus />}
+              </IconButton>
             </div>
             <Select value={staffFilter} onValueChange={setStaffFilter}>
               <SelectTrigger className="h-8 text-xs" style={{ borderColor: "#ddd5c8" }}>
-                <Bot className="h-3 w-3 mr-1.5" style={{ color: "#8a8070" }} />
+                <Bot className="h-3 w-3 mr-1.5 text-carson-text-muted" />
                 <SelectValue placeholder="All staff" />
               </SelectTrigger>
               <SelectContent>
@@ -510,7 +510,7 @@ export function ConversationsPage() {
             {!loadingConvs && conversations.length === 0 && (
               <div className="flex flex-col items-center justify-center h-32 px-4 text-center">
                 <MessageSquare className="h-5 w-5 mb-2" style={{ color: "#ddd5c8" }} />
-                <p className="text-sm" style={{ color: "#8a8070" }}>No conversations yet.</p>
+                <p className="text-sm text-carson-text-muted">No conversations yet.</p>
               </div>
             )}
             {conversations.map((c) => (
@@ -535,7 +535,7 @@ export function ConversationsPage() {
           {!selectedId ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
               <MessageSquare className="h-8 w-8 mb-3" style={{ color: "#ddd5c8" }} />
-              <p className="text-sm" style={{ color: "#8a8070" }}>
+              <p className="text-sm text-carson-text-muted">
                 Select a conversation to view messages.
               </p>
             </div>
@@ -546,16 +546,18 @@ export function ConversationsPage() {
                 className="px-4 py-3 border-b flex items-center gap-3"
                 style={{ borderColor: "#eee8dd" }}
               >
-                <button
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Back to conversations"
                   className="md:hidden shrink-0"
                   onClick={() => setSelectedId(null)}
-                  aria-label="Back to conversations"
                 >
-                  <ArrowLeft className="h-4 w-4" style={{ color: "#8a8070" }} />
-                </button>
+                  <ArrowLeft />
+                </IconButton>
                 <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold shrink-0"
-                  style={{ background: "#f0ede6", color: "#8a8070" }}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold shrink-0 text-carson-text-muted"
+                  style={{ background: "#f0ede6" }}
                 >
                   {selectedConv?.memberName?.charAt(0) || "?"}
                 </div>
@@ -563,7 +565,7 @@ export function ConversationsPage() {
                   <p className="text-sm font-medium truncate" style={{ color: "#1a1f2e" }}>
                     {selectedConv?.memberName}
                   </p>
-                  <p className="text-[11px]" style={{ color: "#8a8070" }}>
+                  <p className="text-[11px] text-carson-text-muted">
                     {selectedConv?.agentName || "Unknown agent"} &middot;{" "}
                     {selectedConv?.messageCount ?? 0} message
                     {(selectedConv?.messageCount ?? 0) !== 1 ? "s" : ""} &middot;{" "}
@@ -583,7 +585,7 @@ export function ConversationsPage() {
                 )}
                 {!loadingMessages && messages.length === 0 && !pendingUserMsg && (
                   <div className="flex items-center justify-center h-32">
-                    <p className="text-sm" style={{ color: "#8a8070" }}>
+                    <p className="text-sm text-carson-text-muted">
                       No messages yet. Say hello!
                     </p>
                   </div>
@@ -622,19 +624,20 @@ export function ConversationsPage() {
                   style={{ borderColor: "#ddd5c8" }}
                   disabled={sendMutation.isPending}
                 />
-                <Button
+                <IconButton
                   type="submit"
-                  size="sm"
+                  variant="primary"
+                  size="md"
+                  aria-label="Send message"
                   disabled={!messageInput.trim() || sendMutation.isPending}
-                  style={{ background: "#1a1f2e", color: "#e8dfd0" }}
                 >
-                  <Send className="h-3.5 w-3.5" />
-                </Button>
+                  <Send />
+                </IconButton>
               </form>
             </>
           )}
         </Card>
       </div>
-    </div>
+    </PageShell>
   );
 }

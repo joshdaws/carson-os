@@ -4,7 +4,10 @@ import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { FolderGit2, Plus, Trash2, Check, X } from "lucide-react";
+import { IconButton } from "@/components/ui/icon-button";
+import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PageShell } from "@/components/page-shell";
+import { FolderGit2, Plus, Trash2, Check, EyeOff } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -55,6 +58,18 @@ export function ProjectsPage() {
     repoUrl: "",
   });
 
+  // Single ConfirmDialog handles both delete and disable confirmations —
+  // each action wires through useConfirmDialog with its own metadata so the
+  // title/description/tone reflect the requested action. Re-enable is direct
+  // (no confirm) since it's safe.
+  const [confirmConfig, setConfirmConfig] = useState<{
+    title: string;
+    description: React.ReactNode;
+    confirmLabel: string;
+    tone: "destructive" | "default";
+  } | null>(null);
+  const [confirmProps, askConfirm] = useConfirmDialog();
+
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!householdId) throw new Error("no household");
@@ -87,14 +102,40 @@ export function ProjectsPage() {
 
   const createError = createMutation.error instanceof Error ? createMutation.error.message : null;
 
+  const requestDisable = (project: Project) => {
+    setConfirmConfig({
+      title: `Disable project '${project.name}'?`,
+      description:
+        "Disabling stops new delegations to this project but keeps the registry entry. You can re-enable later.",
+      confirmLabel: "Disable",
+      tone: "default",
+    });
+    askConfirm(async () => {
+      await toggleMutation.mutateAsync(project.id);
+    });
+  };
+
+  const requestDelete = (project: Project) => {
+    setConfirmConfig({
+      title: `Delete project '${project.name}'?`,
+      description:
+        "Delegated tasks targeting this project will fail. This removes the registry entry permanently.",
+      confirmLabel: "Delete",
+      tone: "destructive",
+    });
+    askConfirm(async () => {
+      await deleteMutation.mutateAsync(project.id);
+    });
+  };
+
   return (
-    <div className="p-8 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <PageShell maxWidth="5xl">
+      <PageShell.Header>
         <div>
           <h1 className="text-2xl font-bold mb-1" style={{ fontFamily: "Georgia, serif" }}>
             Projects
           </h1>
-          <p className="text-sm text-[#6a6a6a]">
+          <p className="text-sm text-carson-text-body">
             Registered projects that Developers can work in. Required for the <code>project</code>{" "}
             and <code>core</code> specialties.
           </p>
@@ -106,14 +147,14 @@ export function ProjectsPage() {
           <Plus className="h-4 w-4 mr-2" />
           Register project
         </Button>
-      </div>
+      </PageShell.Header>
 
       {showNew && (
         <Card className="mb-6">
           <CardContent className="p-5 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium block mb-1">Name</label>
+                <label className="text-xs font-medium block mb-1 text-carson-text-body">Name</label>
                 <Input
                   placeholder="homeschool-happy"
                   value={form.name}
@@ -121,7 +162,7 @@ export function ProjectsPage() {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium block mb-1">Default branch</label>
+                <label className="text-xs font-medium block mb-1 text-carson-text-body">Default branch</label>
                 <Input
                   placeholder="main"
                   value={form.defaultBranch}
@@ -130,8 +171,8 @@ export function ProjectsPage() {
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1">
-                Absolute path <span className="text-[#888]">(required)</span>
+              <label className="text-xs font-medium block mb-1 text-carson-text-body">
+                Absolute path <span className="text-carson-text-meta">(required)</span>
               </label>
               <Input
                 placeholder="/Users/you/projects/homeschool-happy"
@@ -141,7 +182,7 @@ export function ProjectsPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium block mb-1">Test command</label>
+                <label className="text-xs font-medium block mb-1 text-carson-text-body">Test command</label>
                 <Input
                   placeholder="pnpm test"
                   value={form.testCmd}
@@ -149,7 +190,7 @@ export function ProjectsPage() {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium block mb-1">Dev command</label>
+                <label className="text-xs font-medium block mb-1 text-carson-text-body">Dev command</label>
                 <Input
                   placeholder="pnpm dev"
                   value={form.devCmd}
@@ -158,7 +199,7 @@ export function ProjectsPage() {
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1">Repo URL (optional)</label>
+              <label className="text-xs font-medium block mb-1 text-carson-text-body">Repo URL (optional)</label>
               <Input
                 placeholder="https://github.com/you/repo"
                 value={form.repoUrl}
@@ -189,10 +230,10 @@ export function ProjectsPage() {
       )}
 
       {isLoading ? (
-        <div className="text-sm text-[#888]">Loading…</div>
+        <div className="text-sm text-carson-text-meta">Loading…</div>
       ) : projects.length === 0 ? (
         <Card>
-          <CardContent className="p-8 text-center text-[#888]">
+          <CardContent className="p-8 text-center text-carson-text-meta">
             <FolderGit2 className="h-8 w-8 mx-auto mb-3 opacity-40" />
             <div className="text-sm">No projects registered yet.</div>
             <div className="text-xs mt-1">
@@ -208,7 +249,7 @@ export function ProjectsPage() {
               <CardContent className="p-4 flex items-center gap-4">
                 <FolderGit2
                   className={`h-5 w-5 ${p.enabled ? "" : "opacity-40"}`}
-                  style={{ color: p.enabled ? "#8b6f4e" : "#888" }}
+                  style={{ color: p.enabled ? "#8b6f4e" : undefined }}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -219,8 +260,8 @@ export function ProjectsPage() {
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-[#6a6a6a] font-mono truncate">{p.path}</div>
-                  <div className="text-xs text-[#888] mt-0.5">
+                  <div className="text-xs text-carson-text-body font-mono truncate">{p.path}</div>
+                  <div className="text-xs text-carson-text-meta mt-0.5">
                     branch <b>{p.defaultBranch}</b>
                     {p.testCmd && (
                       <>
@@ -234,33 +275,54 @@ export function ProjectsPage() {
                     )}
                   </div>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => toggleMutation.mutate(p.id)}
-                  disabled={toggleMutation.isPending}
-                  title={p.enabled ? "Disable" : "Enable"}
-                >
-                  {p.enabled ? <X className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (confirm(`Delete project '${p.name}'?`)) {
-                      deleteMutation.mutate(p.id);
-                    }
-                  }}
+                {p.enabled ? (
+                  // Disabling has user-visible consequences (delegations stop)
+                  // but it's reversible — ConfirmDialog with tone="default"
+                  // matches that intent: stop and ask, but not red-button alarm.
+                  <IconButton
+                    aria-label="Disable project"
+                    variant="outline"
+                    size="md"
+                    onClick={() => requestDisable(p)}
+                    disabled={toggleMutation.isPending}
+                  >
+                    <EyeOff />
+                  </IconButton>
+                ) : (
+                  <IconButton
+                    aria-label="Enable project"
+                    variant="outline"
+                    size="md"
+                    onClick={() => toggleMutation.mutate(p.id)}
+                    disabled={toggleMutation.isPending}
+                  >
+                    <Check />
+                  </IconButton>
+                )}
+                <IconButton
+                  aria-label="Delete project"
+                  variant="destructive"
+                  size="md"
+                  onClick={() => requestDelete(p)}
                   disabled={deleteMutation.isPending}
-                  title="Delete"
                 >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                  <Trash2 />
+                </IconButton>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
-    </div>
+
+      {confirmConfig && (
+        <ConfirmDialog
+          {...confirmProps}
+          title={confirmConfig.title}
+          description={confirmConfig.description}
+          confirmLabel={confirmConfig.confirmLabel}
+          tone={confirmConfig.tone}
+        />
+      )}
+    </PageShell>
   );
 }

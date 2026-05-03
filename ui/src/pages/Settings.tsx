@@ -4,6 +4,8 @@ import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IconButton } from "@/components/ui/icon-button";
+import { PageShell } from "@/components/page-shell";
 import {
   Select,
   SelectContent,
@@ -83,7 +85,7 @@ function SettingSection({
         className="px-4 py-3 border-b flex items-center gap-2"
         style={{ borderColor: "#eee8dd" }}
       >
-        <Icon className="h-4 w-4 text-[#8a8070]" />
+        <Icon className="h-4 w-4 text-carson-text-muted" />
         <h3 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
           {title}
         </h3>
@@ -144,7 +146,7 @@ function PasswordField({
   return (
     <div>
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <label className="text-xs font-medium" style={{ color: "#5a5a5a" }}>
+        <label className="text-xs font-medium text-carson-text-body">
           {label}
         </label>
         {showSavedState && (
@@ -160,10 +162,10 @@ function PasswordField({
             className="h-9 flex-1 rounded-md border px-3 flex items-center justify-between"
             style={{ borderColor: "#ddd5c8", background: "#faf8f4" }}
           >
-            <span className="text-sm tracking-[0.18em]" style={{ color: "#8a8070" }}>
+            <span className="text-sm tracking-[0.18em] text-carson-text-muted">
               •••• •••• ••••
             </span>
-            <span className="text-[11px]" style={{ color: "#7a7060" }}>
+            <span className="text-[11px] text-carson-text-meta">
               hidden
             </span>
           </div>
@@ -233,21 +235,24 @@ function PasswordField({
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 placeholder={hasSavedValue ? "Paste replacement key" : placeholder}
-                className="pr-9"
+                className="pr-12"
                 style={{ borderColor: "#ddd5c8" }}
                 autoComplete="new-password"
                 spellCheck={false}
               />
               {canReveal && (
-                <button
-                  type="button"
-                  onClick={() => setVisible(!visible)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2"
-                  style={{ color: "#8a8070" }}
+                // 14x14 visible chrome stays small (it's pinned inside an
+                // input field) but IconButton wraps it with a 44x44 hit area
+                // for WCAG 2.5.5 — issue #45.
+                <IconButton
                   aria-label={visible ? "Hide value" : "Show value"}
+                  size="sm"
+                  variant="ghost"
+                  className="absolute right-1 top-1/2 -translate-y-1/2"
+                  onClick={() => setVisible(!visible)}
                 >
-                  {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                </button>
+                  {visible ? <EyeOff /> : <Eye />}
+                </IconButton>
               )}
             </div>
             {hasSavedValue && (
@@ -264,7 +269,7 @@ function PasswordField({
             )}
           </div>
           {hasSavedValue && (
-            <p className="text-[11px] mt-1.5" style={{ color: "#7a7060" }}>
+            <p className="text-[11px] mt-1.5 text-carson-text-meta">
               Saving will replace the saved key. The current key remains active until Save.
             </p>
           )}
@@ -389,19 +394,19 @@ export function SettingsPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6 lg:p-8 max-w-3xl">
-        <p className="text-sm" style={{ color: "#8a8070" }}>Loading settings...</p>
-      </div>
+      <PageShell maxWidth="3xl">
+        <p className="text-sm text-carson-text-muted">Loading settings...</p>
+      </PageShell>
     );
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-3xl">
+    <PageShell maxWidth="3xl">
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <PageShell.Header>
         <div>
           <div className="flex items-center gap-2">
-            <SettingsIcon className="h-5 w-5" style={{ color: "#8a8070" }} />
+            <SettingsIcon className="h-5 w-5 text-carson-text-muted" />
             <h2
               className="text-[22px] font-normal"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
@@ -409,7 +414,7 @@ export function SettingsPage() {
               Settings
             </h2>
           </div>
-          <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+          <p className="text-[13px] mt-1 text-carson-text-meta">
             Instance configuration
           </p>
         </div>
@@ -423,12 +428,12 @@ export function SettingsPage() {
             <Save className="h-3.5 w-3.5 mr-1" /> Save Changes
           </Button>
         )}
-      </div>
+      </PageShell.Header>
 
       {/* Adapter Configuration */}
       <SettingSection title="Adapter Configuration" icon={Bot}>
         <div>
-          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
             Subprocess Adapter
           </label>
           <Select
@@ -443,7 +448,7 @@ export function SettingsPage() {
                 <SelectItem key={opt.value} value={opt.value}>
                   <div>
                     <span className="font-medium">{opt.label}</span>
-                    <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                    <span className="text-xs ml-2 text-carson-text-muted">
                       {opt.description}
                     </span>
                   </div>
@@ -482,7 +487,7 @@ export function SettingsPage() {
       {/* Household */}
       <SettingSection title="Household" icon={Users}>
         <div>
-          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
             Household Name
           </label>
           <Input
@@ -493,7 +498,7 @@ export function SettingsPage() {
           />
         </div>
         <div>
-          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
+          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
             Timezone
           </label>
           <Select
@@ -537,7 +542,7 @@ export function SettingsPage() {
           onClearSaved={() => setVal("GROQ_API_KEY", "")}
           onCancelChange={() => resetVal("GROQ_API_KEY")}
         />
-        <p className="text-xs" style={{ color: "#7a7060" }}>
+        <p className="text-xs text-carson-text-meta">
           Used by Groq Whisper to transcribe voice messages and audio
           attachments. Get a key at{" "}
           <a
@@ -562,6 +567,6 @@ export function SettingsPage() {
           />
         </div>
       </SettingSection>
-    </div>
+    </PageShell>
   );
 }

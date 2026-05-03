@@ -19,6 +19,7 @@ import {
   FolderGit2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { IconButton } from "@/components/ui/icon-button";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -107,10 +108,7 @@ export function Layout() {
         >
           CarsonOS
         </h1>
-        <p
-          className="text-[11px] uppercase tracking-[2px] mt-1"
-          style={{ color: "#8a8070" }}
-        >
+        <p className="text-[11px] uppercase tracking-[2px] mt-1 text-carson-text-on-navy-muted">
           Digital Staff
         </p>
       </div>
@@ -118,10 +116,7 @@ export function Layout() {
       {/* Navigation */}
       <div className="flex-1 py-3 overflow-y-auto">
         {/* Overview section */}
-        <div
-          className="px-5 pt-2 pb-2 text-[10px] uppercase tracking-[2px]"
-          style={{ color: "#5a5a5a" }}
-        >
+        <div className="px-5 pt-2 pb-2 text-[10px] uppercase tracking-[2px] text-carson-text-on-navy-muted">
           Overview
         </div>
         <NavItem to="/" icon={LayoutDashboard} label="Dashboard" end />
@@ -131,10 +126,7 @@ export function Layout() {
         {/* Staff section */}
         {staff.length > 0 && (
           <>
-            <div
-              className="px-5 pt-5 pb-2 text-[10px] uppercase tracking-[2px]"
-              style={{ color: "#5a5a5a" }}
-            >
+            <div className="px-5 pt-5 pb-2 text-[10px] uppercase tracking-[2px] text-carson-text-on-navy-muted">
               Staff
             </div>
             {staff.map((agent) => (
@@ -172,10 +164,7 @@ export function Layout() {
         )}
 
         {/* System section */}
-        <div
-          className="px-5 pt-5 pb-2 text-[10px] uppercase tracking-[2px]"
-          style={{ color: "#5a5a5a" }}
-        >
+        <div className="px-5 pt-5 pb-2 text-[10px] uppercase tracking-[2px] text-carson-text-on-navy-muted">
           System
         </div>
         <NavItem to="/conversations" icon={MessageSquare} label="Conversations" />
@@ -187,10 +176,7 @@ export function Layout() {
       </div>
 
       {/* Footer: connection status */}
-      <div
-        className="px-5 py-3 border-t border-[#2a3040] text-xs flex items-center gap-2"
-        style={{ color: "#8a8070" }}
-      >
+      <div className="px-5 py-3 border-t border-[#2a3040] text-xs flex items-center gap-2 text-carson-text-on-navy-muted">
         {connected ? (
           <>
             <Wifi className="h-3 w-3 text-green-500" /> Live
@@ -214,14 +200,20 @@ export function Layout() {
         {sidebar}
       </nav>
 
-      {/* Mobile hamburger */}
-      <button
-        className="md:hidden fixed top-4 left-4 z-50 p-2 rounded-md"
-        style={{ background: "#1a1f2e", color: "#d4c9b8" }}
+      {/* Mobile hamburger — 44x44 hit area via IconButton (v0.5.3 / issue #45).
+          Always navy background so the icon stays AA-contrast both when
+          closed (sitting over cream page content) and open (sitting over the
+          navy sidebar). Ghost variant on its own would render
+          text-carson-text-muted at ~2.8:1 on navy. */}
+      <IconButton
+        variant="primary"
+        size="lg"
+        aria-label={mobileOpen ? "Close menu" : "Open menu"}
+        className="md:hidden fixed top-2 left-2 z-50"
         onClick={() => setMobileOpen(!mobileOpen)}
       >
-        {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-      </button>
+        {mobileOpen ? <X /> : <Menu />}
+      </IconButton>
 
       {/* Mobile sidebar overlay */}
       {mobileOpen && (

@@ -4,6 +4,49 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.4] - 2026-05-03
+
+### Added
+
+- **UI test runner.** The `ui/` package now has its own vitest + `@testing-library/react` + `happy-dom` setup (vitest 3.x, matching the server). 39 regression tests across the four v0.5.3 shared primitives — `confirm-dialog.test.tsx`, `icon-button.test.tsx`, `form-field.test.tsx`, `page-shell.test.tsx` — pin every bug the pre-merge review caught so they cannot silently come back. `pnpm test` now runs **505 tests across 29 files**, all green.
+
+### Fixed
+
+- **`ConfirmDialog` armed-state reset on every reopen.** Pre-fix the 250ms enter-key guard ran only on the first open; a second open let an in-flight Enter sneak past for one frame. Now `armed` resets to `false` whenever the dialog closes.
+- **`ConfirmDialog` blocks ESC + outside-click while pending.** The async-aware contract said the dialog stays open during the mutation, but ESC and click-outside still routed through `onOpenChange(false)`. Wrapped to drop close attempts while `pending=true`.
+- **`mutateAsync` on three async-aware callsites.** `Projects.tsx` (delete + disable) and `Schedules.tsx` (delete) were passing `mutate()` (returns void) where `mutateAsync()` was needed — the dialog closed immediately instead of waiting for the mutation to land. The user could see the dialog vanish on a 409 with no error feedback.
+- **`FormField` preserves the child input's existing id.** `cloneElement` was clobbering any `id` already on the wrapped input, breaking external `<label htmlFor>`, `aria-describedby` references, and tests. Falls back to the auto-generated id only when neither override nor child has one.
+- **Mobile menu IconButton AA contrast on navy.** Variant `ghost` rendered `text-carson-text-muted` (~2.78:1) over the open sidebar. Switched to `variant="primary"` so the button reads at 11.6:1 in both closed (over cream) and open (over navy) states.
+- **`PageShell` breakpoint matches the hamburger.** `pt-14 lg:pt-0` left a 56px blank gap at 768–1023px (tablet) because the hamburger hides at `md`. Fixed to `md:pt-0`.
+- **Tools mobile bundle inset overflow.** Inset child cards combined `w-full + ml-3` and got clipped by `PageShell overflow-x-hidden`. Moved the indent to the parent (`pl-3`) so the children stay flush.
+- **`Household` Edit Member Remove now confirms.** The flow was firing `deleteMutation` immediately on click, while every other destructive action in v0.5.3 routes through `ConfirmDialog`. Brought it inline with the same pattern as `StaffCard`.
+- **3 leftover `#5a5a5a` literals in `Tools.tsx`** migrated to `text-carson-text-muted` for token consistency.
+
+### Changed
+
+- **Documentation refreshed for v0.5.3 + v0.5.4.** `CLAUDE.md` test count updated to 505 / 29 files. `DESIGN.md` CSS Custom Properties section rewritten to mirror `globals.css` (semantic text tokens with contrast ratios noted inline) plus two 2026-05-02 decisions-log rows for the multi-role text token split (#46) and the four shared primitives (#43, #45, #49, #50). `TODOS.md` v0.5.4 entries renumbered to v0.5.5 to make room for the post-audit critique findings.
+
+### Why this matters
+
+v0.5.4 is the post-merge polish for v0.5.3-ui-audit. The audit primitives ship behind a real test suite (39 cases, every one tied to a specific finding from the pre-merge review). The dashboard's behavior under stress — async mutations, mobile breakpoint transitions, edge-case inputs — is now pinned in code, not just in screenshots. The four review-fix categories above (ConfirmDialog correctness, FormField id preservation, mobile menu contrast, Tools overflow) close the loop on the pre-merge multi-reviewer pass. The next release (v0.5.5) tackles UI/UX direction work surfaced by `/impeccable critique` — Instrument Serif in product chrome, butler-greeting empty state, page-heading mode confusion, and the deferred FormField page migration + Tasks/Conversations search.
+
+## [0.5.3] - 2026-05-02
+
+### Added
+
+- **Mobile-aware page shell.** Every routed page now wraps in a `PageShell` component that reserves 56px of top inset on mobile so the fixed hamburger button doesn't overlap the page title, applies responsive horizontal padding, and locks the horizontal axis so a stray fixed-width child can't introduce page-level horizontal scroll. `PageShell.Header` stacks vertically on mobile and goes side-by-side on tablet+ so title/action rows don't fight for the same line at 390px wide. (Issues #43, #50.)
+- **`IconButton` primitive.** Icon-only controls (member edit, schedule pause/edit/delete, password reveal eye, mobile hamburger, modal close X buttons, the secret delete trash) now use a shared `IconButton` component with a 44x44 hit area (per WCAG 2.5.5), a required `aria-label` enforced at compile time, a focus-visible ring, and a radix Tooltip. Pre-v0.5.3 these were 28-36px buttons with no accessible names. (Issue #45.)
+- **`ConfirmDialog` for destructive actions.** Replaces the previous mix of `window.confirm()`, ad-hoc inline two-step confirmations, and immediate-fire icon buttons with a single radix-Dialog-based confirmation flow. Verb-named confirm buttons (Delete / Disable / Revoke instead of OK), 250ms enter-key arming so a quick double-click can't pop and immediately confirm, async-aware so the dialog stays open with a pending state until the underlying mutation resolves. Wired through Projects (delete + disable), Schedules (delete), Household (staff delete), and Tools (tool delete + secret delete). (Issue #49.)
+- **Custom Tools mobile card layout.** Below the `md` breakpoint, the Tools page renders as stacked cards with a 2-column metadata grid (kind, created-by, usage, last-used) instead of the desktop table. Bundles preserve their expand/collapse semantics. Tablet+ keeps the existing table. (Issue #44.)
+
+### Changed
+
+- **Semantic text tokens replace hard-coded muted hex.** `globals.css` now defines WCAG-AA-verified `--carson-text-primary` / `-body` / `-muted` / `-meta` / `-on-navy` / `-on-navy-muted` tokens, exposed as Tailwind classes (`text-carson-text-muted` etc). Pre-v0.5.3 the codebase used inline `style={{ color: "#8a8070" }}` etc. with values that failed contrast on cream/white/navy at small text sizes. Sidebar section labels alone went from 2.38:1 (fail) to 5.0:1 (pass AA). All page-level muted/meta hex now routes through the tokens. (Issue #46.)
+
+### Why this matters
+
+v0.5.3 is the audit-fix release. It closes 6 of the 8 UI-audit issues opened against the dashboard (#43, #44, #45, #46, #49, #50). Mobile users no longer get clipped headings or hidden controls at 390px. Screen-reader and keyboard users get accessible names on every icon-only control. Destructive actions consistently route through a single confirmation flow instead of three different patterns. Text contrast hits AA across the app. The two remaining issues (#48 search/URL filters and #51 form-field accessibility) are deferred to v0.5.4 — the foundation primitives are already in place; only the per-page migrations remain.
+
 ## [0.5.2] - 2026-05-02
 
 ### Security

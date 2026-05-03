@@ -5,6 +5,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { IconButton } from "@/components/ui/icon-button";
+import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PageShell } from "@/components/page-shell";
 import {
   Select,
   SelectContent,
@@ -230,7 +233,7 @@ function ScheduleEditor({
   return (
     <div className="space-y-3">
       <div>
-        <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>How often</label>
+        <label className="text-xs font-medium block mb-1.5 text-carson-text-body">How often</label>
         <Select value={frequency} onValueChange={(v) => { setFrequency(v); sync(v); }}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -244,7 +247,7 @@ function ScheduleEditor({
       {(frequency === "daily" || frequency === "weekdays" || frequency === "weekly") && (
         <div className={frequency === "weekly" ? "grid grid-cols-2 gap-3" : ""}>
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>At what time</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">At what time</label>
             <Input
               type="time"
               value={time}
@@ -253,7 +256,7 @@ function ScheduleEditor({
           </div>
           {frequency === "weekly" && (
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>On which day</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">On which day</label>
               <Select value={dayOfWeek} onValueChange={(v) => { setDayOfWeek(v); sync(frequency, time, v); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -270,7 +273,7 @@ function ScheduleEditor({
       {frequency === "interval" && (
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Every</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Every</label>
             <Input
               type="number"
               min={1}
@@ -279,7 +282,7 @@ function ScheduleEditor({
             />
           </div>
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Unit</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Unit</label>
             <Select value={intervalUnit} onValueChange={(v) => { setIntervalUnit(v); sync(frequency, time, dayOfWeek, intervalAmount, v); }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -295,7 +298,7 @@ function ScheduleEditor({
 
       {frequency === "once" && (
         <div>
-          <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Date and time</label>
+          <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Date and time</label>
           <Input
             type="datetime-local"
             value={onceDate}
@@ -313,7 +316,6 @@ function TaskRow({
   task,
   agents,
   members,
-  householdId,
 }: {
   task: ScheduledTask;
   agents: StaffAgent[];
@@ -332,6 +334,7 @@ function TaskRow({
   const [agentId, setAgentId] = useState(task.agentId);
   const [memberId, setMemberId] = useState(task.memberId ?? members[0]?.id ?? "");
   const [deliverTo, setDeliverTo] = useState(existingDeliverTo);
+  const [confirmProps, askConfirm] = useConfirmDialog();
 
   const toggleMutation = useMutation({
     mutationFn: () => api.post(`/scheduled-tasks/${task.id}/toggle`),
@@ -358,15 +361,19 @@ function TaskRow({
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>Edit Schedule</span>
             <div className="flex gap-1">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => {
-                const finalPrompt = deliverTo !== "telegram" ? `[deliver:${deliverTo}]\n${prompt}` : prompt;
-                updateMutation.mutate({ name, prompt: finalPrompt, scheduleType, scheduleValue, agentId, memberId });
-              }}>
-                <Check className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditing(false)}>
-                <X className="h-3.5 w-3.5" />
-              </Button>
+              <IconButton
+                aria-label="Save changes"
+                size="sm"
+                onClick={() => {
+                  const finalPrompt = deliverTo !== "telegram" ? `[deliver:${deliverTo}]\n${prompt}` : prompt;
+                  updateMutation.mutate({ name, prompt: finalPrompt, scheduleType, scheduleValue, agentId, memberId });
+                }}
+              >
+                <Check />
+              </IconButton>
+              <IconButton aria-label="Cancel editing" size="sm" onClick={() => setEditing(false)}>
+                <X />
+              </IconButton>
             </div>
           </div>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Task name" />
@@ -386,7 +393,7 @@ function TaskRow({
           />
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Run by</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Run by</label>
               <Select value={agentId} onValueChange={setAgentId}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -395,7 +402,7 @@ function TaskRow({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Send to</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Send to</label>
               <Select value={memberId} onValueChange={setMemberId}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -404,7 +411,7 @@ function TaskRow({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Deliver via</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Deliver via</label>
               <Select value={deliverTo} onValueChange={setDeliverTo}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -431,32 +438,55 @@ function TaskRow({
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>{task.name}</span>
               {!task.enabled && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "#f0ede6", color: "#8a8070" }}>
+                <span className="text-[10px] px-1.5 py-0.5 rounded text-carson-text-muted" style={{ background: "#f0ede6" }}>
                   paused
                 </span>
               )}
             </div>
-            <p className="text-xs mt-0.5" style={{ color: "#8a8070" }}>
+            <p className="text-xs mt-0.5 text-carson-text-muted">
               {task.agentName ?? "Unknown agent"}
             </p>
           </div>
           <div className="flex gap-1 shrink-0">
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleMutation.mutate()}>
-              {task.enabled ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditing(true)}>
-              <Pencil className="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => deleteMutation.mutate()}>
-              <Trash2 className="h-3 w-3" />
-            </Button>
+            {/* Pause/Resume toggles inline (reversible — no confirm) but
+                IconButton's verb-tooltip aria-label tells the user what
+                clicking will do. Issue #45 + #49. */}
+            <IconButton
+              aria-label={task.enabled ? "Pause schedule" : "Resume schedule"}
+              size="sm"
+              onClick={() => toggleMutation.mutate()}
+            >
+              {task.enabled ? <Pause /> : <Play />}
+            </IconButton>
+            <IconButton
+              aria-label="Edit schedule"
+              size="sm"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil />
+            </IconButton>
+            {/* Delete fires through ConfirmDialog — issue #49. Pre-v0.5.3
+                this fired immediately from a tiny icon, which was too
+                accidental for an irreversible action. */}
+            <IconButton
+              aria-label="Delete schedule"
+              variant="destructive"
+              size="sm"
+              onClick={() =>
+                askConfirm(async () => {
+                  await deleteMutation.mutateAsync();
+                })
+              }
+            >
+              <Trash2 />
+            </IconButton>
           </div>
         </div>
 
         {/* Schedule + delivery + timing */}
-        <div className="flex items-center gap-3 text-xs mb-2 flex-wrap" style={{ color: "#8a8070" }}>
+        <div className="flex items-center gap-3 text-xs mb-2 flex-wrap text-carson-text-muted">
           <span>{formatSchedule(task.scheduleType, task.scheduleValue)}</span>
-          <span style={{ color: "#a09080" }}>
+          <span className="text-carson-text-meta">
             → {task.prompt.startsWith("[deliver:memory]") ? "memory" : task.prompt.startsWith("[deliver:log]") ? "log" : "Telegram"}
           </span>
           {task.nextRunAt && task.enabled && (
@@ -470,7 +500,7 @@ function TaskRow({
         </div>
 
         {/* Prompt preview (strip delivery prefix) */}
-        <p className="text-xs line-clamp-2" style={{ color: "#5a5a5a" }}>
+        <p className="text-xs line-clamp-2 text-carson-text-body">
           {task.prompt.replace(/^\[deliver:\w+\]\n/, "")}
         </p>
 
@@ -486,6 +516,13 @@ function TaskRow({
           </p>
         )}
       </CardContent>
+      <ConfirmDialog
+        {...confirmProps}
+        title={`Delete schedule '${task.name}'?`}
+        description="This permanently removes the schedule. Future runs will not fire."
+        confirmLabel="Delete"
+        tone="destructive"
+      />
     </Card>
   );
 }
@@ -557,14 +594,14 @@ function AddTaskModal({
           <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
             New Scheduled Task
           </h3>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
+            <X />
+          </IconButton>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Name</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Name</label>
             <Input
               placeholder="e.g., Daily briefing"
               value={name}
@@ -575,7 +612,7 @@ function AddTaskModal({
           </div>
 
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Prompt</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Prompt</label>
             <Textarea
               placeholder="What should the agent do? e.g., Give me a morning briefing: what's on my calendar today, any pending commitments, and anything I should know about."
               value={prompt}
@@ -595,7 +632,7 @@ function AddTaskModal({
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Run by</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Run by</label>
               <Select value={agentId} onValueChange={setAgentId}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -604,7 +641,7 @@ function AddTaskModal({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Send to</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Send to</label>
               <Select value={memberId} onValueChange={setMemberId}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -613,7 +650,7 @@ function AddTaskModal({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Deliver via</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Deliver via</label>
               <Select value={deliverTo} onValueChange={setDeliverTo}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -671,11 +708,11 @@ export function SchedulesPage() {
   const disabledTasks = tasks.filter((t) => !t.enabled);
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl">
-      <div className="flex items-start justify-between mb-6">
+    <PageShell maxWidth="4xl">
+      <PageShell.Header>
         <div>
           <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5" style={{ color: "#8a8070" }} />
+            <Clock className="h-5 w-5 text-carson-text-muted" />
             <h2
               className="text-[22px] font-normal"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
@@ -683,7 +720,7 @@ export function SchedulesPage() {
               Scheduled Tasks
             </h2>
           </div>
-          <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+          <p className="text-[13px] mt-1 text-carson-text-meta">
             {tasks.length} task{tasks.length !== 1 ? "s" : ""}
             {enabledTasks.length > 0 && ` (${enabledTasks.length} active)`}
           </p>
@@ -696,20 +733,20 @@ export function SchedulesPage() {
         >
           <Plus className="h-3.5 w-3.5 mr-1" /> Add Task
         </Button>
-      </div>
+      </PageShell.Header>
 
       {isLoading && (
-        <p className="text-sm" style={{ color: "#8a8070" }}>Loading...</p>
+        <p className="text-sm text-carson-text-muted">Loading...</p>
       )}
 
       {!isLoading && tasks.length === 0 && (
         <Card className="border" style={{ borderColor: "#ddd5c8" }}>
           <CardContent className="p-8 text-center">
             <Clock className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
-            <p className="text-sm mb-1" style={{ color: "#8a8070" }}>
+            <p className="text-sm mb-1 text-carson-text-muted">
               No scheduled tasks yet.
             </p>
-            <p className="text-xs" style={{ color: "#a09080" }}>
+            <p className="text-xs text-carson-text-meta">
               Create recurring tasks like daily briefings, weekly meal plans, or homework reminders.
             </p>
           </CardContent>
@@ -721,7 +758,7 @@ export function SchedulesPage() {
           <TaskRow key={task.id} task={task} agents={agents} members={members} householdId={householdId!} />
         ))}
         {disabledTasks.length > 0 && enabledTasks.length > 0 && (
-          <p className="text-xs font-medium uppercase tracking-wider pt-4 pb-1" style={{ color: "#8a8070" }}>
+          <p className="text-xs font-medium uppercase tracking-wider pt-4 pb-1 text-carson-text-muted">
             Paused
           </p>
         )}
@@ -738,6 +775,6 @@ export function SchedulesPage() {
           onClose={() => setShowAdd(false)}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

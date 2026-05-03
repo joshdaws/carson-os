@@ -6,6 +6,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IconButton } from "@/components/ui/icon-button";
+import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PageShell } from "@/components/page-shell";
 import {
   Select,
   SelectContent,
@@ -172,9 +175,9 @@ function AddMemberForm({
             <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
               New Member
             </span>
-            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-              <X className="h-3.5 w-3.5" />
-            </Button>
+            <IconButton aria-label="Close form" size="sm" onClick={onClose}>
+              <X />
+            </IconButton>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -247,6 +250,7 @@ function EditMemberForm({
   const [memoryDir, setMemoryDir] = useState(member.memoryDir || "");
   const [memoryDirValid, setMemoryDirValid] = useState<boolean | null>(null);
   const [memoryDirResolved, setMemoryDirResolved] = useState<string | null>(null);
+  const [confirmRemoveProps, askRemoveConfirm] = useConfirmDialog();
 
   const updateMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -288,12 +292,17 @@ function EditMemberForm({
         <div className="flex items-center justify-between mb-1">
           <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>Edit Member</span>
           <div className="flex gap-1">
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleSave} disabled={updateMutation.isPending}>
-              <Check className="h-3.5 w-3.5" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-              <X className="h-3.5 w-3.5" />
-            </Button>
+            <IconButton
+              aria-label="Save changes"
+              size="sm"
+              onClick={handleSave}
+              disabled={updateMutation.isPending}
+            >
+              <Check />
+            </IconButton>
+            <IconButton aria-label="Cancel editing" size="sm" onClick={onClose}>
+              <X />
+            </IconButton>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -335,14 +344,14 @@ function EditMemberForm({
             <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Directory not found</p>
           )}
           {!memoryDir && (
-            <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>
+            <p className="text-[10px] mt-1 text-carson-text-meta">
               Default: ~/.carsonos/memory/{member.name.toLowerCase().replace(/\s+/g, "-")}
             </p>
           )}
         </div>
         {staffAssignments.length > 0 && (
           <div className="pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
-            <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: "#8a8070" }}>
+            <p className="text-[10px] uppercase tracking-wider mb-1.5 text-carson-text-muted">
               Assigned Staff
             </p>
             <div className="flex flex-wrap gap-1.5">
@@ -355,11 +364,19 @@ function EditMemberForm({
           </div>
         )}
         <div className="flex justify-end pt-1">
+          {/* Remove fires through ConfirmDialog — issue #49. Removing a
+              household member detaches their assigned staff and is not
+              undoable, so it gets the same confirmation pattern as
+              StaffCard's delete. */}
           <Button
             variant="ghost"
             size="sm"
             className="text-red-600 hover:text-red-700 hover:bg-red-50 text-xs"
-            onClick={() => deleteMutation.mutate()}
+            onClick={() =>
+              askRemoveConfirm(async () => {
+                await deleteMutation.mutateAsync();
+              })
+            }
             disabled={deleteMutation.isPending}
           >
             <Trash2 className="h-3 w-3 mr-1" /> Remove
@@ -371,6 +388,20 @@ function EditMemberForm({
           </p>
         )}
       </CardContent>
+      <ConfirmDialog
+        {...confirmRemoveProps}
+        title={`Remove ${member.name}?`}
+        description={
+          <p>
+            This removes {member.name} from the household. Any staff agents
+            assigned to {member.name} will be detached. Memory files on disk
+            are kept; this is reversible by re-adding the member with the
+            same name.
+          </p>
+        }
+        confirmLabel="Remove"
+        tone="destructive"
+      />
     </Card>
   );
 }
@@ -408,8 +439,8 @@ function MemberCard({
       <CardContent className="p-4">
         <div className="flex items-center gap-3 mb-2">
           <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold"
-            style={{ background: "#f0ede6", color: "#8a8070" }}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold text-carson-text-muted"
+            style={{ background: "#f0ede6" }}
           >
             {member.name.charAt(0)}
           </div>
@@ -417,21 +448,29 @@ function MemberCard({
             <span className="font-medium text-sm" style={{ color: "#1a1f2e" }}>
               {member.name}
             </span>
-            <p className="text-xs" style={{ color: "#8a8070" }}>
+            <p className="text-xs text-carson-text-muted">
               {member.role.charAt(0).toUpperCase() + member.role.slice(1)}
               {member.age ? ` (${member.age})` : ""}
             </p>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => setEditing(true)}>
-            <Pencil className="h-3.5 w-3.5" style={{ color: "#8a8070" }} />
-          </Button>
+          {/* Member edit — issue #45 audit flagged this 28x28 unlabeled
+              icon-button. IconButton wraps with 44x44 hit area and
+              "Edit member" name for screen-readers. */}
+          <IconButton
+            aria-label="Edit member"
+            size="md"
+            className="shrink-0"
+            onClick={() => setEditing(true)}
+          >
+            <Pencil />
+          </IconButton>
         </div>
         <div className="flex flex-wrap gap-1.5 text-xs mb-2">
           {member.telegramUserId && (
-            <span style={{ color: "#8a8070" }}>TG: {member.telegramUserId}</span>
+            <span className="text-carson-text-muted">TG: {member.telegramUserId}</span>
           )}
           {staffAssignments.length > 0 && (
-            <span style={{ color: "#a09080" }}>
+            <span className="text-carson-text-meta">
               Staff: {staffAssignments.map((s) => s.staffName).join(", ")}
             </span>
           )}
@@ -540,15 +579,15 @@ function AddStaffModal({
           <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
             New Staff Agent
           </h3>
-          <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
+            <X />
+          </IconButton>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           {/* Name */}
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Name</label>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Name</label>
             <Input
               placeholder="e.g., Django"
               value={name}
@@ -562,7 +601,7 @@ function AddStaffModal({
           {/* Role + Assign to */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Role</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Role</label>
               <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -573,7 +612,7 @@ function AddStaffModal({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Assign to</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Assign to</label>
               <Select value={assignTo} onValueChange={setAssignTo}>
                 <SelectTrigger><SelectValue placeholder="Select member..." /></SelectTrigger>
                 <SelectContent>
@@ -588,7 +627,7 @@ function AddStaffModal({
           {/* Model + Trust Level */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Model</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Model</label>
               <Select value={model} onValueChange={setModel}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -599,14 +638,14 @@ function AddStaffModal({
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>Trust Level</label>
+              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Trust Level</label>
               <Select value={trustLevel} onValueChange={(v) => setTrustLevel(v as TrustLevel)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {TRUST_LEVEL_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>
                       {o.label}
-                      <span className="text-[10px] ml-1.5" style={{ color: "#8a8070" }}>{o.description}</span>
+                      <span className="text-[10px] ml-1.5 text-carson-text-muted">{o.description}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -616,8 +655,8 @@ function AddStaffModal({
 
           {/* Telegram Bot Token */}
           <div>
-            <label className="text-xs font-medium block mb-1.5" style={{ color: "#5a5a5a" }}>
-              Telegram Bot Token <span style={{ color: "#a09080" }}>(optional)</span>
+            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
+              Telegram Bot Token <span className="text-carson-text-meta">(optional)</span>
             </label>
             <Input
               type="password"
@@ -625,7 +664,7 @@ function AddStaffModal({
               value={botToken}
               onChange={(e) => setBotToken(e.target.value)}
             />
-            <p className="text-[10px] mt-1" style={{ color: "#a09080" }}>You can add this later from the agent detail page.</p>
+            <p className="text-[10px] mt-1 text-carson-text-meta">You can add this later from the agent detail page.</p>
           </div>
 
           {/* Actions */}
@@ -649,7 +688,7 @@ function AddStaffModal({
 function StaffCard({ agent }: { agent: StaffAgent }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmProps, askConfirm] = useConfirmDialog();
 
   const isButler = agent.isHeadButler || agent.staffRole === "head_butler";
   const isPersonal = agent.staffRole === "personal";
@@ -680,15 +719,13 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
     mutationFn: () => api.delete(`/staff/${agent.id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
-      setConfirmDelete(false);
       toast.success(`${agent.name} removed`);
     },
     onError: (err: Error) => {
       // 409 carries actionable text ("cancel these tasks first: …" /
-      // "delete these tools first: …"). Surface it so the user knows what
-      // to do — the inline Confirm/Cancel UI doesn't show errors on its own.
+      // "delete these tools first: …"). The ConfirmDialog auto-closes on
+      // resolution; surface server errors via toast.
       toast.error(err.message);
-      setConfirmDelete(false);
     },
   });
 
@@ -723,15 +760,14 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
               </Link>
               {onStaffFor && (
                 <span
-                  className="text-[10px] shrink-0"
-                  style={{ color: "#a09080" }}
+                  className="text-[10px] shrink-0 text-carson-text-meta"
                   title={`on staff since ${agent.createdAt}`}
                 >
                   · {onStaffFor}
                 </span>
               )}
             </div>
-            <p className="text-xs" style={{ color: "#8a8070" }}>
+            <p className="text-xs text-carson-text-muted">
               {roleSubtitle}
             </p>
           </div>
@@ -750,54 +786,59 @@ function StaffCard({ agent }: { agent: StaffAgent }) {
         </div>
 
         {agent.assignments && agent.assignments.length > 0 && (
-          <div className="text-xs mb-2" style={{ color: "#a09080" }}>
+          <div className="text-xs mb-2 text-carson-text-meta">
             Assigned: {agent.assignments.map((a) => a.memberName).join(", ")}
           </div>
         )}
 
-        <div className="flex justify-end gap-1">
+        <div className="flex justify-end gap-1 items-center">
           <Link to={`/staff/${agent.id}`}>
-            <Button variant="ghost" size="sm" className="text-xs h-7" style={{ color: "#8a8070" }}>
+            <Button variant="ghost" size="sm" className="text-xs h-7 text-carson-text-muted">
               <UserCog className="h-3 w-3 mr-1" /> Manage
             </Button>
           </Link>
           {!isButler && (
-            <>
-              {confirmDelete ? (
-                <div className="flex gap-1">
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="h-7 text-[10px] px-2"
-                    onClick={() => deleteMutation.mutate()}
-                    disabled={deleteMutation.isPending}
-                  >
-                    Confirm
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-[10px] px-2"
-                    onClick={() => setConfirmDelete(false)}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-7 hover:text-red-600"
-                  style={{ color: "#a09080" }}
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              )}
-            </>
+            // Issue #49 — delete now goes through ConfirmDialog with the
+            // agent's name in the title. Replaces the inline two-step
+            // pattern so the trigger has a single accessible name and
+            // the confirmation includes context (server 409s still surface
+            // via toast since the dialog can't render arbitrary errors).
+            <IconButton
+              aria-label="Delete agent"
+              variant="destructive"
+              size="sm"
+              onClick={() =>
+                askConfirm(async () => {
+                  try {
+                    await deleteMutation.mutateAsync();
+                  } catch {
+                    // Server errors surface via the toast in mutation.onError.
+                  }
+                })
+              }
+              disabled={deleteMutation.isPending}
+            >
+              <Trash2 />
+            </IconButton>
           )}
         </div>
       </CardContent>
+      <ConfirmDialog
+        {...confirmProps}
+        title={`Delete ${agent.name}?`}
+        description={
+          <>
+            <p>
+              This permanently removes {agent.name} from the household. Any
+              scheduled tasks or tool registrations they own must be moved
+              or removed first — the server will block the delete and
+              return the specifics if so.
+            </p>
+          </>
+        }
+        confirmLabel="Delete"
+        tone="destructive"
+      />
     </Card>
   );
 }
@@ -892,19 +933,19 @@ export function HouseholdPage() {
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-6xl">
+    <PageShell maxWidth="5xl">
       {/* Family Members section */}
       <div className="mb-10">
-        <div className="flex items-center justify-between mb-5">
+        <PageShell.Header>
           <div>
             <h2
               className="text-[22px] font-normal flex items-center gap-2"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
             >
-              <Users className="h-5 w-5" style={{ color: "#8a8070" }} />
+              <Users className="h-5 w-5 text-carson-text-muted" />
               Family Members
             </h2>
-            <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+            <p className="text-[13px] mt-1 text-carson-text-meta">
               {members.length} member{members.length !== 1 ? "s" : ""}
               {householdData?.household?.name ? ` \u00B7 ${householdData.household.name}` : ""}
             </p>
@@ -919,7 +960,7 @@ export function HouseholdPage() {
               <Plus className="h-3.5 w-3.5 mr-1" /> Add Member
             </Button>
           )}
-        </div>
+        </PageShell.Header>
 
         {loadingHousehold && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -933,7 +974,7 @@ export function HouseholdPage() {
           <Card className="border" style={{ borderColor: "#ddd5c8" }}>
             <CardContent className="p-6 text-center">
               <Users className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
-              <p className="text-sm" style={{ color: "#8a8070" }}>
+              <p className="text-sm text-carson-text-muted">
                 No household configured yet. Complete onboarding to get started.
               </p>
             </CardContent>
@@ -963,7 +1004,7 @@ export function HouseholdPage() {
                     >
                       Parents
                     </h2>
-                    <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+                    <p className="text-[13px] mt-1 text-carson-text-meta">
                       {parents.length} {parents.length === 1 ? "adult" : "adults"} in the household.
                     </p>
                   </div>
@@ -991,7 +1032,7 @@ export function HouseholdPage() {
                     >
                       Kids
                     </h2>
-                    <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+                    <p className="text-[13px] mt-1 text-carson-text-meta">
                       {children.length} {children.length === 1 ? "kid" : "kids"} in the household.
                     </p>
                   </div>
@@ -1010,7 +1051,7 @@ export function HouseholdPage() {
               )}
 
               {members.length === 0 && !showAddMember && (
-                <p className="text-sm" style={{ color: "#8a8070" }}>
+                <p className="text-sm text-carson-text-muted">
                   No members yet. Add your first family member.
                 </p>
               )}
@@ -1067,10 +1108,10 @@ export function HouseholdPage() {
               className="text-[22px] font-normal flex items-center gap-2"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
             >
-              <Users className="h-5 w-5" style={{ color: "#8a8070" }} />
+              <Users className="h-5 w-5 text-carson-text-muted" />
               Personal agents
             </h2>
-            <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+            <p className="text-[13px] mt-1 text-carson-text-meta">
               The ones you text with. {personalAgents.length} agent{personalAgents.length !== 1 ? "s" : ""}.
             </p>
           </div>
@@ -1096,7 +1137,7 @@ export function HouseholdPage() {
             <StaffCard key={agent.id} agent={agent} />
           ))}
           {!loadingStaff && personalAgents.length === 0 && !showAddStaff && (
-            <p className="text-sm col-span-full" style={{ color: "#8a8070" }}>
+            <p className="text-sm col-span-full text-carson-text-muted">
               No personal agents yet.
             </p>
           )}
@@ -1113,10 +1154,10 @@ export function HouseholdPage() {
               className="text-[22px] font-normal flex items-center gap-2"
               style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
             >
-              <Shield className="h-5 w-5" style={{ color: "#8a8070" }} />
+              <Shield className="h-5 w-5 text-carson-text-muted" />
               Staff
             </h2>
-            <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+            <p className="text-[13px] mt-1 text-carson-text-meta">
               Hired specialists Carson delegates to. {hiredStaff.length} on staff.
             </p>
           </div>
@@ -1136,6 +1177,6 @@ export function HouseholdPage() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

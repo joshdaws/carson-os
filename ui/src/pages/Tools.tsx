@@ -23,6 +23,12 @@ import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { IconButton } from "@/components/ui/icon-button";
+import {
+  ConfirmDialog,
+  useConfirmDialog,
+} from "@/components/ui/confirm-dialog";
+import { PageShell } from "@/components/page-shell";
 import {
   Wrench,
   Code2,
@@ -32,7 +38,6 @@ import {
   Trash2,
   CheckCircle2,
   X,
-  AlertTriangle,
   Key,
   RefreshCw,
   Package,
@@ -270,7 +275,7 @@ function StatusBadge({ status }: { status: ToolStatus }) {
 
 function KindIcon({ kind }: { kind: ToolKind }) {
   const Icon = KIND_ICONS[kind];
-  return <Icon className="h-3.5 w-3.5" style={{ color: "#7a7060" }} />;
+  return <Icon className="h-3.5 w-3.5 text-carson-text-meta" />;
 }
 
 function SectionHeader({
@@ -290,70 +295,17 @@ function SectionHeader({
       style={{ borderColor: "#eee8dd" }}
     >
       <div className="flex items-center gap-2">
-        <Icon className="h-4 w-4 text-[#8a8070]" />
+        <Icon className="h-4 w-4 text-carson-text-muted" />
         <h3 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
           {title}
         </h3>
         {typeof count === "number" && (
-          <span className="text-xs" style={{ color: "#7a7060" }}>
+          <span className="text-xs text-carson-text-meta">
             ({count})
           </span>
         )}
       </div>
       {action}
-    </div>
-  );
-}
-
-function ConfirmDeleteOverlay({
-  toolName,
-  onConfirm,
-  onCancel,
-  pending,
-}: {
-  toolName: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  pending: boolean;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(26, 31, 46, 0.4)" }}
-      onClick={onCancel}
-    >
-      <div
-        className="bg-white rounded-md border p-5 max-w-md mx-4"
-        style={{ borderColor: "#ddd5c8" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start gap-3 mb-3">
-          <AlertTriangle className="h-5 w-5 mt-0.5" style={{ color: "#a82020" }} />
-          <div>
-            <h4 className="text-sm font-semibold" style={{ color: "#1a1f2e" }}>
-              Delete {toolName}?
-            </h4>
-            <p className="text-xs mt-1" style={{ color: "#7a7060" }}>
-              The tool will be marked as disabled and unregistered from active agents.
-              The SKILL.md and handler files stay on disk so the action is recoverable
-              if you change your mind.
-            </p>
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 mt-4">
-          <Button size="sm" variant="ghost" onClick={onCancel} disabled={pending}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={onConfirm}
-            disabled={pending}
-            style={{ background: "#a82020", color: "#fff" }}
-          >
-            {pending ? "Deleting..." : "Delete"}
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -487,10 +439,10 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
   if (!skillMd || !parsed) {
     return (
       <div>
-        <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+        <p className="text-[10px] uppercase tracking-[1.5px] mb-2 text-carson-text-muted">
           SKILL.md
         </p>
-        <p className="text-xs italic" style={{ color: "#a09080" }}>
+        <p className="text-xs italic text-carson-text-meta">
           No SKILL.md file found.
         </p>
       </div>
@@ -503,7 +455,7 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
     <div className="space-y-4">
       {fm && Object.keys(fm).length > 0 && (
         <div>
-          <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+          <p className="text-[10px] uppercase tracking-[1.5px] mb-2 text-carson-text-muted">
             Metadata
           </p>
           <div
@@ -516,7 +468,7 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
                 className="grid grid-cols-[120px_1fr] gap-3 px-3 py-2 text-xs"
                 style={{ borderColor: "#eee8dd" }}
               >
-                <code style={{ color: "#7a7060" }}>{k}</code>
+                <code className="text-carson-text-meta">{k}</code>
                 <span className="break-words" style={{ color: "#1a1f2e" }}>
                   {v}
                 </span>
@@ -527,7 +479,7 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
       )}
 
       <div>
-        <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+        <p className="text-[10px] uppercase tracking-[1.5px] mb-2 text-carson-text-muted">
           SKILL.md
         </p>
         <div
@@ -626,8 +578,8 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
               ),
               blockquote: ({ children }) => (
                 <blockquote
-                  className="text-xs italic pl-3 my-2"
-                  style={{ borderLeft: "2px solid #ddd5c8", color: "#5a5a5a" }}
+                  className="text-xs italic pl-3 my-2 text-carson-text-muted"
+                  style={{ borderLeft: "2px solid #ddd5c8" }}
                 >
                   {children}
                 </blockquote>
@@ -650,10 +602,7 @@ function RawSkillMdToggle({ skillMd }: { skillMd: string }) {
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
     >
-      <summary
-        className="cursor-pointer select-none py-1"
-        style={{ color: "#7a7060" }}
-      >
+      <summary className="cursor-pointer select-none py-1 text-carson-text-meta">
         {open ? "Hide" : "Show"} raw SKILL.md
       </summary>
       <pre
@@ -682,7 +631,7 @@ function ToolDetailPanel({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteProps, askConfirmDelete] = useConfirmDialog();
 
   const { data, isLoading, error } = useQuery<ToolDetail>({
     queryKey: ["tools", "custom", toolId],
@@ -708,7 +657,6 @@ function ToolDetailPanel({
     mutationFn: () => api.delete(`/tools/custom/${toolId}`),
     onSuccess: () => {
       invalidateTools();
-      setConfirmDelete(false);
       onClose();
     },
   });
@@ -747,7 +695,7 @@ function ToolDetailPanel({
                   </h2>
                   <StatusBadge status={tool.status} />
                 </div>
-                <p className="text-xs" style={{ color: "#7a7060" }}>
+                <p className="text-xs text-carson-text-meta">
                   {tool.kind} tool · created by {agents.get(tool.createdByAgentId) ?? "unknown agent"} ·{" "}
                   {tool.source === "installed-skill" && tool.sourceUrl
                     ? `installed from ${tool.sourceUrl}`
@@ -758,19 +706,21 @@ function ToolDetailPanel({
               <h2 className="text-[18px]">Loading...</h2>
             )}
           </div>
-          <button
+          <IconButton
+            aria-label="Close tool detail"
+            variant="ghost"
+            size="md"
             onClick={onClose}
-            className="ml-3 p-1 rounded hover:bg-[#faf8f4]"
-            aria-label="Close"
+            className="ml-3"
           >
-            <X className="h-4 w-4" style={{ color: "#7a7060" }} />
-          </button>
+            <X />
+          </IconButton>
         </div>
 
         {/* Body */}
         <div className="p-5 space-y-5">
           {isLoading && (
-            <p className="text-sm" style={{ color: "#7a7060" }}>
+            <p className="text-sm text-carson-text-meta">
               Loading tool details...
             </p>
           )}
@@ -790,7 +740,7 @@ function ToolDetailPanel({
               {/* Stats */}
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1" style={{ color: "#8a8070" }}>
+                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1 text-carson-text-muted">
                     Usage
                   </p>
                   <p className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
@@ -798,7 +748,7 @@ function ToolDetailPanel({
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1" style={{ color: "#8a8070" }}>
+                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1 text-carson-text-muted">
                     Last used
                   </p>
                   <p className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
@@ -806,7 +756,7 @@ function ToolDetailPanel({
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1" style={{ color: "#8a8070" }}>
+                  <p className="text-[10px] uppercase tracking-[1.5px] mb-1 text-carson-text-muted">
                     Updated
                   </p>
                   <p className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
@@ -846,7 +796,7 @@ function ToolDetailPanel({
 
               {/* Path */}
               <div>
-                <p className="text-[10px] uppercase tracking-[1.5px] mb-1" style={{ color: "#8a8070" }}>
+                <p className="text-[10px] uppercase tracking-[1.5px] mb-1 text-carson-text-muted">
                   File path
                 </p>
                 <code
@@ -866,7 +816,7 @@ function ToolDetailPanel({
               {/* handler.ts (script tools only) — wrap long lines so it doesn't punch out of the panel */}
               {tool.kind === "script" && (
                 <div>
-                  <p className="text-[10px] uppercase tracking-[1.5px] mb-2" style={{ color: "#8a8070" }}>
+                  <p className="text-[10px] uppercase tracking-[1.5px] mb-2 text-carson-text-muted">
                     handler.ts
                   </p>
                   {data?.handlerTs ? (
@@ -883,7 +833,7 @@ function ToolDetailPanel({
                       {data.handlerTs}
                     </pre>
                   ) : (
-                    <p className="text-xs italic" style={{ color: "#a09080" }}>
+                    <p className="text-xs italic text-carson-text-meta">
                       No handler.ts file found.
                     </p>
                   )}
@@ -929,7 +879,16 @@ function ToolDetailPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setConfirmDelete(true)}
+                  onClick={() =>
+                    askConfirmDelete(() =>
+                      new Promise<void>((resolve, reject) => {
+                        deleteMutation.mutate(undefined, {
+                          onSuccess: () => resolve(),
+                          onError: (err) => reject(err),
+                        });
+                      }),
+                    )
+                  }
                   disabled={deleteMutation.isPending}
                   style={{ borderColor: "#ddd5c8", color: "#a82020" }}
                 >
@@ -949,14 +908,17 @@ function ToolDetailPanel({
         </div>
       </div>
 
-      {confirmDelete && tool && (
-        <ConfirmDeleteOverlay
-          toolName={tool.name}
-          onConfirm={() => deleteMutation.mutate()}
-          onCancel={() => setConfirmDelete(false)}
-          pending={deleteMutation.isPending}
-        />
-      )}
+      <ConfirmDialog
+        {...confirmDeleteProps}
+        title={tool ? `Delete ${tool.name}?` : "Delete tool?"}
+        description={
+          tool
+            ? `Delete tool '${tool.name}'? This removes it from the registry and all agents that have access. This cannot be undone.`
+            : "This action cannot be undone."
+        }
+        confirmLabel="Delete"
+        tone="destructive"
+      />
     </>
   );
 }
@@ -1024,22 +986,228 @@ function ToolRow({
           <span style={{ color: "#1a1f2e" }}>{t.name}</span>
         </div>
       </td>
-      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+      <td className="px-4 py-2.5 text-xs text-carson-text-meta">
         {t.kind}
       </td>
       <td className="px-4 py-2.5">
         <StatusBadge status={t.status} />
       </td>
-      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+      <td className="px-4 py-2.5 text-xs text-carson-text-meta">
         {agentMap.get(t.createdByAgentId) ?? "—"}
       </td>
-      <td className="px-4 py-2.5 text-xs text-right" style={{ color: "#7a7060" }}>
+      <td className="px-4 py-2.5 text-xs text-right text-carson-text-meta">
         {t.usageCount}
       </td>
-      <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+      <td className="px-4 py-2.5 text-xs text-carson-text-meta">
         {formatDate(t.lastUsedAt)}
       </td>
     </tr>
+  );
+}
+
+// ── Mobile card layout ─────────────────────────────────────────────
+//
+// Below the md breakpoint the table's six columns clip and force horizontal
+// scroll. The card variant flattens each tool to a stacked layout: name +
+// kind icon at the top, status badge, then a two-column metadata grid for
+// created-by / usage / last-used. Bundles render as a parent card that
+// toggles a list of inset member cards on tap. Solo tools are a single
+// tappable card.
+
+function ToolCard({
+  t,
+  agentMap,
+  onSelect,
+}: {
+  t: CustomTool;
+  agentMap: Map<string, string>;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(t.id)}
+      className="w-full text-left rounded-md border bg-carson-ivory border-carson-border p-3 transition-colors hover:bg-carson-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <div className="flex items-start gap-2">
+        <KindIcon kind={t.kind} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className="text-sm font-medium break-words"
+              style={{ color: "#1a1f2e" }}
+            >
+              {t.name}
+            </span>
+            <StatusBadge status={t.status} />
+          </div>
+          <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-carson-text-meta">
+            <div>
+              <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                Kind
+              </dt>
+              <dd>{t.kind}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                Created by
+              </dt>
+              <dd className="truncate">
+                {agentMap.get(t.createdByAgentId) ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                Usage
+              </dt>
+              <dd>
+                {t.usageCount} call{t.usageCount === 1 ? "" : "s"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                Last used
+              </dt>
+              <dd>{formatDate(t.lastUsedAt)}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function ToolBundleCard({
+  bundle,
+  expanded,
+  onToggle,
+  agentMap,
+  onSelectTool,
+}: {
+  bundle: BundleGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  agentMap: Map<string, string>;
+  onSelectTool: (id: string) => void;
+}) {
+  const Chevron = expanded ? ChevronDown : ChevronRight;
+  const lastUsedTs = bundle.tools
+    .map((t) => (t.lastUsedAt ? new Date(t.lastUsedAt).getTime() : 0))
+    .reduce((a, b) => Math.max(a, b), 0);
+  const lastUsedLabel =
+    lastUsedTs === 0 ? "—" : formatDate(new Date(lastUsedTs).toISOString());
+  const agentNames = new Set(
+    bundle.tools.map((t) => agentMap.get(t.createdByAgentId) ?? "—"),
+  );
+  const createdByLabel =
+    agentNames.size === 1 ? [...agentNames][0] : `${agentNames.size} agents`;
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left rounded-md border bg-carson-ivory border-carson-border p-3 transition-colors hover:bg-carson-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-expanded={expanded}
+      >
+        <div className="flex items-start gap-2">
+          <Chevron className="h-4 w-4 mt-0.5 text-carson-text-meta" />
+          <Package className="h-4 w-4 mt-0.5 text-carson-text-meta" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className="text-sm font-medium break-words"
+                style={{ color: "#1a1f2e" }}
+              >
+                {bundle.name}
+              </span>
+              <span className="text-[11px] text-carson-text-meta">
+                {bundle.tools.length} tools
+              </span>
+            </div>
+            <div className="mt-2">
+              <BundleStatusSummary b={bundle} />
+            </div>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-carson-text-meta">
+              <div>
+                <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                  Created by
+                </dt>
+                <dd className="truncate">{createdByLabel}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                  Usage
+                </dt>
+                <dd>{bundle.totalUsage}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-[10px] uppercase tracking-[1.2px] text-carson-text-muted">
+                  Last used
+                </dt>
+                <dd>{lastUsedLabel}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </button>
+      {expanded && (
+        // pl-3 on the parent indents inset members instead of ml-3 on each
+        // child — the child stays w-full inside this padded box, so the
+        // PageShell overflow-x-hidden ancestor doesn't clip the right edge.
+        <div className="space-y-2 pl-3">
+          {bundle.tools.map((t) => (
+            <ToolCard
+              key={t.id}
+              t={t}
+              agentMap={agentMap}
+              onSelect={onSelectTool}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolsCardList({
+  entries,
+  agentMap,
+  expandedBundles,
+  onToggleBundle,
+  onSelectTool,
+}: {
+  entries: ToolsListEntry[];
+  agentMap: Map<string, string>;
+  expandedBundles: Set<string>;
+  onToggleBundle: (name: string) => void;
+  onSelectTool: (id: string) => void;
+}) {
+  return (
+    <div className="space-y-2 p-3">
+      {entries.map((entry) => {
+        if (entry.type === "solo") {
+          return (
+            <ToolCard
+              key={entry.tool.id}
+              t={entry.tool}
+              agentMap={agentMap}
+              onSelect={onSelectTool}
+            />
+          );
+        }
+        return (
+          <ToolBundleCard
+            key={`bundle:${entry.name}`}
+            bundle={entry}
+            expanded={expandedBundles.has(entry.name)}
+            onToggle={() => onToggleBundle(entry.name)}
+            agentMap={agentMap}
+            onSelectTool={onSelectTool}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -1060,40 +1228,22 @@ function ToolsTable({
     <table className="w-full text-sm">
       <thead>
         <tr style={{ borderBottom: "1px solid #eee8dd" }}>
-          <th
-            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Name
           </th>
-          <th
-            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Kind
           </th>
-          <th
-            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Status
           </th>
-          <th
-            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Created by
           </th>
-          <th
-            className="text-right px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-right px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Usage
           </th>
-          <th
-            className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium"
-            style={{ color: "#8a8070" }}
-          >
+          <th className="text-left px-4 py-2 text-[10px] uppercase tracking-[1.5px] font-medium text-carson-text-muted">
             Last used
           </th>
         </tr>
@@ -1150,23 +1300,23 @@ function ToolBundleRows({
       >
         <td className="px-4 py-2.5">
           <div className="flex items-center gap-2">
-            <Chevron className="h-3.5 w-3.5" style={{ color: "#7a7060" }} />
-            <Package className="h-3.5 w-3.5" style={{ color: "#7a7060" }} />
+            <Chevron className="h-3.5 w-3.5 text-carson-text-meta" />
+            <Package className="h-3.5 w-3.5 text-carson-text-meta" />
             <span className="font-medium" style={{ color: "#1a1f2e" }}>
               {bundle.name}
             </span>
-            <span className="text-xs" style={{ color: "#7a7060" }}>
+            <span className="text-xs text-carson-text-meta">
               ({bundle.tools.length} tools)
             </span>
           </div>
         </td>
-        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        <td className="px-4 py-2.5 text-xs text-carson-text-meta">
           bundle
         </td>
         <td className="px-4 py-2.5">
           <BundleStatusSummary b={bundle} />
         </td>
-        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        <td className="px-4 py-2.5 text-xs text-carson-text-meta">
           {(() => {
             const agents = new Set(
               bundle.tools.map((t) => agentMap.get(t.createdByAgentId) ?? "—"),
@@ -1174,10 +1324,10 @@ function ToolBundleRows({
             return agents.size === 1 ? [...agents][0] : `${agents.size} agents`;
           })()}
         </td>
-        <td className="px-4 py-2.5 text-xs text-right" style={{ color: "#7a7060" }}>
+        <td className="px-4 py-2.5 text-xs text-right text-carson-text-meta">
           {bundle.totalUsage}
         </td>
-        <td className="px-4 py-2.5 text-xs" style={{ color: "#7a7060" }}>
+        <td className="px-4 py-2.5 text-xs text-carson-text-meta">
           {(() => {
             const last = bundle.tools
               .map((t) => (t.lastUsedAt ? new Date(t.lastUsedAt).getTime() : 0))
@@ -1279,18 +1429,20 @@ function OrphanImporterModal({
             <h3 className="text-base font-semibold" style={{ color: "#1a1f2e" }}>
               Import orphan tools
             </h3>
-            <p className="text-xs mt-1" style={{ color: "#7a7060" }}>
+            <p className="text-xs mt-1 text-carson-text-meta">
               Found {orphans.length} SKILL.md file{orphans.length === 1 ? "" : "s"} on disk
               with no matching registry row. Pick which to import.
             </p>
           </div>
-          <button
+          <IconButton
+            aria-label="Close orphan importer"
+            variant="ghost"
+            size="md"
             onClick={onClose}
-            className="ml-3 p-1 rounded hover:bg-[#faf8f4]"
-            aria-label="Close"
+            className="ml-3"
           >
-            <X className="h-4 w-4" style={{ color: "#7a7060" }} />
-          </button>
+            <X />
+          </IconButton>
         </div>
 
         {/* List */}
@@ -1327,15 +1479,15 @@ function OrphanImporterModal({
                       {o.parsed && (
                         <Badge
                           variant="secondary"
-                          className="text-[10px]"
-                          style={{ background: "#f4efe6", color: "#5a5a5a" }}
+                          className="text-[10px] text-carson-text-muted"
+                          style={{ background: "#f4efe6" }}
                         >
                           {o.parsed.kind}
                         </Badge>
                       )}
                     </div>
                     {o.parsed && (
-                      <p className="text-xs mt-1" style={{ color: "#5a5a5a" }}>
+                      <p className="text-xs mt-1 text-carson-text-muted">
                         <span className="font-medium" style={{ color: "#1a1f2e" }}>
                           {o.parsed.name}
                         </span>{" "}
@@ -1370,7 +1522,7 @@ function OrphanImporterModal({
           className="px-5 py-3 border-t flex items-center justify-between"
           style={{ borderColor: "#eee8dd" }}
         >
-          <p className="text-xs" style={{ color: "#7a7060" }}>
+          <p className="text-xs text-carson-text-meta">
             {selected.size} of {importable.length} importable selected
           </p>
           <div className="flex gap-2">
@@ -1400,7 +1552,10 @@ export default function ToolsPage() {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
-  const [confirmSecretDelete, setConfirmSecretDelete] = useState<SecretEntry | null>(null);
+  // Two-step state: `secretDeleteTarget` is read by the dialog so the title
+  // can name the secret; `confirmSecretDeleteProps` controls the modal visibility.
+  const [secretDeleteTarget, setSecretDeleteTarget] = useState<SecretEntry | null>(null);
+  const [confirmSecretDeleteProps, askConfirmSecretDelete] = useConfirmDialog();
 
   const { data: householdData } = useQuery<{ household: { id: string; name: string } }>({
     queryKey: ["household"],
@@ -1443,7 +1598,7 @@ export default function ToolsPage() {
     mutationFn: (id: string) => api.delete(`/tools/secrets/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tools", "secrets"] });
-      setConfirmSecretDelete(null);
+      setSecretDeleteTarget(null);
     },
   });
 
@@ -1512,23 +1667,24 @@ export default function ToolsPage() {
   ];
 
   return (
-    <div className="p-6 lg:p-8 max-w-5xl">
-      {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-2">
-          <Wrench className="h-5 w-5" style={{ color: "#8a8070" }} />
-          <h2
-            className="text-[22px] font-normal"
-            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-          >
-            Custom Tools
-          </h2>
+    <PageShell maxWidth="5xl">
+      <PageShell.Header>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <Wrench className="h-5 w-5 text-carson-text-muted" />
+            <h2
+              className="text-[22px] font-normal"
+              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+            >
+              Custom Tools
+            </h2>
+          </div>
+          <p className="text-[13px] mt-1 text-carson-text-meta">
+            Tools your agents have created or installed. Files live at{" "}
+            <code style={{ color: "#3a4060" }}>~/.carsonos/tools/</code>.
+          </p>
         </div>
-        <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
-          Tools your agents have created or installed. Files live at{" "}
-          <code style={{ color: "#3a4060" }}>~/.carsonos/tools/</code>.
-        </p>
-      </div>
+      </PageShell.Header>
 
       {/* Orphan banner — only when SKILL.md files on disk are not registered */}
       {orphans.length > 0 && (
@@ -1543,7 +1699,7 @@ export default function ToolsPage() {
               Found {orphans.length} SKILL.md file{orphans.length === 1 ? "" : "s"} on disk
               that {orphans.length === 1 ? "isn't" : "aren't"} registered.
             </p>
-            <p className="text-[10px]" style={{ color: "#7a7060" }}>
+            <p className="text-[10px] text-carson-text-meta">
               Hand-authored, synced from another machine, or restored from backup. Review and import.
             </p>
           </div>
@@ -1553,7 +1709,7 @@ export default function ToolsPage() {
 
       {/* Filter tabs */}
       <div
-        className="flex gap-1 mb-4 border-b"
+        className="flex gap-1 mb-4 border-b overflow-x-auto"
         style={{ borderColor: "#ddd5c8" }}
       >
         {filterTabs.map((tab) => {
@@ -1563,10 +1719,11 @@ export default function ToolsPage() {
             <button
               key={tab.key}
               onClick={() => setFilter(tab.key)}
-              className="px-3 py-2 text-xs transition-colors relative"
+              className={`px-3 py-2 text-xs transition-colors relative whitespace-nowrap ${
+                isActive ? "font-semibold" : "text-carson-text-meta"
+              }`}
               style={{
-                color: isActive ? "#1a1f2e" : "#7a7060",
-                fontWeight: isActive ? 600 : 400,
+                color: isActive ? "#1a1f2e" : undefined,
                 borderBottom: isActive ? "2px solid #8b6f4e" : "2px solid transparent",
                 marginBottom: -1,
               }}
@@ -1574,10 +1731,12 @@ export default function ToolsPage() {
               {tab.label}
               {count > 0 && (
                 <span
-                  className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded"
+                  className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded ${
+                    tab.emphasize ? "" : "text-carson-text-meta"
+                  }`}
                   style={{
                     background: tab.emphasize ? "#fff4e0" : "#f4efe6",
-                    color: tab.emphasize ? "#a06010" : "#7a7060",
+                    color: tab.emphasize ? "#a06010" : undefined,
                   }}
                 >
                   {count}
@@ -1588,37 +1747,57 @@ export default function ToolsPage() {
         })}
       </div>
 
-      {/* Tools table */}
+      {/* Tools list — table at md+, stacked cards below */}
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <CardContent className="p-0">
           {toolsLoading ? (
-            <p className="text-sm p-4" style={{ color: "#7a7060" }}>
+            <p className="text-sm p-4 text-carson-text-meta">
               Loading custom tools...
             </p>
           ) : filteredTools.length === 0 ? (
             <div className="p-8 text-center">
               <Wrench className="h-8 w-8 mx-auto mb-2" style={{ color: "#ddd5c8" }} />
-              <p className="text-sm" style={{ color: "#7a7060" }}>
+              <p className="text-sm text-carson-text-meta">
                 {filter === "all"
                   ? "No custom tools yet. Agents create tools through conversation using create_http_tool, create_prompt_tool, or create_script_tool."
                   : `No tools with status "${filter.replace("_", " ")}".`}
               </p>
             </div>
           ) : (
-            <ToolsTable
-              entries={groupedEntries}
-              agentMap={agentMap}
-              expandedBundles={expandedBundles}
-              onToggleBundle={(name) =>
-                setExpandedBundles((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(name)) next.delete(name);
-                  else next.add(name);
-                  return next;
-                })
-              }
-              onSelectTool={setSelectedToolId}
-            />
+            <>
+              <div className="md:hidden">
+                <ToolsCardList
+                  entries={groupedEntries}
+                  agentMap={agentMap}
+                  expandedBundles={expandedBundles}
+                  onToggleBundle={(name) =>
+                    setExpandedBundles((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(name)) next.delete(name);
+                      else next.add(name);
+                      return next;
+                    })
+                  }
+                  onSelectTool={setSelectedToolId}
+                />
+              </div>
+              <div className="hidden md:block">
+                <ToolsTable
+                  entries={groupedEntries}
+                  agentMap={agentMap}
+                  expandedBundles={expandedBundles}
+                  onToggleBundle={(name) =>
+                    setExpandedBundles((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(name)) next.delete(name);
+                      else next.add(name);
+                      return next;
+                    })
+                  }
+                  onSelectTool={setSelectedToolId}
+                />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -1630,20 +1809,20 @@ export default function ToolsPage() {
           icon={Key}
           count={secretsData?.secrets.length}
           action={
-            <Button
-              size="sm"
+            <IconButton
+              aria-label="Refresh secrets"
               variant="ghost"
+              size="sm"
               onClick={() =>
                 queryClient.invalidateQueries({ queryKey: ["tools", "secrets"] })
               }
-              className="h-7 px-2"
             >
-              <RefreshCw className="h-3 w-3" style={{ color: "#7a7060" }} />
-            </Button>
+              <RefreshCw />
+            </IconButton>
           }
         />
         <CardContent className="p-4">
-          <p className="text-xs mb-3" style={{ color: "#7a7060" }}>
+          <p className="text-xs mb-3 text-carson-text-meta">
             Encrypted with AES-256-GCM. Values are never returned by the API.
             Add secrets here (safer) or let an agent create them via{" "}
             <code>store_secret</code> during conversation.
@@ -1654,9 +1833,9 @@ export default function ToolsPage() {
             className="mb-4 p-3 rounded border"
             style={{ borderColor: "#e6dfd0", background: "#faf8f4" }}
           >
-            <div className="flex gap-2 items-end">
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
               <div className="flex-1">
-                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: "#7a7060" }}>
+                <label className="text-[10px] uppercase tracking-wide block mb-1 text-carson-text-meta">
                   Key name
                 </label>
                 <input
@@ -1673,7 +1852,7 @@ export default function ToolsPage() {
                 />
               </div>
               <div className="flex-1">
-                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: "#7a7060" }}>
+                <label className="text-[10px] uppercase tracking-wide block mb-1 text-carson-text-meta">
                   Value
                 </label>
                 <div className="relative">
@@ -1684,7 +1863,7 @@ export default function ToolsPage() {
                     onChange={(e) =>
                       setSecretForm({ ...secretForm, value: e.target.value })
                     }
-                    className="w-full px-2 py-1.5 pr-8 text-xs font-mono rounded border"
+                    className="w-full px-2 py-1.5 pr-12 text-xs font-mono rounded border"
                     style={{ borderColor: "#ddd5c8", background: "#fff" }}
                     autoComplete="new-password"
                     spellCheck={false}
@@ -1692,18 +1871,15 @@ export default function ToolsPage() {
                       if (e.key === "Enter") submitSecret();
                     }}
                   />
-                  <button
-                    type="button"
+                  <IconButton
+                    aria-label={showSecretValue ? "Hide secret value" : "Show secret value"}
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setShowSecretValue((s) => !s)}
-                    className="absolute right-1 top-1 p-1 rounded hover:bg-[#eee5d4]"
-                    aria-label={showSecretValue ? "Hide value" : "Show value"}
+                    className="absolute inset-y-0 right-0"
                   >
-                    {showSecretValue ? (
-                      <EyeOff className="h-3 w-3" style={{ color: "#7a7060" }} />
-                    ) : (
-                      <Eye className="h-3 w-3" style={{ color: "#7a7060" }} />
-                    )}
-                  </button>
+                    {showSecretValue ? <EyeOff /> : <Eye />}
+                  </IconButton>
                 </div>
               </div>
               <Button
@@ -1734,7 +1910,7 @@ export default function ToolsPage() {
           </div>
 
           {!secretsData || secretsData.secrets.length === 0 ? (
-            <p className="text-xs italic py-2" style={{ color: "#a09080" }}>
+            <p className="text-xs italic py-2 text-carson-text-meta">
               No secrets stored.
             </p>
           ) : (
@@ -1742,23 +1918,34 @@ export default function ToolsPage() {
               {secretsData.secrets.map((s) => (
                 <li
                   key={s.id}
-                  className="flex items-center justify-between py-2 px-3 rounded hover:bg-[#faf8f4]"
+                  className="flex items-center justify-between gap-2 py-2 px-3 rounded hover:bg-[#faf8f4]"
                 >
-                  <div>
-                    <code className="text-xs font-mono" style={{ color: "#1a1f2e" }}>
+                  <div className="min-w-0 flex-1">
+                    <code className="text-xs font-mono break-all" style={{ color: "#1a1f2e" }}>
                       {s.keyName}
                     </code>
-                    <span className="text-[10px] ml-3" style={{ color: "#a09080" }}>
+                    <span className="text-[10px] ml-3 text-carson-text-meta">
                       added {formatDate(s.createdAt)}
                     </span>
                   </div>
-                  <button
-                    onClick={() => setConfirmSecretDelete(s)}
-                    className="p-1 rounded hover:bg-[#fde8e8]"
+                  <IconButton
                     aria-label={`Delete secret ${s.keyName}`}
+                    variant="destructive"
+                    size="md"
+                    onClick={() => {
+                      setSecretDeleteTarget(s);
+                      askConfirmSecretDelete(() =>
+                        new Promise<void>((resolve, reject) => {
+                          deleteSecretMutation.mutate(s.id, {
+                            onSuccess: () => resolve(),
+                            onError: (err) => reject(err),
+                          });
+                        }),
+                      );
+                    }}
                   >
-                    <Trash2 className="h-3.5 w-3.5" style={{ color: "#a82020" }} />
-                  </button>
+                    <Trash2 />
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -1776,14 +1963,21 @@ export default function ToolsPage() {
       )}
 
       {/* Confirm secret delete */}
-      {confirmSecretDelete && (
-        <ConfirmDeleteOverlay
-          toolName={`secret "${confirmSecretDelete.keyName}"`}
-          onConfirm={() => deleteSecretMutation.mutate(confirmSecretDelete.id)}
-          onCancel={() => setConfirmSecretDelete(null)}
-          pending={deleteSecretMutation.isPending}
-        />
-      )}
+      <ConfirmDialog
+        {...confirmSecretDeleteProps}
+        title={
+          secretDeleteTarget
+            ? `Delete secret ${secretDeleteTarget.keyName}?`
+            : "Delete secret?"
+        }
+        description={
+          secretDeleteTarget
+            ? `Delete secret '${secretDeleteTarget.keyName}'? Tools that reference this key will fail until it's recreated. This cannot be undone.`
+            : "This action cannot be undone."
+        }
+        confirmLabel="Delete"
+        tone="destructive"
+      />
 
       {/* Orphan importer modal */}
       {orphanModalOpen && householdId && (
@@ -1797,6 +1991,6 @@ export default function ToolsPage() {
           }}
         />
       )}
-    </div>
+    </PageShell>
   );
 }

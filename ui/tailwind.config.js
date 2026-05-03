@@ -42,6 +42,26 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // CarsonOS palette + semantic text tokens (v0.5.3 — issue #46).
+        // Use these via Tailwind classes rather than inline hex literals
+        // so a future palette tweak lands in one place.
+        carson: {
+          navy:    "var(--carson-navy)",
+          cream:   "var(--carson-cream)",
+          ivory:   "var(--carson-ivory)",
+          border:  "var(--carson-border)",
+          text: {
+            primary:         "var(--carson-text-primary)",
+            body:            "var(--carson-text-body)",
+            muted:           "var(--carson-text-muted)",
+            meta:            "var(--carson-text-meta)",
+            "on-navy":       "var(--carson-text-on-navy)",
+            "on-navy-muted": "var(--carson-text-on-navy-muted)",
+          },
+          success: "var(--carson-success)",
+          warning: "var(--carson-warning)",
+          error:   "var(--carson-error)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
