@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Send, User, Bot, ArrowLeft, Plus, X } from "lucide-react";
+import { MessageSquare, Send, User, Bot, ArrowLeft, Plus, Search, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageShell } from "@/components/page-shell";
 import { IconButton } from "@/components/ui/icon-button";
@@ -256,9 +257,29 @@ function MessageBubble({ message }: { message: Message }) {
 
 export function ConversationsPage() {
   const queryClient = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [memberFilter, setMemberFilter] = useState("all");
-  const [staffFilter, setStaffFilter] = useState("all");
+  // URL-backed filter + selection (UI audit #48). Conversations on the live
+  // family instance can grow into the dozens; bookmark / share / reload
+  // should preserve which conversation the user was reading.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get("c");
+  const memberFilter = searchParams.get("memberId") || "all";
+  const staffFilter = searchParams.get("agentId") || "all";
+  const search = searchParams.get("q") || "";
+
+  function updateParam(key: string, value: string | null) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value && value !== "all") next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  const setSelectedId = (id: string | null) => updateParam("c", id);
+  const setMemberFilter = (v: string) => updateParam("memberId", v);
+  const setStaffFilter = (v: string) => updateParam("agentId", v);
+  const setSearch = (v: string) => updateParam("q", v || null);
+
   const [messageInput, setMessageInput] = useState("");
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
   const [showNewChat, setShowNewChat] = useState(false);
@@ -378,7 +399,20 @@ export function ConversationsPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messagesData, pendingUserMsg, sendMutation.isPending]);
 
-  const conversations = convsData?.conversations || [];
+  const allConversations = convsData?.conversations || [];
+  // Client-side text search across the conversation list. Server doesn't
+  // index conversation/message text, so this narrows whatever the
+  // memberId/agentId query returned.
+  const conversations = search.trim()
+    ? allConversations.filter((c) => {
+        const q = search.trim().toLowerCase();
+        return (
+          c.memberName?.toLowerCase().includes(q) ||
+          c.agentName?.toLowerCase().includes(q) ||
+          c.lastMessage?.toLowerCase().includes(q)
+        );
+      })
+    : allConversations;
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
   const selectedConv = conversations.find((c) => c.id === selectedId);
@@ -423,6 +457,18 @@ export function ConversationsPage() {
         >
           {/* Filters + New Chat button */}
           <div className="p-3 border-b space-y-2" style={{ borderColor: "#eee8dd" }}>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-carson-text-meta" />
+              <Input
+                type="search"
+                placeholder="Search conversations..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-8 pl-8 text-xs"
+                style={{ borderColor: "#ddd5c8" }}
+                aria-label="Search conversations"
+              />
+            </div>
             <div className="flex gap-1.5">
               <Select value={memberFilter} onValueChange={setMemberFilter}>
                 <SelectTrigger className="h-8 text-xs flex-1" style={{ borderColor: "#ddd5c8" }}>

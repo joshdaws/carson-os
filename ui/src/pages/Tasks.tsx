@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -20,6 +21,7 @@ import {
   XCircle,
   Play,
   ThumbsUp,
+  Search,
   X,
 } from "lucide-react";
 import { PageShell } from "@/components/page-shell";
@@ -497,10 +499,30 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
 // ── Tasks Page ─────────────────────────────────────────────────────
 
 export function TasksPage() {
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [staffFilter, setStaffFilter] = useState("all");
-  const [memberFilter, setMemberFilter] = useState("all");
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  // URL-backed filter state — bookmark / share / reload preserves what
+  // you were looking at. UI audit #48: pre-v0.5.5 the filters lived in
+  // local component state so a filtered Tasks view couldn't be linked.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const statusFilter = searchParams.get("status") || "all";
+  const staffFilter = searchParams.get("agentId") || "all";
+  const memberFilter = searchParams.get("memberId") || "all";
+  const search = searchParams.get("q") || "";
+  const selectedTaskId = searchParams.get("task");
+
+  function updateParam(key: string, value: string | null) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value && value !== "all") next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  const setStatusFilter = (v: string) => updateParam("status", v);
+  const setStaffFilter = (v: string) => updateParam("agentId", v);
+  const setMemberFilter = (v: string) => updateParam("memberId", v);
+  const setSearch = (v: string) => updateParam("q", v || null);
+  const setSelectedTaskId = (id: string | null) => updateParam("task", id);
 
   const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
     queryKey: ["staff"],
@@ -516,6 +538,8 @@ export function TasksPage() {
 
   const householdId = householdData?.household?.id;
 
+  // URLSearchParams for the API request — server-side filter only by
+  // householdId/status/agent/member; client filters by free-text search.
   const queryParams = new URLSearchParams();
   if (householdId) queryParams.set("householdId", householdId);
   if (statusFilter !== "all") queryParams.set("status", statusFilter);
@@ -529,7 +553,20 @@ export function TasksPage() {
     enabled: !!householdId,
   });
 
-  const tasks = tasksData?.tasks || [];
+  const allTasks = tasksData?.tasks || [];
+  // Client-side text search across title + body. Server doesn't index task
+  // text so this stays in the browser; the filter narrows whatever the
+  // status/agent/member query returned.
+  const tasks = search.trim()
+    ? allTasks.filter((t) => {
+        const q = search.trim().toLowerCase();
+        return (
+          t.title?.toLowerCase().includes(q) ||
+          t.agentName?.toLowerCase().includes(q) ||
+          t.requestedByName?.toLowerCase().includes(q)
+        );
+      })
+    : allTasks;
   const staff = staffData?.staff || [];
   const members = householdData?.members || [];
 
@@ -553,8 +590,21 @@ export function TasksPage() {
         </p>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-6">
+      {/* Search + filters */}
+      <div className="flex flex-wrap gap-3 mb-6 items-center">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-carson-text-meta" />
+          <Input
+            type="search"
+            placeholder="Search tasks..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8 pl-8 text-xs"
+            style={{ borderColor: "#ddd5c8" }}
+            aria-label="Search tasks"
+          />
+        </div>
+
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="h-8 w-[160px] text-xs" style={{ borderColor: "#ddd5c8" }}>
             <SelectValue placeholder="Status" />
@@ -589,6 +639,17 @@ export function TasksPage() {
             ))}
           </SelectContent>
         </Select>
+
+        {(search || statusFilter !== "all" || staffFilter !== "all" || memberFilter !== "all") && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSearchParams(new URLSearchParams())}
+            className="h-8 text-xs text-carson-text-muted"
+          >
+            Clear
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
