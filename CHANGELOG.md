@@ -4,6 +4,37 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.5] - 2026-05-03
+
+### Added
+
+- **Instrument Serif now ships in product chrome.** The webfont was loaded in `index.html` since the project shipped, but every page heading hardcoded `style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}` inline — system Georgia fell through and DESIGN.md's "the butler earns a serif" identity only ever reached the onboarding flow. v0.5.5 adds a Tailwind `font-serif` utility (`'Instrument Serif', Georgia, 'Times New Roman', serif`) and routes all 26 product-chrome heading sites through it. Sidebar brand, every page heading, every modal title, MissionRevealCard, Onboarding all now render the loaded webfont. Closes the impeccable critique 2026-05-03 P0.
+- **Empty-instance Dashboard butler hero.** A fresh install no longer lands on three "0 of these, 0 of those" zone-cards. Members + staff are both empty → render a single composed hero with a time-aware Instrument Serif greeting ("Good morning." / "Good afternoon." / "Good evening."), one paragraph in the butler voice, one prominent navy "Set up your household" CTA. Once a household exists the existing zone layout returns. Closes the impeccable critique P1.
+- **URL-backed search and filters for Tasks and Conversations** (UI audit #48). Both pages now use react-router's `useSearchParams`. Tasks gains `?status` `?agentId` `?memberId` `?q` (free-text search across title, description, result, report, agent name, requester) and `?task=...` (selected detail). Conversations gains `?memberId` `?agentId` `?q` (search across member / agent / lastMessage) and `?c=...` (selected thread). Both pages got search inputs with explicit aria-labels. Tasks added a Clear button when filters are active. Bookmark / share / reload all preserve exactly what the user was looking at. Pre-v0.5.5 the filters lived in local component state, so a filtered view couldn't be linked.
+
+### Changed
+
+- **FormField primitive now supports compound children** via a new `controlId` prop. The v0.5.3 FormField used `cloneElement` to inject `id` / `name` / `autoComplete` / `aria-*` onto its child — works for plain inputs, breaks for radix `<Select>` (the Select root doesn't accept those props). Setting `controlId` skips the cloneElement step; the caller threads `id={controlId}` onto the actual focusable child (e.g. `<SelectTrigger>`) themselves. Required for the v0.5.5 Settings / Household / Schedules form migrations, all of which have role / model / trust-level / timezone Selects. Documented contract for error states: when `controlId` mode is used, callers must thread `aria-invalid` and `aria-describedby` manually if the field can have errors.
+- **Settings / Projects / Household / Schedules forms migrated to FormField** (UI audit #51). Pre-v0.5.5 these used `<label>` siblings without `htmlFor`, missing `name` and `autoComplete`, with error/required state signaled through copy alone. Now every label links via `htmlFor`, browser autofill works correctly, errors render in `role="alert"` regions. Modal forms (AddStaffModal, NewScheduledTaskModal, EditMemberForm) wire `useDirtyGuard` so closing-while-dirty prompts before discarding — Cancel button, X icon, outside-click, and Escape key all route through `guardClose`.
+- **Dashboard cards left-aligned + sub-12px text floor lifted** (impeccable critique P2). FamilyMemberCard / PersonalAgentCard / InternalAgentCard converted from `text-center` to `text-left` — centered card grids are a recognizable AI tell. Body text below 12px (`text-[9px]` and `text-[10px]`) lifted to `text-xs` (12px) per the slop framework's readability floor. Short uppercase tracking labels still use the smaller sizes per the rule's exception.
+
+### Fixed
+
+- **Dashboard empty-state collision with sidebar Household nav.** The fallback page title `householdName || "Household"` rendered "Household" identically to the sidebar Household nav item, making it impossible to tell which page you were on (cognitive load failure). Fallback is now "Welcome to CarsonOS"; the page title is omitted entirely while the empty hero is showing.
+- **Empty Dashboard hero gate hardened against loading races and internal-only staff.** Fires only when both `householdData` and `staffData` have actually loaded AND members/staff are both empty. Prevents the hero from flashing during slow API responses, and from misfiring when the user has internal-only staff configured but no household members yet.
+- **Conversations selected-thread metadata now resolves from the unfiltered list.** Pre-fix, typing a search that excluded the open `?c=abc` thread collapsed the message-pane header to "?", "Unknown agent" — and on mobile, where the list pane is hidden, the user would get trapped. Reading from `allConversations` keeps the open thread coherent regardless of what the visible filter narrows to.
+- **Modal Escape key now closes via `guardClose`.** AddStaffModal and NewScheduledTaskModal are raw `<div>` modals (not radix Dialog), so they don't get Escape handling for free. Pressing Escape now goes through the same dirty-guard path as Cancel + X + outside-click.
+- **Household memory-folder FormField restructure.** The field was wrapping a `<div>` containing the `<Input>` + Check/X validation icons, so `cloneElement` injected `id` + `aria-invalid` on the wrapper div instead of the input. Label-click didn't focus, "Directory not found" wasn't described by the actual control. Now FormField wraps the `<Input>` directly; validation icons sit beside it.
+- **Tasks search now actually searches the task body.** The comment promised "title + body" but the predicate only checked title / agentName / requestedByName. Searches against `description` / `result` / `report` silently returned nothing. Fixed: predicate now matches all six fields.
+
+### Why this matters
+
+v0.5.5 lands the brand identity in the dashboard for the first time. DESIGN.md described "warm competence, walking into a hotel lobby where someone already knows your name" — a butler aesthetic anchored in Instrument Serif. Pre-v0.5.5 that voice existed only in onboarding; the moment the user reached the dashboard, system Georgia took over. v0.5.5's Tailwind utility + 26-site swap makes the serif show up everywhere a heading appears. Combined with the empty-Dashboard hero (a "Good evening." greeting instead of three configuration cards), a parent landing in CarsonOS at 9pm now sees what DESIGN.md described.
+
+The form audit closes UI audit #51's per-page migration. Browser autofill works correctly across the whole app. Modal close paths consistently prompt before discarding unsaved edits. Selects no longer break FormField's id-injection contract.
+
+The URL-backed search closes UI audit #48. Tasks and Conversations grew past the threshold (51 / 80 items on the live family instance) where a filtered view needs to be linkable.
+
 ## [0.5.4] - 2026-05-03
 
 ### Added
