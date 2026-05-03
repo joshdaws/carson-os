@@ -701,17 +701,25 @@ function TaskStatusBadge({ status }: { status: string }) {
 export function DashboardPage() {
   // ── Data fetching ──────────────────────────────────────────────
 
-  const { data: householdData } = useQuery<HouseholdData>({
-    queryKey: ["household"],
-    queryFn: () => api.get("/households/current"),
-    retry: false,
-  });
+  // status === "pending" means "still loading"; "success" / "error" both
+  // mean the query has settled. /households/current returns 404 on a
+  // brand-new install before onboarding, so we can't gate on data alone —
+  // we'd never trip the empty-instance hero in the exact case it was
+  // built for. Gating on `status !== "pending"` lets both empty-success
+  // and 404-error count as "we know the user has nothing yet."
+  const { data: householdData, status: householdStatus } =
+    useQuery<HouseholdData>({
+      queryKey: ["household"],
+      queryFn: () => api.get("/households/current"),
+      retry: false,
+    });
 
-  const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
-    queryKey: ["staff"],
-    queryFn: () => api.get("/staff"),
-    retry: false,
-  });
+  const { data: staffData, status: staffStatus } =
+    useQuery<{ staff: StaffAgent[] }>({
+      queryKey: ["staff"],
+      queryFn: () => api.get("/staff"),
+      retry: false,
+    });
 
   const householdId = householdData?.household?.id;
 
@@ -757,11 +765,13 @@ export function DashboardPage() {
   // doesn't see the "tell Carson who lives here" hero while the sidebar
   // lists their agents — that mismatch was flagged in the v0.5.5 review.
   //
-  // Also gate on both queries having actually loaded (not just defaulting
-  // to []). Otherwise on a slow or failed API the configured user sees
-  // "Set up your household" flash before their real dashboard renders —
-  // also flagged in the v0.5.5 review (codex P1).
-  const dataLoaded = householdData !== undefined && staffData !== undefined;
+  // Both queries must have SETTLED (success or error) — not just have
+  // truthy data — before we decide. /households/current 404s on a
+  // brand-new install, so a "data !== undefined" gate would never fire
+  // for the exact target scenario. Treating "error" as settled means the
+  // hero correctly fires when the household genuinely doesn't exist yet.
+  const dataLoaded =
+    householdStatus !== "pending" && staffStatus !== "pending";
   const isEmptyInstance =
     dataLoaded && members.length === 0 && staff.length === 0;
 
@@ -775,8 +785,8 @@ export function DashboardPage() {
             {getGreeting()}.
           </h1>
           <p className="text-base text-carson-text-body max-w-prose mx-auto leading-relaxed mb-10 px-4">
-            CarsonOS runs on the people in your household, not on configuration.
-            Tell Carson who lives here, and we'll build the rest from there.
+            Your household isn't set up yet. Tell Carson who lives here,
+            and he'll take it from there.
           </p>
           <Link to="/household">
             <Button

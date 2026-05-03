@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
@@ -390,10 +390,22 @@ function EditMemberForm({
                   dirtyGuard.markDirty();
                 }}
                 onBlur={() => {
-                  if (!memoryDir.trim()) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
-                  api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(memoryDir.trim())}`)
-                    .then((r) => { setMemoryDirValid(r.valid); setMemoryDirResolved(r.resolved); })
-                    .catch(() => setMemoryDirValid(false));
+                  const requested = memoryDir.trim();
+                  if (!requested) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
+                  // Snapshot the path the user blurred with. If they edit the
+                  // input again before the response lands, the response is
+                  // stale and must not bless the new text. Without this guard
+                  // the user could see "valid" on a path they never typed.
+                  api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(requested)}`)
+                    .then((r) => {
+                      if (memoryDir.trim() !== requested) return;
+                      setMemoryDirValid(r.valid);
+                      setMemoryDirResolved(r.resolved);
+                    })
+                    .catch(() => {
+                      if (memoryDir.trim() !== requested) return;
+                      setMemoryDirValid(false);
+                    });
                 }}
                 style={{ fontFamily: "monospace", fontSize: "12px" }}
               />
@@ -595,6 +607,9 @@ function AddStaffModal({
   // name + role choices. guardClose on Cancel + outside-click prompts
   // before discarding.
   const dirtyGuard = useDirtyGuard();
+  // useId-derived prefix so two AddStaffModal instances mounted at once
+  // don't collide on the hardcoded `staff-role` / `staff-model` ids.
+  const uid = useId();
 
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.post("/staff", payload) as Promise<{ agent: { id: string } }>,
@@ -679,12 +694,12 @@ function AddStaffModal({
 
           {/* Role + Assign to */}
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Role" controlId="staff-role">
+            <FormField label="Role" controlId={`${uid}-staff-role`}>
               <Select
                 value={staffRole}
                 onValueChange={(v) => { setStaffRole(v as StaffRole); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="staff-role"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-staff-role`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {STAFF_ROLE_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
@@ -692,12 +707,12 @@ function AddStaffModal({
                 </SelectContent>
               </Select>
             </FormField>
-            <FormField label="Assign to" controlId="staff-assign-to">
+            <FormField label="Assign to" controlId={`${uid}-staff-assign-to`}>
               <Select
                 value={assignTo}
                 onValueChange={(v) => { setAssignTo(v); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="staff-assign-to"><SelectValue placeholder="Select member..." /></SelectTrigger>
+                <SelectTrigger id={`${uid}-staff-assign-to`}><SelectValue placeholder="Select member..." /></SelectTrigger>
                 <SelectContent>
                   {members.map((m) => (
                     <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>
@@ -709,12 +724,12 @@ function AddStaffModal({
 
           {/* Model + Trust Level */}
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Model" controlId="staff-model">
+            <FormField label="Model" controlId={`${uid}-staff-model`}>
               <Select
                 value={model}
                 onValueChange={(v) => { setModel(v); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="staff-model"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-staff-model`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {MODEL_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
@@ -722,12 +737,12 @@ function AddStaffModal({
                 </SelectContent>
               </Select>
             </FormField>
-            <FormField label="Trust Level" controlId="staff-trust">
+            <FormField label="Trust Level" controlId={`${uid}-staff-trust`}>
               <Select
                 value={trustLevel}
                 onValueChange={(v) => { setTrustLevel(v as TrustLevel); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="staff-trust"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-staff-trust`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {TRUST_LEVEL_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>

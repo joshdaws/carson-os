@@ -266,19 +266,29 @@ export function ConversationsPage() {
   const staffFilter = searchParams.get("agentId") || "all";
   const search = searchParams.get("q") || "";
 
-  function updateParam(key: string, value: string | null) {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value && value !== "all") next.set(key, value);
-      else next.delete(key);
-      return next;
-    });
+  function updateParam(
+    key: string,
+    value: string | null,
+    options?: { replace?: boolean },
+  ) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value && value !== "all") next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      // Search keystrokes use replace so each character doesn't push a
+      // new history entry — Back should leave the page, not walk through
+      // the user's typing.
+      { replace: options?.replace ?? false },
+    );
   }
 
   const setSelectedId = (id: string | null) => updateParam("c", id);
   const setMemberFilter = (v: string) => updateParam("memberId", v);
   const setStaffFilter = (v: string) => updateParam("agentId", v);
-  const setSearch = (v: string) => updateParam("q", v || null);
+  const setSearch = (v: string) => updateParam("q", v || null, { replace: true });
 
   const [messageInput, setMessageInput] = useState("");
   const [pendingUserMsg, setPendingUserMsg] = useState<string | null>(null);
@@ -587,6 +597,34 @@ export function ConversationsPage() {
               <p className="text-sm text-carson-text-muted">
                 Select a conversation to view messages.
               </p>
+            </div>
+          ) : !selectedConv ? (
+            // Orphan state: ?c=... in URL but the conversation isn't in the
+            // server-fetched list. This happens when a member/agent filter
+            // excludes it, when the user typed a search that doesn't match,
+            // or when the conversation was deleted server-side. We can't
+            // pretend it exists (that would render "Unknown agent" + an
+            // active compose form against a ghost id) so we explain and
+            // offer a way out.
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-8 gap-3">
+              <MessageSquare className="h-8 w-8" style={{ color: "#ddd5c8" }} />
+              <p className="text-sm text-carson-text-body">
+                This conversation isn't in your current view.
+              </p>
+              <p className="text-xs text-carson-text-meta max-w-sm">
+                It may not match the active filters, or it may have been
+                removed. Clear filters to find it, or pick a different
+                conversation from the list.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setSearchParams(new URLSearchParams());
+                }}
+              >
+                Clear filters
+              </Button>
             </div>
           ) : (
             <>

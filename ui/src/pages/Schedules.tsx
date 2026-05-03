@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -562,6 +562,10 @@ function AddTaskModal({
   });
 
   const dirtyGuard = useDirtyGuard();
+  // useId-derived prefix for the Select controlIds so two
+  // NewScheduledTaskModal instances (or the modal + an inline editor on
+  // the same page) don't collide on hardcoded ids.
+  const uid = useId();
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -657,34 +661,34 @@ function AddTaskModal({
           />
 
           <div className="grid grid-cols-3 gap-3">
-            <FormField label="Run by" controlId="task-run-by">
+            <FormField label="Run by" controlId={`${uid}-task-run-by`}>
               <Select
                 value={agentId}
                 onValueChange={(v) => { setAgentId(v); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="task-run-by"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-task-run-by`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </FormField>
-            <FormField label="Send to" controlId="task-send-to">
+            <FormField label="Send to" controlId={`${uid}-task-send-to`}>
               <Select
                 value={memberId}
                 onValueChange={(v) => { setMemberId(v); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="task-send-to"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-task-send-to`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {members.map((m) => <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>)}
                 </SelectContent>
               </Select>
             </FormField>
-            <FormField label="Deliver via" controlId="task-deliver-to">
+            <FormField label="Deliver via" controlId={`${uid}-task-deliver-to`}>
               <Select
                 value={deliverTo}
                 onValueChange={(v) => { setDeliverTo(v); dirtyGuard.markDirty(); }}
               >
-                <SelectTrigger id="task-deliver-to"><SelectValue /></SelectTrigger>
+                <SelectTrigger id={`${uid}-task-deliver-to`}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="telegram">Telegram</SelectItem>
                   <SelectItem value="memory">Save to memory</SelectItem>

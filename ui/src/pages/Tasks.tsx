@@ -509,19 +509,29 @@ export function TasksPage() {
   const search = searchParams.get("q") || "";
   const selectedTaskId = searchParams.get("task");
 
-  function updateParam(key: string, value: string | null) {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value && value !== "all") next.set(key, value);
-      else next.delete(key);
-      return next;
-    });
+  function updateParam(
+    key: string,
+    value: string | null,
+    options?: { replace?: boolean },
+  ) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value && value !== "all") next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      // Search uses replace so each keystroke doesn't push a new history
+      // entry; typing "soccer practice" would otherwise leave 15 entries
+      // for the user to walk back through.
+      { replace: options?.replace ?? false },
+    );
   }
 
   const setStatusFilter = (v: string) => updateParam("status", v);
   const setStaffFilter = (v: string) => updateParam("agentId", v);
   const setMemberFilter = (v: string) => updateParam("memberId", v);
-  const setSearch = (v: string) => updateParam("q", v || null);
+  const setSearch = (v: string) => updateParam("q", v || null, { replace: true });
   const setSelectedTaskId = (id: string | null) => updateParam("task", id);
 
   const { data: staffData } = useQuery<{ staff: StaffAgent[] }>({
@@ -682,11 +692,15 @@ export function TasksPage() {
           )}
 
           {/* Other tasks */}
-          {isLoading && (
+          {(isLoading || !householdId) && (
             <p className="text-sm text-carson-text-muted">Loading tasks...</p>
           )}
 
-          {!isLoading && tasks.length === 0 && (
+          {/* Empty state gated on household having loaded — otherwise the
+              "no tasks found" copy fires before the tasks query is
+              enabled and reads as misleading on a fresh-install Tasks
+              page. */}
+          {!isLoading && householdId && tasks.length === 0 && (
             <Card className="border" style={{ borderColor: "#ddd5c8" }}>
               <CardContent className="p-6 text-center">
                 <ListTodo className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
