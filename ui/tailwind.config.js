@@ -12,6 +12,15 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        // The butler earns a serif (DESIGN.md). Instrument Serif loads from
+        // Google Fonts in index.html. v0.5.4 still hardcoded
+        // `style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}`
+        // at ~26 product-chrome sites — system Georgia fell through and the
+        // brand never reached the dashboard. v0.5.5 routes every product
+        // heading through `font-serif` so the loaded webfont actually lands.
+        serif: ["'Instrument Serif'", "Georgia", "'Times New Roman'", "serif"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
