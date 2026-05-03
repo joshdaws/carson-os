@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FormField, useDirtyGuard } from "@/components/ui/form-field";
 import { PageShell } from "@/components/page-shell";
 import {
   Select,
@@ -555,9 +556,12 @@ function AddTaskModal({
       api.post("/scheduled-tasks", payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scheduled-tasks"] });
+      dirtyGuard.markClean();
       onClose();
     },
   });
+
+  const dirtyGuard = useDirtyGuard();
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -584,7 +588,9 @@ function AddTaskModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.4)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) dirtyGuard.guardClose(onClose);
+      }}
     >
       <div
         className="rounded-lg shadow-xl w-full max-w-lg mx-4"
@@ -594,76 +600,103 @@ function AddTaskModal({
           <h3 className="text-base font-medium font-serif text-carson-text-primary">
             New Scheduled Task
           </h3>
-          <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
+          <IconButton
+            aria-label="Close dialog"
+            size="md"
+            onClick={() => dirtyGuard.guardClose(onClose)}
+          >
             <X />
           </IconButton>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          <div>
-            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Name</label>
+          <FormField
+            label="Name"
+            required
+            name="task-name"
+            autoComplete="off"
+            error={submitted && !name.trim() ? "Name is required" : undefined}
+          >
             <Input
               placeholder="e.g., Daily briefing"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => { setName(e.target.value); dirtyGuard.markDirty(); }}
               autoFocus
               style={submitted && !name.trim() ? { borderColor: "#c62828" } : undefined}
             />
-          </div>
+          </FormField>
 
-          <div>
-            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Prompt</label>
+          <FormField
+            label="Prompt"
+            required
+            name="task-prompt"
+            autoComplete="off"
+            error={submitted && !prompt.trim() ? "Prompt is required" : undefined}
+          >
             <Textarea
               placeholder="What should the agent do? e.g., Give me a morning briefing: what's on my calendar today, any pending commitments, and anything I should know about."
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => { setPrompt(e.target.value); dirtyGuard.markDirty(); }}
               rows={3}
               style={submitted && !prompt.trim() ? { borderColor: "#c62828" } : undefined}
             />
-          </div>
+          </FormField>
 
           <ScheduleEditor
             key={`${scheduleType}-${scheduleValue}`}
             scheduleType={scheduleType}
             scheduleValue={scheduleValue}
-            onTypeChange={setScheduleType}
-            onValueChange={setScheduleValue}
+            onTypeChange={(t) => { setScheduleType(t); dirtyGuard.markDirty(); }}
+            onValueChange={(v) => { setScheduleValue(v); dirtyGuard.markDirty(); }}
           />
 
           <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Run by</label>
-              <Select value={agentId} onValueChange={setAgentId}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            <FormField label="Run by" controlId="task-run-by">
+              <Select
+                value={agentId}
+                onValueChange={(v) => { setAgentId(v); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="task-run-by"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Send to</label>
-              <Select value={memberId} onValueChange={setMemberId}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            </FormField>
+            <FormField label="Send to" controlId="task-send-to">
+              <Select
+                value={memberId}
+                onValueChange={(v) => { setMemberId(v); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="task-send-to"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {members.map((m) => <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>)}
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Deliver via</label>
-              <Select value={deliverTo} onValueChange={setDeliverTo}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            </FormField>
+            <FormField label="Deliver via" controlId="task-deliver-to">
+              <Select
+                value={deliverTo}
+                onValueChange={(v) => { setDeliverTo(v); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="task-deliver-to"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="telegram">Telegram</SelectItem>
                   <SelectItem value="memory">Save to memory</SelectItem>
                   <SelectItem value="log">Log only</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
+            </FormField>
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => dirtyGuard.guardClose(onClose)}
+            >
+              Cancel
+            </Button>
             <Button type="submit" size="sm" disabled={mutation.isPending} style={{ background: "#1a1f2e", color: "#e8dfd0" }}>
               {mutation.isPending ? "Creating..." : "Create"}
             </Button>
