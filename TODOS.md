@@ -1,23 +1,50 @@
 # TODOS
 
-## v0.5.4 — FormField migration + modal dirty-guard (UI audit #51)
-- **What:** Wire the new `FormField` component (already shipped in v0.5.3 foundation at `ui/src/components/ui/form-field.tsx`) through Projects, Schedules, Household member-and-agent forms, Onboarding family setup, and Settings. Add `useDirtyGuard` to modal/drawer editors so closing-while-dirty asks before discarding.
+## v0.5.5 — Instrument Serif in product chrome (impeccable critique P0)
+- **What:** Apply the already-loaded `'Instrument Serif'` Google Font to all 25+ product-chrome heading sites. Today every heading hardcodes `style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}` — falling back to system Georgia. The font loaded in `index.html:8` is reaching only `Onboarding.tsx` and `MissionRevealCard.tsx`.
+- **Why:** "The butler earns a serif" is the single most distinctive identity signal in DESIGN.md. Right now the brand voice exists in onboarding and disappears the moment the user reaches the dashboard. Closing this drift with one Tailwind utility recovers the entire brand identity in product. The `/impeccable critique` (canonical v3.0.6) called this the P0.
+- **Files:** `Dashboard.tsx:102`, `Layout.tsx:107`, `Conversations.tsx:406`, `Tools.tsx:691,1677`, `Settings.tsx:412`, `Household.tsx` (6 sites), `Constitution.tsx` (5 sites), `Schedules.tsx:594,718`, `Tasks.tsx:548`, `StaffDetail.tsx:356,366`, `Projects.tsx:135`, `OnboardingChecklist.tsx:215`, `InterviewOverlay.tsx:103`.
+- **Fix:** Add a `font-serif` Tailwind utility that resolves to `'Instrument Serif', Georgia, 'Times New Roman', serif`. Global replace the 25 inline `style` declarations with `className="font-serif"`. Also rip the duplicate hex palette object at `Dashboard.tsx:80` since DESIGN.md already says "use these via Tailwind classes... rather than inline hex literals."
+- **Suggested command:** `/impeccable typeset`.
+- **Pros:** One global change, ~30 minutes, immediate brand recovery. Reads as a real product, not a "competent ivory enterprise admin panel."
+- **Cons:** Risk of unintended weight differences between Georgia (system) and Instrument Serif at small heading sizes — visually verify each affected page after the swap.
+- **Depends on:** None.
+
+## v0.5.5 — Empty-instance Dashboard butler hero (impeccable critique P1)
+- **What:** Replace the empty Dashboard's three configuration cards with a single composed butler hero — serif greeting ("Good evening." or time-aware variant), one paragraph in the warm voice DESIGN.md describes, one prominent primary CTA. The three zone-cards earn their containers only after a household is configured.
+- **Why:** Today's empty Dashboard reads as a configuration form announcing "0 of these, 0 of those." Parents at 9pm see three cards saying nothing and close the tab. DESIGN.md says "warm competence, walking into a hotel lobby." Currently shipping the opposite. The critique flagged this as the P1 emotional valley.
+- **Files:** `Dashboard.tsx:746-783` (empty-state cards), `Dashboard.tsx:734` (the `householdName || "Household"` fallback that collides with the sidebar Household nav — pick "Welcome to CarsonOS" or omit until configured).
+- **Fix:** Detect empty-instance state, render `<EmptyDashboardHero />` instead of the three zone-cards. Greeting ("Good evening.") in Instrument Serif, one paragraph of butler voice, one primary "Set up your household" button. Hide Recent Activity until there is activity.
+- **Suggested command:** `/impeccable onboard` — the empty-instance dashboard IS an onboarding moment.
+- **Pros:** Fixes the worst first-impression in the app. Closes 4 of the 8 cognitive-load failures the critique surfaced (heading-identifies-location, no-mode-confusion, info-unique-per-surface, single-primary-action-visible).
+- **Cons:** New copy needed (greeting text), requires butler-voice authoring. Empty-state detection logic must distinguish "fresh install" from "household exists but empty."
+- **Depends on:** Instrument Serif fix above (otherwise the greeting renders in system Georgia).
+
+## v0.5.5 — Centered card grids + sub-12px text cleanup (impeccable critique P2)
+- **What:** Left-align the personal/internal-agent cards and family member cards. Differentiate parent and child cards visually (currently identical recipes — a slop tell). Lift every body line to 12px minimum.
+- **Why:** Identical-card grids and sub-12px text are two of the slop framework's most reliable AI-tells. Both fire across `Dashboard.tsx:174-219` (FamilyMemberCard), `Dashboard.tsx:304-356` (PersonalAgentCard), `Dashboard.tsx:451-493` (InternalAgentCard). `text-[9px]` and `text-[10px]` recur across Dashboard.tsx (~14 sites).
+- **Fix:** Cards use `text-left`, parent cards get a different shape than child cards (e.g., kid cards smaller and rounder, parent cards full-width with role pill in the header). Audit every `text-[9px]` / `text-[10px]` site — most should be `text-xs` (12px), the rare label exception keeps the small size.
+- **Suggested command:** `/impeccable distill` to collapse duplicate card recipes, then `/impeccable typeset` to lift the type floor.
+- **Depends on:** None, but stacks with the empty-state hero work.
+
+## v0.5.5 — FormField migration + modal dirty-guard (UI audit #51, deferred from v0.5.4)
+- **What:** Wire the `FormField` component (shipped in v0.5.3 foundation at `ui/src/components/ui/form-field.tsx`) through Projects, Schedules, Household member-and-agent forms, Onboarding family setup, and Settings. Add `useDirtyGuard` to modal/drawer editors so closing-while-dirty asks before discarding.
 - **Why:** Pre-v0.5.3 forms wired their own labels (`<label>` siblings without `htmlFor`), skipped `name` and `autocomplete`, and signaled error/required state through copy alone. That weakens browser autofill, screen reader traversal, and validation recovery. The component contract is in place — only the per-page migration remains.
 - **Pros:** Closes the last UI-audit form item. Browser autofill works correctly across all setup flows. First-error focus + dirty-guard reduce data-loss accidents on long forms.
 - **Cons:** Touches every form on every page. ~400-600 LOC across 5 page files. Visual regression risk during conversion if existing forms have bespoke layouts.
-- **Caveats from the v0.5.3 review (2026-05-02):**
+- **Caveats (from the v0.5.3 review):**
   - FormField uses `React.cloneElement` to inject `id` / `name` / `autoComplete` / `aria-*` onto its child. That works for `<Input>`, `<Textarea>`, and any plain `<input>`-shaped element. It does **not** work for radix `<Select>`, which is a compound component (`<Select>` → `<SelectTrigger>` etc.) and doesn't accept `id` or `autoComplete` at the root. Most member/agent forms in scope have a Select for role / model / trust-level — those need either a `skipInputProps` escape hatch added to FormField or label+error positioned manually with explicit id threading on the trigger.
   - FormField only injects an `id` if neither the wrapper nor the child already has one. Existing `<Input id="foo">` callers stay intact — useful when migrating onto pages that already wired ids manually.
   - `useDirtyGuard` only protects modal/drawer-style close handlers that explicitly call `guardClose`. It does **not** intercept React Router navigation (sidebar clicks, browser back). If we want navigation protection too, that's a `useBlocker` follow-up.
-- **Context:** Issue #51. Originally part of v0.5.3 scope; deferred to v0.5.4 because the bug-class items (#43, #44, #45, #46, #49) plus the Tools mobile card and the destructive-action standardization filled the v0.5.3 release.
-- **Depends on:** v0.5.3 foundation shipped (FormField + useDirtyGuard primitives are in `ui/src/components/ui/form-field.tsx`).
+- **Context:** Issue #51. Was queued for v0.5.4 but the post-v0.5.3 work that landed (vitest setup, regression tests, review fixes) filled v0.5.4 instead.
+- **Depends on:** v0.5.3 foundation shipped.
 
-## v0.5.4 — Tasks/Conversations search + URL-backed filters (UI audit #48)
+## v0.5.5 — Tasks/Conversations search + URL-backed filters (UI audit #48, deferred from v0.5.4)
 - **What:** URL-backed filter state via React Router `useSearchParams`, search input on both pages, simple pagination once counts exceed a modest threshold (~50 items), selected task/conversation persisted in the URL for reload + deep-link.
 - **Why:** Audit measured 51 tasks and 80 conversations on the live instance. Both pages render full `.map()` lists without virtualization, search, pagination, or URL-backed filters. Filter state is local component state, so a filtered view can't be bookmarked or shared and resets on reload.
 - **Pros:** Pages stay fast as activity grows. Bookmark/share-friendly. Works the way every other production list-view does.
 - **Cons:** ~200-300 LOC across Tasks and Conversations. Existing local filter state needs to migrate to URL state without breaking the empty-default behavior. Pagination needs a per-list threshold decision.
-- **Context:** Issue #48. Deferred from v0.5.3 release scope (paired with #51).
+- **Context:** Issue #48. Was queued for v0.5.4; moved to v0.5.5 alongside the rest of the UI/UX direction work.
 - **Depends on:** None.
 
 ## [COMPLETED v0.5.1] v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)

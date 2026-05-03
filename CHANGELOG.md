@@ -4,6 +4,32 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.4] - 2026-05-03
+
+### Added
+
+- **UI test runner.** The `ui/` package now has its own vitest + `@testing-library/react` + `happy-dom` setup (vitest 3.x, matching the server). 39 regression tests across the four v0.5.3 shared primitives — `confirm-dialog.test.tsx`, `icon-button.test.tsx`, `form-field.test.tsx`, `page-shell.test.tsx` — pin every bug the pre-merge review caught so they cannot silently come back. `pnpm test` now runs **505 tests across 29 files**, all green.
+
+### Fixed
+
+- **`ConfirmDialog` armed-state reset on every reopen.** Pre-fix the 250ms enter-key guard ran only on the first open; a second open let an in-flight Enter sneak past for one frame. Now `armed` resets to `false` whenever the dialog closes.
+- **`ConfirmDialog` blocks ESC + outside-click while pending.** The async-aware contract said the dialog stays open during the mutation, but ESC and click-outside still routed through `onOpenChange(false)`. Wrapped to drop close attempts while `pending=true`.
+- **`mutateAsync` on three async-aware callsites.** `Projects.tsx` (delete + disable) and `Schedules.tsx` (delete) were passing `mutate()` (returns void) where `mutateAsync()` was needed — the dialog closed immediately instead of waiting for the mutation to land. The user could see the dialog vanish on a 409 with no error feedback.
+- **`FormField` preserves the child input's existing id.** `cloneElement` was clobbering any `id` already on the wrapped input, breaking external `<label htmlFor>`, `aria-describedby` references, and tests. Falls back to the auto-generated id only when neither override nor child has one.
+- **Mobile menu IconButton AA contrast on navy.** Variant `ghost` rendered `text-carson-text-muted` (~2.78:1) over the open sidebar. Switched to `variant="primary"` so the button reads at 11.6:1 in both closed (over cream) and open (over navy) states.
+- **`PageShell` breakpoint matches the hamburger.** `pt-14 lg:pt-0` left a 56px blank gap at 768–1023px (tablet) because the hamburger hides at `md`. Fixed to `md:pt-0`.
+- **Tools mobile bundle inset overflow.** Inset child cards combined `w-full + ml-3` and got clipped by `PageShell overflow-x-hidden`. Moved the indent to the parent (`pl-3`) so the children stay flush.
+- **`Household` Edit Member Remove now confirms.** The flow was firing `deleteMutation` immediately on click, while every other destructive action in v0.5.3 routes through `ConfirmDialog`. Brought it inline with the same pattern as `StaffCard`.
+- **3 leftover `#5a5a5a` literals in `Tools.tsx`** migrated to `text-carson-text-muted` for token consistency.
+
+### Changed
+
+- **Documentation refreshed for v0.5.3 + v0.5.4.** `CLAUDE.md` test count updated to 505 / 29 files. `DESIGN.md` CSS Custom Properties section rewritten to mirror `globals.css` (semantic text tokens with contrast ratios noted inline) plus two 2026-05-02 decisions-log rows for the multi-role text token split (#46) and the four shared primitives (#43, #45, #49, #50). `TODOS.md` v0.5.4 entries renumbered to v0.5.5 to make room for the post-audit critique findings.
+
+### Why this matters
+
+v0.5.4 is the post-merge polish for v0.5.3-ui-audit. The audit primitives ship behind a real test suite (39 cases, every one tied to a specific finding from the pre-merge review). The dashboard's behavior under stress — async mutations, mobile breakpoint transitions, edge-case inputs — is now pinned in code, not just in screenshots. The four review-fix categories above (ConfirmDialog correctness, FormField id preservation, mobile menu contrast, Tools overflow) close the loop on the pre-merge multi-reviewer pass. The next release (v0.5.5) tackles UI/UX direction work surfaced by `/impeccable critique` — Instrument Serif in product chrome, butler-greeting empty state, page-heading mode confusion, and the deferred FormField page migration + Tasks/Conversations search.
+
 ## [0.5.3] - 2026-05-02
 
 ### Added
