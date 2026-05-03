@@ -603,7 +603,7 @@ function AddTaskModal({
       tabIndex={-1}
     >
       <div
-        className="rounded-lg shadow-xl w-full max-w-lg mx-4"
+        className="rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90dvh] overflow-y-auto"
         style={{ background: "#faf6ef", border: "1px solid #ddd5c8" }}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#eee8dd" }}>

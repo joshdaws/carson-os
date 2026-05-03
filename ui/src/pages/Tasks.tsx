@@ -664,7 +664,7 @@ export function TasksPage() {
             onClick={() => setSearchParams(new URLSearchParams())}
             className="h-8 text-xs text-carson-text-muted"
           >
-            Clear
+            <X className="h-3 w-3 mr-1" /> Clear
           </Button>
         )}
       </div>

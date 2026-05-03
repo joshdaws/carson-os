@@ -111,10 +111,14 @@ function formatTime(dateStr: string | number): string {
 
 // Time-aware greeting for the empty-instance hero. The butler should know
 // what part of the day it is — DESIGN.md Aesthetic Direction: "walking into
-// a hotel lobby where someone already knows your name." Greeting bands
-// follow common Anglo norms.
-function getGreeting(): string {
-  const hour = new Date().getHours();
+// a hotel lobby where someone already knows your name."
+//
+// Bands: 0-4 = evening (late-night/pre-dawn — "Good evening" is the
+// least-wrong of the three available greetings), 5-11 = morning,
+// 12-17 = afternoon, 18-23 = evening. Exported so the v0.5.5 regression
+// test can pin the band edges.
+export function getGreeting(now: Date = new Date()): string {
+  const hour = now.getHours();
   if (hour < 5) return "Good evening";
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";
