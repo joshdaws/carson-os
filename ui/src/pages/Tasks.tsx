@@ -19,11 +19,11 @@ import {
   AlertCircle,
   XCircle,
   Play,
-  ChevronDown,
-  ChevronUp,
   ThumbsUp,
   X,
 } from "lucide-react";
+import { PageShell } from "@/components/page-shell";
+import { IconButton } from "@/components/ui/icon-button";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -166,7 +166,7 @@ function TaskCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
               <p className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
                 {task.title}
               </p>
-              <p className="text-[11px] mt-0.5" style={{ color: "#8a8070" }}>
+              <p className="text-[11px] mt-0.5 text-carson-text-muted">
                 {task.agentName || "Unknown agent"}
                 {task.requestedByName
                   ? ` \u00B7 Requested by ${task.requestedByName}`
@@ -181,8 +181,8 @@ function TaskCard({ task, onSelect }: { task: Task; onSelect: () => void }) {
                   {task.governingClauses.map((clause, i) => (
                     <span
                       key={i}
-                      className="text-[9px] px-1.5 py-0.5 rounded italic"
-                      style={{ background: "#fff3e0", color: "#a09080" }}
+                      className="text-[9px] px-1.5 py-0.5 rounded italic text-carson-text-meta"
+                      style={{ background: "#fff3e0" }}
                     >
                       {clause}
                     </span>
@@ -255,7 +255,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
     return (
       <Card className="border" style={{ borderColor: "#ddd5c8" }}>
         <CardContent className="p-5">
-          <p className="text-sm" style={{ color: "#8a8070" }}>Loading task...</p>
+          <p className="text-sm text-carson-text-muted">Loading task...</p>
         </CardContent>
       </Card>
     );
@@ -282,18 +282,23 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                 <StatusIcon className="h-3 w-3" />
                 {task.status.replace(/_/g, " ")}
               </span>
-              <span className="text-xs" style={{ color: "#8a8070" }}>
+              <span className="text-xs text-carson-text-muted">
                 {task.agentName}
               </span>
             </div>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <IconButton
+            variant="ghost"
+            size="md"
+            aria-label="Close task details"
+            onClick={onClose}
+          >
+            <X />
+          </IconButton>
         </div>
 
         {/* Metadata */}
-        <div className="grid grid-cols-2 gap-3 mb-4 text-xs" style={{ color: "#8a8070" }}>
+        <div className="grid grid-cols-2 gap-3 mb-4 text-xs text-carson-text-muted">
           <div>
             <span className="text-[10px] uppercase tracking-wider block mb-0.5">Requested by</span>
             <span style={{ color: "#2c2c2c" }}>
@@ -315,7 +320,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         {/* Governing clauses */}
         {task.governingClauses && task.governingClauses.length > 0 && (
           <div className="mb-4">
-            <span className="text-[10px] uppercase tracking-wider block mb-1" style={{ color: "#8a8070" }}>
+            <span className="text-[10px] uppercase tracking-wider block mb-1 text-carson-text-muted">
               Governing Clauses
             </span>
             <div className="flex flex-wrap gap-1">
@@ -335,7 +340,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         {/* Result */}
         {task.result && (
           <div className="mb-4">
-            <span className="text-[10px] uppercase tracking-wider block mb-1" style={{ color: "#8a8070" }}>
+            <span className="text-[10px] uppercase tracking-wider block mb-1 text-carson-text-muted">
               Result
             </span>
             <div
@@ -350,7 +355,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         {/* Report */}
         {task.report && (
           <div className="mb-4">
-            <span className="text-[10px] uppercase tracking-wider block mb-1" style={{ color: "#8a8070" }}>
+            <span className="text-[10px] uppercase tracking-wider block mb-1 text-carson-text-muted">
               Report
             </span>
             <div
@@ -365,7 +370,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         {/* Event timeline */}
         {task.events && task.events.length > 0 && (
           <div className="mb-4">
-            <span className="text-[10px] uppercase tracking-wider block mb-2" style={{ color: "#8a8070" }}>
+            <span className="text-[10px] uppercase tracking-wider block mb-2 text-carson-text-muted">
               Timeline
             </span>
             <div className="space-y-2">
@@ -374,7 +379,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                   key={event.id}
                   className="flex gap-3 text-xs"
                 >
-                  <span className="shrink-0" style={{ color: "#a09080" }}>
+                  <span className="shrink-0 text-carson-text-meta">
                     {formatTime(event.createdAt)}
                   </span>
                   <div>
@@ -382,7 +387,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                       {event.type.replace(/_/g, " ")}
                     </span>
                     {event.description && (
-                      <span style={{ color: "#8a8070" }}> - {event.description}</span>
+                      <span className="text-carson-text-muted"> - {event.description}</span>
                     )}
                   </div>
                 </div>
@@ -410,18 +415,18 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                     {hire.role ? ` — ${hire.role}` : ""}
                   </div>
                   <div className="mb-1">
-                    <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Specialty</span>{" "}
+                    <span className="uppercase tracking-wider text-[10px] text-carson-text-muted">Specialty</span>{" "}
                     <code>{hire.specialty ?? "general"}</code>
                   </div>
                   {hire.reason && (
                     <div className="mb-1">
-                      <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Reason</span>{" "}
+                      <span className="uppercase tracking-wider text-[10px] text-carson-text-muted">Reason</span>{" "}
                       {hire.reason}
                     </div>
                   )}
                   {hire.customInstructions && (
                     <div className="mb-1">
-                      <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Custom operating instructions</span>
+                      <span className="uppercase tracking-wider text-[10px] text-carson-text-muted">Custom operating instructions</span>
                       <pre
                         className="mt-1 p-2 text-[11px] whitespace-pre-wrap rounded"
                         style={{ background: "#fff", border: "1px solid #e0d9c7", maxHeight: "12rem", overflowY: "auto" }}
@@ -432,12 +437,12 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
                   )}
                   {hire.originalUserRequest && (
                     <div className="mb-1">
-                      <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Will auto-delegate</span>{" "}
+                      <span className="uppercase tracking-wider text-[10px] text-carson-text-muted">Will auto-delegate</span>{" "}
                       <i>{hire.originalUserRequest}</i>
                     </div>
                   )}
                   <div>
-                    <span className="uppercase tracking-wider text-[10px]" style={{ color: "#8a8070" }}>Model / trust</span>{" "}
+                    <span className="uppercase tracking-wider text-[10px] text-carson-text-muted">Model / trust</span>{" "}
                     {hire.model ?? "default"}, {hire.trustLevel ?? "default"}
                   </div>
                 </div>
@@ -533,11 +538,11 @@ export function TasksPage() {
   const otherTasks = tasks.filter((t) => t.status !== "pending");
 
   return (
-    <div className="p-6 lg:p-8 max-w-6xl">
+    <PageShell maxWidth="5xl">
       {/* Header */}
       <div className="mb-6">
         <div className="flex items-center gap-2">
-          <ListTodo className="h-5 w-5" style={{ color: "#8a8070" }} />
+          <ListTodo className="h-5 w-5 text-carson-text-muted" />
           <h2
             className="text-[22px] font-normal"
             style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
@@ -545,7 +550,7 @@ export function TasksPage() {
             Tasks
           </h2>
         </div>
-        <p className="text-[13px] mt-1" style={{ color: "#7a7060" }}>
+        <p className="text-[13px] mt-1 text-carson-text-meta">
           {tasks.length} task{tasks.length !== 1 ? "s" : ""}
           {pendingTasks.length > 0 ? ` \u00B7 ${pendingTasks.length} awaiting approval` : ""}
         </p>
@@ -613,14 +618,14 @@ export function TasksPage() {
 
           {/* Other tasks */}
           {isLoading && (
-            <p className="text-sm" style={{ color: "#8a8070" }}>Loading tasks...</p>
+            <p className="text-sm text-carson-text-muted">Loading tasks...</p>
           )}
 
           {!isLoading && tasks.length === 0 && (
             <Card className="border" style={{ borderColor: "#ddd5c8" }}>
               <CardContent className="p-6 text-center">
                 <ListTodo className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
-                <p className="text-sm" style={{ color: "#8a8070" }}>
+                <p className="text-sm text-carson-text-muted">
                   No tasks found. Staff agents will create tasks as they work.
                 </p>
               </CardContent>
@@ -652,6 +657,6 @@ export function TasksPage() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

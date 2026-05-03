@@ -14,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
   Save,
@@ -36,6 +35,7 @@ import remarkGfm from "remark-gfm";
 import { InterviewOverlay } from "@/components/InterviewOverlay";
 import { ToolsManager } from "@/components/ToolsManager";
 import type { ChatMessage } from "@/components/ChatBubble";
+import { PageShell } from "@/components/page-shell";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -256,7 +256,7 @@ export function StaffDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6 lg:p-8 max-w-4xl">
+      <PageShell maxWidth="5xl">
         <Skeleton className="h-4 w-20 mb-6" />
         <div className="flex items-center gap-4 mb-6">
           <Skeleton className="w-14 h-14 rounded-full" />
@@ -267,22 +267,21 @@ export function StaffDetailPage() {
         </div>
         <Skeleton className="h-40 w-full rounded-lg mb-6" />
         <Skeleton className="h-40 w-full rounded-lg" />
-      </div>
+      </PageShell>
     );
   }
 
   if (!agent) {
     return (
-      <div className="p-6 lg:p-8 max-w-4xl">
+      <PageShell maxWidth="5xl">
         <Link
           to="/household"
-          className="inline-flex items-center gap-1.5 text-sm mb-4"
-          style={{ color: "#8a8070" }}
+          className="inline-flex items-center gap-1.5 text-sm mb-4 text-carson-text-muted"
         >
           <ArrowLeft className="h-3.5 w-3.5" /> Household
         </Link>
-        <p className="text-sm" style={{ color: "#8a8070" }}>Staff agent not found.</p>
-      </div>
+        <p className="text-sm text-carson-text-muted">Staff agent not found.</p>
+      </PageShell>
     );
   }
 
@@ -327,21 +326,20 @@ export function StaffDetailPage() {
   };
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl">
+    <PageShell maxWidth="5xl">
       {/* Back link */}
       <Link
         to="/household"
-        className="inline-flex items-center gap-1.5 text-sm mb-4 hover:underline"
-        style={{ color: "#8a8070" }}
+        className="inline-flex items-center gap-1.5 text-sm mb-4 hover:underline text-carson-text-muted"
       >
         <ArrowLeft className="h-3.5 w-3.5" /> Household
       </Link>
 
-      {/* Header */}
-      <div className="flex items-start justify-between mb-6">
-        <div className="flex items-center gap-4">
+      {/* Header \u2014 responsive flex so model/trust/pause controls don't clip on mobile (issue #50). */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6">
+        <div className="flex items-center gap-4 min-w-0">
           <div
-            className="w-14 h-14 rounded-full flex items-center justify-center text-xl font-semibold"
+            className="w-14 h-14 rounded-full flex items-center justify-center text-xl font-semibold shrink-0"
             style={{
               background: isButler ? "#f5f0e8" : "#f0ede6",
               color: "#8b6f4e",
@@ -350,8 +348,8 @@ export function StaffDetailPage() {
           >
             {agent.name.charAt(0)}
           </div>
-          <div>
-            <div className="flex items-center gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3 flex-wrap">
               {editingName ? (
                 <input
                   className="text-xl font-normal border-b-2 bg-transparent outline-none px-1"
@@ -379,20 +377,20 @@ export function StaffDetailPage() {
                 {agent.status}
               </Badge>
             </div>
-            <p className="text-sm mt-0.5" style={{ color: "#8a8070" }}>
+            <p className="text-sm mt-0.5 text-carson-text-muted">
               {roleLabel}
               {agent.specialty ? ` \u00B7 ${agent.specialty}` : ""}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:shrink-0">
           <Select
             value={agent.model ?? "claude-sonnet-4-6"}
             onValueChange={(model) => patchStaff.mutate({ model } as Partial<StaffAgent>)}
           >
             <SelectTrigger className="h-7 w-auto text-[11px] gap-1 px-2.5" style={{ borderColor: "#ddd5c8", color: "#6b6358" }}>
-              <span style={{ color: "#a09080" }}>Model:</span> <SelectValue />
+              <span className="text-carson-text-meta">Model:</span> <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {MODEL_OPTIONS.map((o) => (
@@ -407,7 +405,7 @@ export function StaffDetailPage() {
               style={{ borderColor: "#ddd5c8", color: "#6b6358" }}
               title="Controls which Claude built-in tools this agent can use. Full = all tools. Standard = read-only. Restricted = no built-in tools, only CarsonOS tools."
             >
-              <span style={{ color: "#a09080" }}>Trust:</span> <SelectValue />
+              <span className="text-carson-text-meta">Trust:</span> <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {TRUST_LEVEL_OPTIONS.map((o) => (
@@ -468,7 +466,7 @@ export function StaffDetailPage() {
               borderColor: "#ddd5c8",
             }}
           />
-          <p className="text-xs mt-2" style={{ color: "#8a8070" }}>
+          <p className="text-xs mt-2 text-carson-text-muted">
             The role defines WHAT the agent does. This is compiled into the system prompt for every interaction.
           </p>
         </CardContent>
@@ -478,7 +476,7 @@ export function StaffDetailPage() {
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <Sparkles className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <Sparkles className="h-4 w-4 text-carson-text-muted" />
             Soul / Personality
           </h3>
           <div className="flex gap-1">
@@ -575,7 +573,7 @@ export function StaffDetailPage() {
           ) : (
             <div className="text-center py-6">
               <Sparkles className="h-8 w-8 mx-auto mb-3" style={{ color: "#ddd5c8" }} />
-              <p className="text-sm mb-3" style={{ color: "#8a8070" }}>
+              <p className="text-sm mb-3 text-carson-text-muted">
                 No personality defined yet. Interview Carson to build one.
               </p>
               <Button
@@ -625,7 +623,7 @@ export function StaffDetailPage() {
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <FileText className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <FileText className="h-4 w-4 text-carson-text-muted" />
             Operating Instructions
           </h3>
           <div className="flex gap-1">
@@ -633,8 +631,7 @@ export function StaffDetailPage() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-xs"
-                style={{ color: "#8a8070" }}
+                className="text-xs text-carson-text-muted"
                 onClick={() => { setEditingInstructions(true); setInstructionsDraft(agent.operatingInstructions ?? ""); }}
               >
                 <Pencil className="h-3 w-3 mr-1" /> Edit
@@ -696,11 +693,11 @@ export function StaffDetailPage() {
               {agent.operatingInstructions}
             </pre>
           ) : (
-            <p className="text-sm py-2" style={{ color: "#a09080" }}>
+            <p className="text-sm py-2 text-carson-text-meta">
               No instructions yet.
             </p>
           )}
-          <p className="text-[11px] mt-3" style={{ color: "#a09080" }}>
+          <p className="text-[11px] mt-3 text-carson-text-meta">
             The agent writes and updates these notes itself as it learns how to work with its assigned family members.
             Things like communication preferences, scheduling constraints, and topics to avoid.
             You can edit them, but generally it's best to let the agent manage these on its own.
@@ -756,8 +753,8 @@ export function StaffDetailPage() {
                 <Save className="h-3.5 w-3.5 mr-1" /> Save
               </Button>
             </div>
-            <div className="text-xs space-y-1" style={{ color: "#8a8070" }}>
-              <p className="font-medium" style={{ color: "#5a5040" }}>Setup steps:</p>
+            <div className="text-xs space-y-1 text-carson-text-muted">
+              <p className="font-medium text-carson-text-body">Setup steps:</p>
               <ol className="list-decimal ml-4 space-y-0.5">
                 <li>Open Telegram and message <span className="font-mono">@BotFather</span></li>
                 <li>Send <span className="font-mono">/newbot</span> and follow the prompts</li>
@@ -779,7 +776,7 @@ export function StaffDetailPage() {
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <Users className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <Users className="h-4 w-4 text-carson-text-muted" />
             Assignments
           </h3>
         </div>
@@ -797,7 +794,7 @@ export function StaffDetailPage() {
                     <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
                       {a.memberName}
                     </span>
-                    <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                    <span className="text-xs ml-2 text-carson-text-muted">
                       {a.relationship}
                     </span>
                   </div>
@@ -814,7 +811,7 @@ export function StaffDetailPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm mb-3" style={{ color: "#8a8070" }}>
+            <p className="text-sm mb-3 text-carson-text-muted">
               No members assigned to this agent.
             </p>
           )}
@@ -836,7 +833,7 @@ export function StaffDetailPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <span className="text-[10px]" style={{ color: "#a09080" }}>
+              <span className="text-[10px] text-carson-text-meta">
                 as primary assignment
               </span>
             </div>
@@ -848,7 +845,7 @@ export function StaffDetailPage() {
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <Wrench className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <Wrench className="h-4 w-4 text-carson-text-muted" />
             Tools
           </h3>
         </div>
@@ -864,13 +861,13 @@ export function StaffDetailPage() {
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <MessageSquare className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <MessageSquare className="h-4 w-4 text-carson-text-muted" />
             Recent Conversations
           </h3>
         </div>
         <div>
           {conversations.length === 0 && (
-            <p className="text-sm p-4" style={{ color: "#8a8070" }}>Conversations appear when family members message this agent via Telegram.</p>
+            <p className="text-sm p-4 text-carson-text-muted">Conversations appear when family members message this agent via Telegram.</p>
           )}
           {conversations.slice(0, 5).map((c) => (
             <Link
@@ -880,8 +877,8 @@ export function StaffDetailPage() {
               style={{ borderColor: "#eee8dd" }}
             >
               <div
-                className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
-                style={{ background: "#f0ede6", color: "#8a8070" }}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 text-carson-text-muted"
+                style={{ background: "#f0ede6" }}
               >
                 {c.memberName.charAt(0)}
               </div>
@@ -889,15 +886,15 @@ export function StaffDetailPage() {
                 <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>
                   {c.memberName}
                 </span>
-                <p className="text-xs truncate" style={{ color: "#8a8070" }}>
+                <p className="text-xs truncate text-carson-text-muted">
                   {c.lastMessage}
                 </p>
               </div>
               <div className="text-right shrink-0">
-                <span className="text-xs" style={{ color: "#a09080" }}>
+                <span className="text-xs text-carson-text-meta">
                   {c.messageCount} msg{c.messageCount !== 1 ? "s" : ""}
                 </span>
-                <p className="text-[10px]" style={{ color: "#a09080" }}>
+                <p className="text-[10px] text-carson-text-meta">
                   {relativeTime(c.lastMessageAt)}
                 </p>
               </div>
@@ -905,7 +902,7 @@ export function StaffDetailPage() {
           ))}
         </div>
       </Card>
-    </div>
+    </PageShell>
   );
 }
 
@@ -971,12 +968,12 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
       <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
         <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
           <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-            <Shield className="h-4 w-4" style={{ color: "#8a8070" }} />
+            <Shield className="h-4 w-4 text-carson-text-muted" />
             Delegation
           </h3>
         </div>
         <CardContent className="p-4">
-          <p className="text-sm" style={{ color: "#8a8070" }}>Loading…</p>
+          <p className="text-sm text-carson-text-muted">Loading…</p>
         </CardContent>
       </Card>
     );
@@ -993,18 +990,18 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
     <Card className="border mb-6" style={{ borderColor: "#ddd5c8" }}>
       <div className="px-4 py-3 border-b" style={{ borderColor: "#eee8dd" }}>
         <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1a1f2e" }}>
-          <Shield className="h-4 w-4" style={{ color: "#8a8070" }} />
+          <Shield className="h-4 w-4 text-carson-text-muted" />
           Delegation
         </h3>
       </div>
       <CardContent className="p-4">
         {agent.isPersonalAgent ? (
           <>
-            <p className="text-xs mb-3" style={{ color: "#8a8070" }}>
+            <p className="text-xs mb-3 text-carson-text-muted">
               {agentName} can delegate work to these specialists. Personal agents never delegate to each other.
             </p>
             {outgoingCandidates.length === 0 ? (
-              <p className="text-sm" style={{ color: "#8a8070" }}>
+              <p className="text-sm text-carson-text-muted">
                 No specialists hired yet. Hire one via Carson (propose_hire) or from the{" "}
                 <Link to="/household" className="underline" style={{ color: "#8b6f4e" }}>Household page</Link>.
               </p>
@@ -1029,7 +1026,7 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
                       />
                       <div>
                         <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>{a.name}</span>
-                        <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                        <span className="text-xs ml-2 text-carson-text-muted">
                           {a.specialty ?? a.staffRole}
                         </span>
                       </div>
@@ -1041,11 +1038,11 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
           </>
         ) : (
           <>
-            <p className="text-xs mb-3" style={{ color: "#8a8070" }}>
+            <p className="text-xs mb-3 text-carson-text-muted">
               Personal agents who can delegate tasks to {agentName}. Granting access does not re-hire — it just opens a directional edge so this specialist can receive requests from another delegator too.
             </p>
             {incomingCandidates.length === 0 ? (
-              <p className="text-sm" style={{ color: "#8a8070" }}>
+              <p className="text-sm text-carson-text-muted">
                 No personal agents in this household yet.
               </p>
             ) : (
@@ -1069,7 +1066,7 @@ function DelegationEdgesCard({ agentId, agentName }: { agentId: string; agentNam
                       />
                       <div>
                         <span className="text-sm font-medium" style={{ color: "#1a1f2e" }}>{a.name}</span>
-                        <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                        <span className="text-xs ml-2 text-carson-text-muted">
                           {a.isHeadButler ? "Chief of Staff" : a.staffRole}
                         </span>
                       </div>

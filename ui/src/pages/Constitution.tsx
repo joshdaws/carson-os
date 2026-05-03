@@ -9,6 +9,7 @@ import { InterviewOverlay } from "@/components/InterviewOverlay";
 import type { ChatMessage } from "@/components/ChatBubble";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PageShell } from "@/components/page-shell";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ export function ConstitutionPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6 lg:p-8 max-w-4xl">
+      <PageShell maxWidth="4xl">
         <Skeleton className="h-7 w-48 mb-4" />
         <Skeleton className="h-4 w-32 mb-6" />
         <div className="space-y-3">
@@ -143,7 +144,7 @@ export function ConstitutionPage() {
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
         </div>
-      </div>
+      </PageShell>
     );
   }
 
@@ -171,9 +172,9 @@ export function ConstitutionPage() {
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl">
+    <PageShell maxWidth="4xl">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <PageShell.Header>
         <div className="flex items-center gap-2">
           <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
           <h1
@@ -182,17 +183,17 @@ export function ConstitutionPage() {
           >
             Family Constitution
           </h1>
-          <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+          <span className="text-xs ml-2 text-carson-text-muted">
             v{constitution.version}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setShowHistory(!showHistory)}
-            style={{ borderColor: "#ddd5c8", color: showHistory ? "#1a1f2e" : "#8a8070" }}
+            style={{ borderColor: "#ddd5c8", color: showHistory ? "#1a1f2e" : "#6b6358" }}
           >
             <Clock className="h-3.5 w-3.5 mr-1" />
             History
@@ -216,7 +217,7 @@ export function ConstitutionPage() {
                 setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
                 setShowInterview(true);
               }}
-              style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+              style={{ borderColor: "#ddd5c8", color: "#6b6358" }}
             >
               <RotateCcw className="h-3.5 w-3.5 mr-1" />
               Rebuild
@@ -234,9 +235,9 @@ export function ConstitutionPage() {
             </Button>
           )}
         </div>
-      </div>
+      </PageShell.Header>
 
-      <p className="text-sm mb-6" style={{ color: "#8a8070" }}>
+      <p className="text-sm mb-6 text-carson-text-muted">
         This document governs how all AI staff interact with your family.
       </p>
 
@@ -246,7 +247,7 @@ export function ConstitutionPage() {
           className="rounded-lg p-4 mb-6"
           style={{ background: "#faf8f4", border: "1px solid #ddd5c8" }}
         >
-          <h3 className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: "#8a8070" }}>
+          <h3 className="text-xs font-semibold uppercase tracking-wider mb-3 text-carson-text-muted">
             Version History
           </h3>
           <div className="space-y-2">
@@ -264,7 +265,7 @@ export function ConstitutionPage() {
                 }}
               >
                 <span className="font-medium" style={{ color: "#1a1f2e" }}>Version {v.version}</span>
-                <span className="text-xs ml-2" style={{ color: "#8a8070" }}>
+                <span className="text-xs ml-2 text-carson-text-muted">
                   {new Date(v.createdAt).toLocaleDateString()}
                 </span>
               </button>
@@ -432,8 +433,8 @@ export function ConstitutionPage() {
                   ),
                   th: ({ children }) => (
                     <th
-                      className="text-left px-3 py-2 border-b font-semibold text-xs uppercase tracking-wider"
-                      style={{ borderColor: "#ddd5c8", color: "#8a8070" }}
+                      className="text-left px-3 py-2 border-b font-semibold text-xs uppercase tracking-wider text-carson-text-muted"
+                      style={{ borderColor: "#ddd5c8" }}
                     >
                       {children}
                     </th>
@@ -454,7 +455,7 @@ export function ConstitutionPage() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 
@@ -512,7 +513,7 @@ function ConstitutionEmptyState() {
     interviewState?.phase === "interview" && interviewMessages.length > 0;
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl">
+    <PageShell maxWidth="4xl">
       <div className="flex items-center gap-2 mb-6">
         <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
         <h1
@@ -533,7 +534,7 @@ function ConstitutionEmptyState() {
         >
           Build Your Family Constitution
         </h3>
-        <p className="text-sm mb-5 max-w-md mx-auto" style={{ color: "#8a8070" }}>
+        <p className="text-sm mb-5 max-w-md mx-auto text-carson-text-muted">
           Carson will interview you about your family's values, boundaries, and expectations
           to create a constitution that governs how all AI staff interact with your family.
         </p>
@@ -585,6 +586,6 @@ function ConstitutionEmptyState() {
           setInterviewMessages([{ role: "assistant", content: constitutionGreeting(headAgentName) }]);
         }}
       />
-    </div>
+    </PageShell>
   );
 }
