@@ -41,12 +41,35 @@ export interface FormFieldProps {
   id?: string;
   /** Style passthrough for the wrapper div. */
   className?: string;
-  /** The input/textarea/select element. Will receive id, name, aria-* via React.cloneElement. */
+  /**
+   * The input/textarea/select element. Will receive id, name, aria-* via
+   * React.cloneElement, unless `controlId` is set (in which case the caller
+   * is responsible for threading id manually — see below).
+   */
   children: React.ReactElement<Record<string, unknown>>;
   /** name attribute for browser autofill + form submission. */
   name?: string;
   /** autocomplete policy. Defaults vary by call site; sensitive secrets pass "off" or "new-password". */
   autoComplete?: string;
+  /**
+   * Skip the cloneElement injection. Use this when the child is a compound
+   * component (e.g. radix `<Select>`) whose root doesn't accept `id` /
+   * `aria-invalid` directly — the caller wires `id={controlId}` to the
+   * actual focusable child (e.g. `<SelectTrigger>`) manually.
+   *
+   * The label's `htmlFor` still points at `controlId`, the error region
+   * still gets `id="${controlId}-error"`, and the asterisk + aria-required
+   * still render. Only the cloneElement step is skipped.
+   *
+   * Example:
+   *   <FormField label="Role" controlId="member-role">
+   *     <Select value={role} onValueChange={setRole}>
+   *       <SelectTrigger id="member-role">…</SelectTrigger>
+   *       …
+   *     </Select>
+   *   </FormField>
+   */
+  controlId?: string;
 }
 
 export function FormField({
@@ -59,34 +82,42 @@ export function FormField({
   children,
   name,
   autoComplete,
+  controlId,
 }: FormFieldProps) {
   const generatedId = React.useId();
   const childProps = children.props as Record<string, unknown>;
-  // Preserve an id the caller already wired on the child input — clobbering
-  // it would silently break external <label htmlFor>, aria-* references, and
-  // tests that select by id. Only fall back to the generated id if neither
-  // FormField nor the child has one.
+  // controlId wins (caller-managed wiring for compound children like radix
+  // Select). Otherwise honor an existing id on the child, then fall back to
+  // the generated useId — clobbering an existing id would silently break
+  // external <label htmlFor>, aria-* references, and tests that select by id.
   const id =
-    idOverride ?? (childProps.id as string | undefined) ?? generatedId;
+    controlId ??
+    idOverride ??
+    (childProps.id as string | undefined) ??
+    generatedId;
   const helperId = `${id}-helper`;
   const errorId = `${id}-error`;
 
-  const child = React.cloneElement(children, {
-    id,
-    name: name ?? (childProps.name as string | undefined),
-    autoComplete:
-      autoComplete ?? (childProps.autoComplete as string | undefined),
-    "aria-required": required || undefined,
-    "aria-invalid": error ? true : undefined,
-    "aria-describedby":
-      [
-        error ? errorId : null,
-        !error && helper ? helperId : null,
-        childProps["aria-describedby"] as string | undefined,
-      ]
-        .filter(Boolean)
-        .join(" ") || undefined,
-  });
+  // Skip the cloneElement step when controlId is set — the caller is
+  // wiring id and aria-* themselves on a compound child.
+  const child = controlId
+    ? children
+    : React.cloneElement(children, {
+        id,
+        name: name ?? (childProps.name as string | undefined),
+        autoComplete:
+          autoComplete ?? (childProps.autoComplete as string | undefined),
+        "aria-required": required || undefined,
+        "aria-invalid": error ? true : undefined,
+        "aria-describedby":
+          [
+            error ? errorId : null,
+            !error && helper ? helperId : null,
+            childProps["aria-describedby"] as string | undefined,
+          ]
+            .filter(Boolean)
+            .join(" ") || undefined,
+      });
 
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>

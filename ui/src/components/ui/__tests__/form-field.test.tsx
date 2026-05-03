@@ -94,6 +94,43 @@ describe("FormField", () => {
     expect(id).toBeTruthy();
   });
 
+  it("controlId mode skips cloneElement and points label htmlFor at the caller-managed id (radix Select compatibility)", () => {
+    // Simulates a compound child like radix Select where the root component
+    // doesn't accept id/aria-* — the caller threads id to the actual
+    // focusable trigger and FormField just provides the label/error
+    // scaffolding. v0.5.5 added this for Household / Settings / Schedules
+    // forms that use Select for role / model / trust-level.
+    function FakeSelect(props: { id?: string; "aria-invalid"?: boolean }) {
+      // In real usage this would be radix's compound Select; we just verify
+      // FormField does NOT inject id / aria-invalid here when controlId is
+      // set. The caller is responsible for putting id on the trigger.
+      return (
+        <div data-testid="fake-select-root" data-injected-id={props.id ?? ""}>
+          <button id="my-trigger">trigger</button>
+        </div>
+      );
+    }
+
+    render(
+      <FormField label="Role" controlId="my-trigger" error="Required">
+        <FakeSelect />
+      </FormField>,
+    );
+
+    // Label's htmlFor points at the caller-managed controlId.
+    const label = screen.getByText("Role");
+    expect(label).toHaveAttribute("for", "my-trigger");
+
+    // Error region's id derives from controlId so caller can wire
+    // aria-describedby on the trigger if they want.
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveAttribute("id", "my-trigger-error");
+
+    // The fake-select root did NOT receive injected id (cloneElement skipped).
+    const root = screen.getByTestId("fake-select-root");
+    expect(root.dataset.injectedId).toBe("");
+  });
+
   it("forwards name + autoComplete to the child input", () => {
     render(
       <FormField label="Email" name="email" autoComplete="email">
