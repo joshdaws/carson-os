@@ -554,14 +554,21 @@ export function TasksPage() {
   });
 
   const allTasks = tasksData?.tasks || [];
-  // Client-side text search across title + body. Server doesn't index task
-  // text so this stays in the browser; the filter narrows whatever the
-  // status/agent/member query returned.
+  // Client-side text search across title, description, result, report,
+  // agent name, and requester. Server doesn't index task text so this
+  // stays in the browser; the filter narrows whatever the
+  // status/agent/member query returned. v0.5.5 review caught that the
+  // search was advertised to cover task body but only matched the title
+  // and agent metadata — searching for text that appears in
+  // description/result/report silently returned nothing.
   const tasks = search.trim()
     ? allTasks.filter((t) => {
         const q = search.trim().toLowerCase();
         return (
           t.title?.toLowerCase().includes(q) ||
+          t.description?.toLowerCase().includes(q) ||
+          t.result?.toLowerCase().includes(q) ||
+          t.report?.toLowerCase().includes(q) ||
           t.agentName?.toLowerCase().includes(q) ||
           t.requestedByName?.toLowerCase().includes(q)
         );

@@ -591,6 +591,12 @@ function AddTaskModal({
       onClick={(e) => {
         if (e.target === e.currentTarget) dirtyGuard.guardClose(onClose);
       }}
+      // Escape backs out the same way Cancel + X + outside-click do.
+      // Raw <div> modals don't get this for free the way radix Dialog does.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") dirtyGuard.guardClose(onClose);
+      }}
+      tabIndex={-1}
     >
       <div
         className="rounded-lg shadow-xl w-full max-w-lg mx-4"

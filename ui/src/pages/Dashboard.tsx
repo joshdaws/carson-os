@@ -747,11 +747,23 @@ export function DashboardPage() {
   const agentMemberMap = buildAgentMemberMap(staff);
   const projects = buildProjects(tasks, staff);
 
-  // Empty-instance detection. A fresh install has no members and no family
-  // agents; everything below is "0 of these, 0 of those" and reads as a
+  // Empty-instance detection. A fresh install has no members and no staff
+  // at all; everything below is "0 of these, 0 of those" and reads as a
   // configuration form. We replace it with a single butler hero that
   // greets the user and points at the one thing to do next.
-  const isEmptyInstance = members.length === 0 && familyAgents.length === 0;
+  //
+  // Gate on `staff.length` (all staff, not just family agents) so a user
+  // who has internal-only staff configured but no household members yet
+  // doesn't see the "tell Carson who lives here" hero while the sidebar
+  // lists their agents — that mismatch was flagged in the v0.5.5 review.
+  //
+  // Also gate on both queries having actually loaded (not just defaulting
+  // to []). Otherwise on a slow or failed API the configured user sees
+  // "Set up your household" flash before their real dashboard renders —
+  // also flagged in the v0.5.5 review (codex P1).
+  const dataLoaded = householdData !== undefined && staffData !== undefined;
+  const isEmptyInstance =
+    dataLoaded && members.length === 0 && staff.length === 0;
 
   // ── Render ────────────────────────────────────────────────────
 

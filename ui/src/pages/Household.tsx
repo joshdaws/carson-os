@@ -357,44 +357,55 @@ function EditMemberForm({
             />
           </FormField>
         </div>
-        <FormField
-          label="Memory folder"
-          name="member-memory-dir"
-          autoComplete="off"
-          error={
-            memoryDir && memoryDirValid === false
-              ? "Directory not found"
-              : undefined
-          }
-          helper={
-            memoryDir && memoryDirValid === true && memoryDirResolved
-              ? memoryDirResolved
-              : !memoryDir
-                ? `Default: ~/.carsonos/memory/${member.name.toLowerCase().replace(/\s+/g, "-")}`
-                : undefined
-          }
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="leave blank for default"
-              value={memoryDir}
-              onChange={(e) => {
-                setMemoryDir(e.target.value);
-                setMemoryDirValid(null);
-                dirtyGuard.markDirty();
-              }}
-              onBlur={() => {
-                if (!memoryDir.trim()) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
-                api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(memoryDir.trim())}`)
-                  .then((r) => { setMemoryDirValid(r.valid); setMemoryDirResolved(r.resolved); })
-                  .catch(() => setMemoryDirValid(false));
-              }}
-              style={{ fontFamily: "monospace", fontSize: "12px" }}
-            />
-            {memoryDirValid === true && <Check className="h-4 w-4 shrink-0" style={{ color: "#2e7d32" }} />}
-            {memoryDirValid === false && <X className="h-4 w-4 shrink-0" style={{ color: "#c62828" }} />}
+        {/* Memory folder — the validation icons sit beside the input rather
+            than inside the FormField child so cloneElement injects id +
+            aria-* onto the actual <Input> (not the wrapper div). v0.5.5
+            review caught the wrapper-targeting bug; structure now matches
+            FormField's input-shaped-child contract. */}
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <FormField
+              label="Memory folder"
+              name="member-memory-dir"
+              autoComplete="off"
+              error={
+                memoryDir && memoryDirValid === false
+                  ? "Directory not found"
+                  : undefined
+              }
+              helper={
+                memoryDir && memoryDirValid === true && memoryDirResolved
+                  ? memoryDirResolved
+                  : !memoryDir
+                    ? `Default: ~/.carsonos/memory/${member.name.toLowerCase().replace(/\s+/g, "-")}`
+                    : undefined
+              }
+            >
+              <Input
+                placeholder="leave blank for default"
+                value={memoryDir}
+                onChange={(e) => {
+                  setMemoryDir(e.target.value);
+                  setMemoryDirValid(null);
+                  dirtyGuard.markDirty();
+                }}
+                onBlur={() => {
+                  if (!memoryDir.trim()) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
+                  api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(memoryDir.trim())}`)
+                    .then((r) => { setMemoryDirValid(r.valid); setMemoryDirResolved(r.resolved); })
+                    .catch(() => setMemoryDirValid(false));
+                }}
+                style={{ fontFamily: "monospace", fontSize: "12px" }}
+              />
+            </FormField>
           </div>
-        </FormField>
+          {memoryDirValid === true && (
+            <Check className="h-4 w-4 shrink-0 mb-3" aria-label="Path valid" style={{ color: "#2e7d32" }} />
+          )}
+          {memoryDirValid === false && (
+            <X className="h-4 w-4 shrink-0 mb-3" aria-label="Path invalid" style={{ color: "#c62828" }} />
+          )}
+        </div>
         {staffAssignments.length > 0 && (
           <div className="pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
             <p className="text-[10px] uppercase tracking-wider mb-1.5 text-carson-text-muted">
@@ -623,6 +634,14 @@ function AddStaffModal({
       onClick={(e) => {
         if (e.target === e.currentTarget) dirtyGuard.guardClose(onClose);
       }}
+      // Escape closes via guardClose just like the X button + Cancel + outside
+      // click. v0.5.5 review caught that this raw <div> modal was missing the
+      // Escape handler that radix Dialog gets for free; users typing into the
+      // form expect Esc to back out.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") dirtyGuard.guardClose(onClose);
+      }}
+      tabIndex={-1}
     >
       <div
         className="rounded-lg shadow-xl w-full max-w-md mx-4"

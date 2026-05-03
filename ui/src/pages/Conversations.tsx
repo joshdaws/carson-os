@@ -415,7 +415,13 @@ export function ConversationsPage() {
     : allConversations;
   const members = householdData?.members || [];
   const staff = staffData?.staff || [];
-  const selectedConv = conversations.find((c) => c.id === selectedId);
+  // Resolve selectedConv from the UNFILTERED conversation list. If the user
+  // has `?c=abc` open and types a search that excludes that thread, the
+  // header would degrade to "?", "Unknown agent", and on mobile the list
+  // would be hidden so the user couldn't escape — codex P1 from v0.5.5
+  // review. Reading metadata from allConversations keeps the open thread
+  // coherent regardless of what the search/filter narrows to.
+  const selectedConv = allConversations.find((c) => c.id === selectedId);
 
   function handleSend(e: React.FormEvent) {
     e.preventDefault();

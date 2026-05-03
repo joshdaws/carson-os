@@ -61,10 +61,23 @@ export interface FormFieldProps {
    * still gets `id="${controlId}-error"`, and the asterisk + aria-required
    * still render. Only the cloneElement step is skipped.
    *
-   * Example:
-   *   <FormField label="Role" controlId="member-role">
+   * **Caller contract for error states.** When `controlId` mode is used and
+   * the field is in an error state (`error` prop set), cloneElement is
+   * skipped, so `aria-invalid="true"` and `aria-describedby={errorId}` are
+   * NOT injected onto the focusable child. The caller is responsible for
+   * threading those manually onto the trigger when the field can have an
+   * error. None of the v0.5.5 Select migrations have field-level errors
+   * today, so this is a forward-looking caveat — wire aria-* explicitly
+   * when you add Select-level validation.
+   *
+   * Example with error wiring:
+   *   <FormField label="Role" controlId="member-role" error={roleError}>
    *     <Select value={role} onValueChange={setRole}>
-   *       <SelectTrigger id="member-role">…</SelectTrigger>
+   *       <SelectTrigger
+   *         id="member-role"
+   *         aria-invalid={roleError ? true : undefined}
+   *         aria-describedby={roleError ? "member-role-error" : undefined}
+   *       >…</SelectTrigger>
    *       …
    *     </Select>
    *   </FormField>
