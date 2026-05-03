@@ -1,6 +1,6 @@
 # TODOS
 
-## v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)
+## [COMPLETED v0.5.1] v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)
 - **What:** `ClaudeAgentSdkAdapter.healthCheck()` at `server/src/services/subprocess-adapter.ts:841-848` runs `which claude` to confirm CLI presence. The Agent SDK doesn't use the `claude` CLI at runtime — it's an npm package (`@anthropic-ai/claude-agent-sdk`) that talks to Anthropic via OAuth. The CLI probe is a copy-paste vestige from `ClaudeCodeAdapter`.
 - **Why:** Under launchd the service's PATH is `/Users/{user}/.nvm/.../bin:/usr/local/bin:/usr/bin:/bin`. Users who installed `claude` via the official installer (which puts it at `~/.local/bin/claude`) get a CLI that's not on the launchd PATH. `which claude` returns non-zero → `/api/health` reports `adapter.healthy: false` even though SDK runtime is fine. Surfaced 2026-05-01 during /land-and-deploy on the v0.5.0 PR.
 - **Fix:** Replace the `which` probe with a real liveness check. Two options:
@@ -11,7 +11,7 @@
 - **Recommended:** Option 1 (return true on module presence) for now. If the SDK ever gains a real `ping()` or `validateAuth()` method, swap in Option 2.
 - **Depends on:** None.
 
-## v0.5.1 — Eliminate QMD `SQLITE_CONSTRAINT_PRIMARYKEY` reindex errors
+## [COMPLETED v0.5.1] v0.5.1 — Eliminate QMD `SQLITE_CONSTRAINT_PRIMARYKEY` reindex errors
 - **What:** `qmd update` (subprocess invoked from `qmd-provider.ts:runReindex`) intermittently throws `SQLITE_CONSTRAINT_PRIMARYKEY` on `insertDocument(collection, path, title, hash, createdAt, modifiedAt)`. The error is caught and warned at `qmd-provider.ts:661`, so search keeps working, but rows that hit the constraint are silently dropped from QMD's index — potential gaps where memories exist on disk but don't surface in `search_memory` results.
 - **Why:** Pre-existing issue. A 2026-04-29 attempt added in-process reindex coalescing (`qmd-provider.ts:85-92, 645-669`) — at most one `qmd update` in flight, one queued. That fixed same-process burst races but the error persisted (32 occurrences in stderr.log across the file's history; some post-coalescing-fix). Most likely cause: `qmd update` itself does `INSERT` instead of `INSERT OR REPLACE` / `UPSERT` on `(collection, path)`. When the row already exists with different content, the insert collides instead of updating.
 - **Diagnostic next steps:**
@@ -28,7 +28,7 @@
 - **Recommended:** Option 2 first (cheapest if it exists). Fall back to Option 1 if no upsert flag. Schedule Option 4 for v0.6+ if QMD continues to be a footgun.
 - **Depends on:** None.
 
-## v0.5.1 — System update self-awareness (CoS proposes the update)
+## [COMPLETED v0.5.1] v0.5.1 — System update self-awareness (CoS proposes the update)
 - **What:** CarsonOS becomes aware of its own pending updates and surfaces them in-voice through the Chief of Staff. Four pieces:
   1. Boot-time check (cached daily at `~/.carsonos/.update-check`) compares local `VERSION` against `origin/main:VERSION`. When behind, writes `update_available: { from, to, changelog_excerpt }` to `instance_settings` (or a dedicated state row).
   2. Chief of Staff system prompt gains a section: if `update_available` is set, mention it casually on the user's next interaction, explain what the update does in plain English using the changelog excerpt, and offer to apply it.
@@ -41,7 +41,7 @@
 - **Security note:** the changelog excerpt that flows into the CoS prompt is a trust-boundary surface. Sanitize before injection; consider keeping it short (first N lines of the new CHANGELOG entry) and stripping markdown/HTML.
 - **Depends on:** v0.5.0 shipped (DelegatorReply for in-voice post-restart, workspace crash-safety, tsx watch fix all already in place).
 
-## v0.5 — Specialist-path abort-controller parity (cancel doesn't stop specialist compute)
+## [COMPLETED v0.5.2] v0.5 — Specialist-path abort-controller parity (cancel doesn't stop specialist compute)
 - **What:** Mirror the v0.4 Developer-task cancel infrastructure on the specialist (non-Developer) path. Register an `AbortController` at `dispatcher.executeSpecialistTask` start, stash it in `inFlightAborts`, thread it into `adapter.execute`, and handle the aborted-mid-stream case the same way `executeDeveloperTask` does.
 - **Why:** v0.4's mid-release refinement fixed the "cancelled task flips back to completed" bug for Developer tasks by wiring the abort through the Agent SDK. The specialist path (Lex, Nora, any non-`tools`/`project`/`core` specialty) got the cancel-sticky DB guard via the shared `finalizeTerminalTask`, so the status row is safe, but the specialist's SDK query keeps running to completion and burns tokens before its result is dropped. Specialist tasks are usually short (research one-liners) so low practical impact today, but the invariant is inconsistent between paths.
 - **Pros:** Consistent cancel semantics everywhere. Stops wasted compute.
@@ -49,7 +49,7 @@
 - **Context:** Surfaced 2026-04-24 during the /codex review of the PR 3 (proactive wake) commit. The Developer path was the one we hit in E2E testing, so it got fixed; the specialist path was logged here for v0.5.
 - **Depends on:** None.
 
-## v0.5 — Merge executeDeveloperTask / executeSpecialistTask via WorkspaceStrategy
+## [COMPLETED v0.5.2] v0.5 — Merge executeDeveloperTask / executeSpecialistTask via WorkspaceStrategy
 - **What:** Extract a `WorkspaceStrategy` interface with two implementations: `DeveloperWorkspace` (provisions a git worktree or tool_sandbox, sets `cwd` + `maxTurns=200` on the adapter, registers the abort controller) and `NoWorkspace` (no cwd, no turn-limit override, no abort controller today but see previous item). Then `dispatcher.executeDeveloperTask` + `executeSpecialistTask` collapse into a single `executeTask(taskId, agent, slotKey, strategy)` method that calls `strategy.setup()` → `adapter.execute(...)` → `finalizeTerminalTask(...)` → `strategy.teardown()`.
 - **Why:** v0.4 PR 3 extracted the shared post-execute finalize step into `finalizeTerminalTask`, but the pre-execute setup still forks: workspace provisioning, `cwd`/`maxTurns` passing, AbortController registration, queue-key scheme (`drainDeveloperQueue` vs `drainSpecialistQueue`). Every new cancel/wake/notifier refinement has to touch two places. Codex flagged this during PR 3 review; Josh ratified the plan to dedupe in v0.5 since the divergence is real (not pure dupe) and needs a thoughtful abstraction, not a rushed one.
 - **Pros:** Single execute path, lower cost of future refinements (canary hooks, budget gates, resume-after-restart).
@@ -81,7 +81,7 @@
 - **Context:** Surfaced 2026-04-23 during v0.4 /review (RT-09).
 - **Depends on:** None.
 
-## v0.5 — Signal transport: delegation approval UX
+## [COMPLETED v0.5.2] v0.5 — Signal transport: delegation approval UX
 - **What:** Signal-only family members currently get a silently-broken delegation flow. notifierSend resolves member.telegramUserId → null for Signal users; SignalRelayManager has no inline-button equivalent (Signal doesn't support Telegram's callback_query). Hire proposals for Signal users create the approval task but never deliver, and Phase-2 replay re-attempts forever on every boot + hourly sweep with no user-facing error surface.
 - **Why:** v0.4 ships with Signal transport (merged 2026-04 in #22) but the delegation flow was Telegram-inline-keyboard-only. A family with a Signal-only user can't hire specialists.
 - **Pros:** Closes the feature-parity gap between Telegram and Signal. Unblocks Signal-only families from v0.4 delegation entirely.
@@ -104,14 +104,6 @@
 - **Cons:** ~10 lines of DNS resolution + IP check before fetch
 - **Context:** Codex flagged during eng review (2026-04-14). Low risk for home network deployment but matters if CarsonOS ever runs in cloud infra.
 - **Depends on:** HTTP executor (M1 step 2)
-
-## CoS Dev Mode: Harness Self-Modification
-- **What:** Let the Chief of Staff agent modify CarsonOS source itself — add new system tools, fix bugs in the harness, ship commits via the agent. Includes a GUIDE.md for repo layout + git workflow, and git operations (commit/push/PR) as first-class agent capabilities with proper canUseTool gating.
-- **Why:** Today a CoS can create custom tools but can't add a new TOOL KIND or fix a harness bug without a human opening the editor. The platform should learn from itself.
-- **Pros:** Self-improving harness, Claude Code-parity for CarsonOS developers, unlocks "the right answer is to add a new system tool, not a custom one" scenarios
-- **Cons:** Needs safe-restart path (tsx watch reloads on save — works for typos, crashes for real logic errors). Git as agent capability needs careful auth plumbing.
-- **Context:** User surfaced during the custom tools retrospective (2026-04-14): "I want CoS to be in dev mode where it can edit CarsonOS code." Identified as the natural next layer above custom tools.
-- **Depends on:** Custom tools registry (shipped in v0.2.0)
 
 ## Tiered Creation by Trust Level
 - **What:** Loosen custom tool creation gates: all agents can create `prompt` tools (text-only, no execution); full-trust agents can create `http` tools (network, sandboxed); CoS only can create `script` tools (full server privilege).
@@ -148,22 +140,6 @@
 - **Depends on:** Custom tool registry merged; re-enabling delegation in
   constitution-engine and staff routes; specialist agent provisioning UI.
 
-## v0.5 — Detached Claude adapter for durable Developer tasks
-- **What:** Add a `ClaudeCodeDetachedAdapter` that spawns `claude` CLI directly with `detached: true`, `stdio: ['ignore', logFd, logFd]`, `child.unref()`. Used only for `Developer` specialty tasks. Family agents stay on the existing SDK adapter.
-- **Why:** v0.4 ships with demo-grade durability — server restart kills in-flight Developer tasks (20 min of Claude work wasted, user pays tokens twice on retry). Detached adapter survives parent SIGKILL and lets the reconciler tail the JSONL log.
-- **Pros:** Real durability. Enables pause/resume/steer primitives below. Moves CarsonOS closer to gbrain-minions-class reliability without the Postgres rewrite.
-- **Cons:** Two adapter code paths to maintain. Session resume semantics get complex (`claude --resume <sessionId>` reloads state but can't replace system prompt). PID tracking + `ps -o lstart=` start-time verification + group-kill on teardown = real footgun surface.
-- **Context:** Deferred from v0.4 per eng review (2026-04-20). Codex pushed hard on the SIGKILL test; v0.4 accepted demo-grade but flagged this as the right v0.5 primitive. See design doc `~/.gstack/projects/joshdaws-carson-os/joshdaws-main-design-20260419-172055.md` Premise 15 + "v0.5 placeholder" sections.
-- **Depends on:** v0.4 shipped and one week of real-world interrupted-task rate data (to confirm this is worth building).
-
-## v0.5 — Pause / Steer / Replay as first-class task primitives
-- **What:** Three new MCP tools: `pause_task(runId)`, `send_task_message(runId, text)`, `replay_task(runId)`. Parent agent can stop a runaway Developer task, inject mid-flight guidance ("also verify mobile"), or replay with same inputs after a fix.
-- **Why:** gbrain minions has all three; benchmark + docs show this is where the "whoa" lives in a delegation primitive. Real use case: you're chatting with Carson, Bob is working on HomeschoolHappy, you remember "also check the tablet layout" — `send_task_message` instead of waiting for him to finish and starting over.
-- **Pros:** Huge UX win for long-running dev tasks. Matches how you'd actually work with a human developer. Uses checkpoint-friendly state you already get from Claude Code session persistence.
-- **Cons:** Replay-with-same-inputs is dangerous if external state (PRs, branches) already changed — need replay-safety rules. Pause mechanics require snapshotting mid-session state, only feasible with the detached adapter.
-- **Context:** Stolen wholesale from gbrain minions architecture study (2026-04-20). See full comparison in session notes.
-- **Depends on:** Detached Claude adapter (above) ships first.
-
 ## v0.5 — `lock_until` stalled-worker rescue pattern
 - **What:** Add `lock_until INTEGER` column to tasks. Worker sets it to `now() + lease_seconds` when it picks up a task, bumps it every 30s. On boot, reconciler adopts any task with expired `lock_until` as an orphan. Replaces the current "mark in_progress → failed" boot sweep.
 - **Why:** Cleaner invariant. Same pattern minions uses. Also sets up CarsonOS for a future multi-worker Dispatcher if needed.
@@ -195,22 +171,6 @@
 - **Cons:** WebSocket log streaming adds UI state management complexity. Not on the critical path.
 - **Context:** Deferred from v0.4 per eng review (2026-04-20).
 - **Depends on:** v0.4 Tasks.tsx shipped.
-
-## Post-v0.4 — Music pack: audio + MIDI + theory tools as v0.3-registry SKILL.md bundles
-- **What:** A bundle of custom tools for music-interested family members. Implemented as `kind: script` SKILL.md packages in the v0.3 tool registry. Audio analysis (librosa), MIDI/MusicXML (music21), Hooktheory API, Open Music Theory v2 cached citations. Inspired by what Josh's brother Jeremiah built for his son Andrew ("Morning, Andrew" capability drop, 2026-04).
-- **Why:** Son will want music capabilities. Day-to-day music questions ("what key is this?", "is this too quiet for streaming?") need to happen in the conversation flow, not via delegation. These are deterministic, fast, local — classic routing-rule "code not judgment."
-- **Pros:** All libraries are free and open source (librosa/pyloudnorm/music21 = MIT/BSD, Hooktheory API free, OMT = CC BY-SA). Fast (<5 sec per tool). No new infrastructure required — uses the v0.3 custom tool registry already shipped. Grounds music conversation in real data instead of LLM hallucination.
-- **Cons:** Python subprocess from Node handler.ts adds a language boundary. Needs Python + librosa + music21 + pyloudnorm installed on the host. OMT content needs caching (CC BY-SA allows this) since there's no programmatic API.
-- **Context:** Brother's version at Andrew's household is built as a Mozart subagent. For CarsonOS, split the surface: tools on personal agents for conversational flow, Mozart specialist (see below) for long-form composition work. Routing-rule driven.
-- **Depends on:** v0.3 custom tool registry (shipped). No dependency on v0.4 delegation.
-
-## Post-v0.4 — Mozart music specialist (hired via v0.4 delegation flow)
-- **What:** Staff agent `specialty: "music"`, `model: claude-opus-4-7`, `staff_role: "custom"`. Operating instructions: composition-focused, music-theory-anchored, Hooktheory-grounded, OMT-citing. Delegated via `delegate_task` for long-form composition review, arrangement advice, multi-track EP analysis.
-- **Why:** Chat-speed music questions go to the personal agent's tools (above). Deep mentorship ("review my whole EP", "help me arrange Nostalgia for string quartet") is worth Opus max effort and a dedicated persona. Same split pattern as tools-vs-Developer.
-- **Pros:** Uses the v0.4 delegation flow verbatim — no new infra. Opus max for complex harmonic analysis. Natural household-staff framing (Mozart is explicitly a music mentor).
-- **Cons:** Asking son to decide "chat with my agent vs delegate to Mozart" adds mental overhead. Might want an automatic heuristic in the personal agent: "if this is more than ~5 min of work, offer to hand to Mozart."
-- **Context:** Complements the music-pack tools (above). Brother's version is all-subagent; CarsonOS benefits from the split.
-- **Depends on:** v0.4 delegation flow shipped. Music-pack tools (above) — Mozart wraps them in a specialist system prompt.
 
 ## v5.X — HEARTBEAT.md per agent (deferred from v5 CEO review 2026-04-27)
 - **What:** Per-agent declarative cadence file at `~/.carsonos/agents/{slug}/HEARTBEAT.md` describing every-message hooks, daily/weekly tasks, quiet hours, schedule staggering. From gbrain's soul-audit pattern.
