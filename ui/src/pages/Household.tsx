@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IconButton } from "@/components/ui/icon-button";
 import { ConfirmDialog, useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FormField, useDirtyGuard } from "@/components/ui/form-field";
 import { PageShell } from "@/components/page-shell";
 import {
   Select,
@@ -251,6 +252,11 @@ function EditMemberForm({
   const [memoryDirValid, setMemoryDirValid] = useState<boolean | null>(null);
   const [memoryDirResolved, setMemoryDirResolved] = useState<string | null>(null);
   const [confirmRemoveProps, askRemoveConfirm] = useConfirmDialog();
+  // Closing the editor without saving prompts before discarding changes.
+  // markDirty() fires on any input change; markClean() fires after a
+  // successful save mutation. The X button uses guardClose so the user
+  // doesn't lose unsaved edits to a stray click.
+  const dirtyGuard = useDirtyGuard();
 
   const updateMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -258,6 +264,7 @@ function EditMemberForm({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["household"] });
       toast.success("Member updated");
+      dirtyGuard.markClean();
       onClose();
     },
     onError: (err: Error) => toast.error(err.message),
@@ -300,32 +307,82 @@ function EditMemberForm({
             >
               <Check />
             </IconButton>
-            <IconButton aria-label="Cancel editing" size="sm" onClick={onClose}>
+            <IconButton
+              aria-label="Cancel editing"
+              size="sm"
+              onClick={() => dirtyGuard.guardClose(onClose)}
+            >
               <X />
             </IconButton>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          <Select value={role} onValueChange={(v) => setRole(v as MemberRole)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {ROLE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <FormField label="Name" name="member-name" autoComplete="given-name">
+            <Input
+              value={name}
+              onChange={(e) => { setName(e.target.value); dirtyGuard.markDirty(); }}
+              autoFocus
+            />
+          </FormField>
+          <FormField label="Role" controlId={`member-role-${member.id}`}>
+            <Select
+              value={role}
+              onValueChange={(v) => { setRole(v as MemberRole); dirtyGuard.markDirty(); }}
+            >
+              <SelectTrigger id={`member-role-${member.id}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ROLE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Input type="number" placeholder="Age" min={1} max={99} value={age} onChange={(e) => setAge(e.target.value)} />
-          <Input placeholder="Telegram ID" value={telegramUserId} onChange={(e) => setTelegramUserId(e.target.value)} />
+          <FormField label="Age" name="member-age" autoComplete="off">
+            <Input
+              type="number"
+              min={1}
+              max={99}
+              value={age}
+              onChange={(e) => { setAge(e.target.value); dirtyGuard.markDirty(); }}
+            />
+          </FormField>
+          <FormField label="Telegram ID" name="member-telegram" autoComplete="off">
+            <Input
+              value={telegramUserId}
+              onChange={(e) => { setTelegramUserId(e.target.value); dirtyGuard.markDirty(); }}
+            />
+          </FormField>
         </div>
-        <div>
+        <FormField
+          label="Memory folder"
+          name="member-memory-dir"
+          autoComplete="off"
+          error={
+            memoryDir && memoryDirValid === false
+              ? "Directory not found"
+              : undefined
+          }
+          helper={
+            memoryDir && memoryDirValid === true && memoryDirResolved
+              ? memoryDirResolved
+              : !memoryDir
+                ? `Default: ~/.carsonos/memory/${member.name.toLowerCase().replace(/\s+/g, "-")}`
+                : undefined
+          }
+        >
           <div className="flex items-center gap-2">
             <Input
-              placeholder="Memory folder (leave blank for default)"
+              placeholder="leave blank for default"
               value={memoryDir}
-              onChange={(e) => { setMemoryDir(e.target.value); setMemoryDirValid(null); }}
+              onChange={(e) => {
+                setMemoryDir(e.target.value);
+                setMemoryDirValid(null);
+                dirtyGuard.markDirty();
+              }}
               onBlur={() => {
                 if (!memoryDir.trim()) { setMemoryDirValid(null); setMemoryDirResolved(null); return; }
                 api.get<{ valid: boolean; resolved: string }>(`/settings/validate-path?path=${encodeURIComponent(memoryDir.trim())}`)
@@ -337,18 +394,7 @@ function EditMemberForm({
             {memoryDirValid === true && <Check className="h-4 w-4 shrink-0" style={{ color: "#2e7d32" }} />}
             {memoryDirValid === false && <X className="h-4 w-4 shrink-0" style={{ color: "#c62828" }} />}
           </div>
-          {memoryDir && memoryDirValid === true && memoryDirResolved && (
-            <p className="text-[10px] mt-1" style={{ color: "#2e7d32" }}>{memoryDirResolved}</p>
-          )}
-          {memoryDir && memoryDirValid === false && (
-            <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Directory not found</p>
-          )}
-          {!memoryDir && (
-            <p className="text-[10px] mt-1 text-carson-text-meta">
-              Default: ~/.carsonos/memory/{member.name.toLowerCase().replace(/\s+/g, "-")}
-            </p>
-          )}
-        </div>
+        </FormField>
         {staffAssignments.length > 0 && (
           <div className="pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
             <p className="text-[10px] uppercase tracking-wider mb-1.5 text-carson-text-muted">
@@ -534,11 +580,16 @@ function AddStaffModal({
   const [assignTo, setAssignTo] = useState<string>("");
   const [botToken, setBotToken] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  // AddStaffModal is a true modal — closing without save loses the typed
+  // name + role choices. guardClose on Cancel + outside-click prompts
+  // before discarding.
+  const dirtyGuard = useDirtyGuard();
 
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.post("/staff", payload) as Promise<{ agent: { id: string } }>,
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      dirtyGuard.markClean();
       navigate(`/staff/${data.agent.id}`);
     },
   });
@@ -569,7 +620,9 @@ function AddStaffModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.4)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) dirtyGuard.guardClose(onClose);
+      }}
     >
       <div
         className="rounded-lg shadow-xl w-full max-w-md mx-4"
@@ -579,68 +632,83 @@ function AddStaffModal({
           <h3 className="text-base font-medium font-serif text-carson-text-primary">
             New Staff Agent
           </h3>
-          <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
+          <IconButton
+            aria-label="Close dialog"
+            size="md"
+            onClick={() => dirtyGuard.guardClose(onClose)}
+          >
             <X />
           </IconButton>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          {/* Name */}
-          <div>
-            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Name</label>
+          <FormField
+            label="Name"
+            required
+            name="staff-name"
+            autoComplete="off"
+            error={nameError ? "Name is required" : undefined}
+          >
             <Input
               placeholder="e.g., Django"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => { setName(e.target.value); dirtyGuard.markDirty(); }}
               autoFocus
               style={nameError ? { borderColor: "#c62828" } : undefined}
             />
-            {nameError && <p className="text-[10px] mt-1" style={{ color: "#c62828" }}>Name is required</p>}
-          </div>
+          </FormField>
 
           {/* Role + Assign to */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Role</label>
-              <Select value={staffRole} onValueChange={(v) => setStaffRole(v as StaffRole)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            <FormField label="Role" controlId="staff-role">
+              <Select
+                value={staffRole}
+                onValueChange={(v) => { setStaffRole(v as StaffRole); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="staff-role"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {STAFF_ROLE_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Assign to</label>
-              <Select value={assignTo} onValueChange={setAssignTo}>
-                <SelectTrigger><SelectValue placeholder="Select member..." /></SelectTrigger>
+            </FormField>
+            <FormField label="Assign to" controlId="staff-assign-to">
+              <Select
+                value={assignTo}
+                onValueChange={(v) => { setAssignTo(v); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="staff-assign-to"><SelectValue placeholder="Select member..." /></SelectTrigger>
                 <SelectContent>
                   {members.map((m) => (
                     <SelectItem key={m.id} value={m.id}>{m.name} ({m.role})</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </FormField>
           </div>
 
           {/* Model + Trust Level */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Model</label>
-              <Select value={model} onValueChange={setModel}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            <FormField label="Model" controlId="staff-model">
+              <Select
+                value={model}
+                onValueChange={(v) => { setModel(v); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="staff-model"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {MODEL_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <label className="text-xs font-medium block mb-1.5 text-carson-text-body">Trust Level</label>
-              <Select value={trustLevel} onValueChange={(v) => setTrustLevel(v as TrustLevel)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            </FormField>
+            <FormField label="Trust Level" controlId="staff-trust">
+              <Select
+                value={trustLevel}
+                onValueChange={(v) => { setTrustLevel(v as TrustLevel); dirtyGuard.markDirty(); }}
+              >
+                <SelectTrigger id="staff-trust"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {TRUST_LEVEL_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>
@@ -650,26 +718,33 @@ function AddStaffModal({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </FormField>
           </div>
 
-          {/* Telegram Bot Token */}
-          <div>
-            <label className="text-xs font-medium block mb-1.5 text-carson-text-body">
-              Telegram Bot Token <span className="text-carson-text-meta">(optional)</span>
-            </label>
+          <FormField
+            label="Telegram Bot Token (optional)"
+            name="staff-bot-token"
+            autoComplete="off"
+            helper="You can add this later from the agent detail page."
+          >
             <Input
               type="password"
               placeholder="123456:ABC-DEF..."
               value={botToken}
-              onChange={(e) => setBotToken(e.target.value)}
+              onChange={(e) => { setBotToken(e.target.value); dirtyGuard.markDirty(); }}
             />
-            <p className="text-[10px] mt-1 text-carson-text-meta">You can add this later from the agent detail page.</p>
-          </div>
+          </FormField>
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-2 pt-2">
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => dirtyGuard.guardClose(onClose)}
+            >
+              Cancel
+            </Button>
             <Button type="submit" size="sm" disabled={mutation.isPending} style={{ background: "#1a1f2e", color: "#e8dfd0" }}>
               {mutation.isPending ? "Creating..." : "Create Agent"}
             </Button>
