@@ -250,6 +250,7 @@ function EditMemberForm({
   const [memoryDir, setMemoryDir] = useState(member.memoryDir || "");
   const [memoryDirValid, setMemoryDirValid] = useState<boolean | null>(null);
   const [memoryDirResolved, setMemoryDirResolved] = useState<string | null>(null);
+  const [confirmRemoveProps, askRemoveConfirm] = useConfirmDialog();
 
   const updateMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -363,11 +364,19 @@ function EditMemberForm({
           </div>
         )}
         <div className="flex justify-end pt-1">
+          {/* Remove fires through ConfirmDialog — issue #49. Removing a
+              household member detaches their assigned staff and is not
+              undoable, so it gets the same confirmation pattern as
+              StaffCard's delete. */}
           <Button
             variant="ghost"
             size="sm"
             className="text-red-600 hover:text-red-700 hover:bg-red-50 text-xs"
-            onClick={() => deleteMutation.mutate()}
+            onClick={() =>
+              askRemoveConfirm(async () => {
+                await deleteMutation.mutateAsync();
+              })
+            }
             disabled={deleteMutation.isPending}
           >
             <Trash2 className="h-3 w-3 mr-1" /> Remove
@@ -379,6 +388,20 @@ function EditMemberForm({
           </p>
         )}
       </CardContent>
+      <ConfirmDialog
+        {...confirmRemoveProps}
+        title={`Remove ${member.name}?`}
+        description={
+          <p>
+            This removes {member.name} from the household. Any staff agents
+            assigned to {member.name} will be detached. Memory files on disk
+            are kept; this is reversible by re-adding the member with the
+            same name.
+          </p>
+        }
+        confirmLabel="Remove"
+        tone="destructive"
+      />
     </Card>
   );
 }

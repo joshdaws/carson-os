@@ -5,6 +5,10 @@
 - **Why:** Pre-v0.5.3 forms wired their own labels (`<label>` siblings without `htmlFor`), skipped `name` and `autocomplete`, and signaled error/required state through copy alone. That weakens browser autofill, screen reader traversal, and validation recovery. The component contract is in place — only the per-page migration remains.
 - **Pros:** Closes the last UI-audit form item. Browser autofill works correctly across all setup flows. First-error focus + dirty-guard reduce data-loss accidents on long forms.
 - **Cons:** Touches every form on every page. ~400-600 LOC across 5 page files. Visual regression risk during conversion if existing forms have bespoke layouts.
+- **Caveats from the v0.5.3 review (2026-05-02):**
+  - FormField uses `React.cloneElement` to inject `id` / `name` / `autoComplete` / `aria-*` onto its child. That works for `<Input>`, `<Textarea>`, and any plain `<input>`-shaped element. It does **not** work for radix `<Select>`, which is a compound component (`<Select>` → `<SelectTrigger>` etc.) and doesn't accept `id` or `autoComplete` at the root. Most member/agent forms in scope have a Select for role / model / trust-level — those need either a `skipInputProps` escape hatch added to FormField or label+error positioned manually with explicit id threading on the trigger.
+  - FormField only injects an `id` if neither the wrapper nor the child already has one. Existing `<Input id="foo">` callers stay intact — useful when migrating onto pages that already wired ids manually.
+  - `useDirtyGuard` only protects modal/drawer-style close handlers that explicitly call `guardClose`. It does **not** intercept React Router navigation (sidebar clicks, browser back). If we want navigation protection too, that's a `useBlocker` follow-up.
 - **Context:** Issue #51. Originally part of v0.5.3 scope; deferred to v0.5.4 because the bug-class items (#43, #44, #45, #46, #49) plus the Tools mobile card and the destructive-action standardization filled the v0.5.3 release.
 - **Depends on:** v0.5.3 foundation shipped (FormField + useDirtyGuard primitives are in `ui/src/components/ui/form-field.tsx`).
 

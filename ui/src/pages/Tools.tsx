@@ -578,8 +578,8 @@ function SkillMdView({ skillMd }: { skillMd: string | null }) {
               ),
               blockquote: ({ children }) => (
                 <blockquote
-                  className="text-xs italic pl-3 my-2"
-                  style={{ borderLeft: "2px solid #ddd5c8", color: "#5a5a5a" }}
+                  className="text-xs italic pl-3 my-2 text-carson-text-muted"
+                  style={{ borderLeft: "2px solid #ddd5c8" }}
                 >
                   {children}
                 </blockquote>
@@ -1018,20 +1018,16 @@ function ToolCard({
   t,
   agentMap,
   onSelect,
-  inset,
 }: {
   t: CustomTool;
   agentMap: Map<string, string>;
   onSelect: (id: string) => void;
-  inset?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={() => onSelect(t.id)}
-      className={`w-full text-left rounded-md border bg-carson-ivory border-carson-border p-3 transition-colors hover:bg-carson-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        inset ? "ml-3" : ""
-      }`}
+      className="w-full text-left rounded-md border bg-carson-ivory border-carson-border p-3 transition-colors hover:bg-carson-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-start gap-2">
         <KindIcon kind={t.kind} />
@@ -1156,14 +1152,16 @@ function ToolBundleCard({
         </div>
       </button>
       {expanded && (
-        <div className="space-y-2">
+        // pl-3 on the parent indents inset members instead of ml-3 on each
+        // child — the child stays w-full inside this padded box, so the
+        // PageShell overflow-x-hidden ancestor doesn't clip the right edge.
+        <div className="space-y-2 pl-3">
           {bundle.tools.map((t) => (
             <ToolCard
               key={t.id}
               t={t}
               agentMap={agentMap}
               onSelect={onSelectTool}
-              inset
             />
           ))}
         </div>
@@ -1481,15 +1479,15 @@ function OrphanImporterModal({
                       {o.parsed && (
                         <Badge
                           variant="secondary"
-                          className="text-[10px]"
-                          style={{ background: "#f4efe6", color: "#5a5a5a" }}
+                          className="text-[10px] text-carson-text-muted"
+                          style={{ background: "#f4efe6" }}
                         >
                           {o.parsed.kind}
                         </Badge>
                       )}
                     </div>
                     {o.parsed && (
-                      <p className="text-xs mt-1" style={{ color: "#5a5a5a" }}>
+                      <p className="text-xs mt-1 text-carson-text-muted">
                         <span className="font-medium" style={{ color: "#1a1f2e" }}>
                           {o.parsed.name}
                         </span>{" "}

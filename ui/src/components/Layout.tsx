@@ -200,9 +200,13 @@ export function Layout() {
         {sidebar}
       </nav>
 
-      {/* Mobile hamburger — 44x44 hit area via IconButton (v0.5.3 / issue #45). */}
+      {/* Mobile hamburger — 44x44 hit area via IconButton (v0.5.3 / issue #45).
+          Always navy background so the icon stays AA-contrast both when
+          closed (sitting over cream page content) and open (sitting over the
+          navy sidebar). Ghost variant on its own would render
+          text-carson-text-muted at ~2.8:1 on navy. */}
       <IconButton
-        variant="ghost"
+        variant="primary"
         size="lg"
         aria-label={mobileOpen ? "Close menu" : "Open menu"}
         className="md:hidden fixed top-2 left-2 z-50"

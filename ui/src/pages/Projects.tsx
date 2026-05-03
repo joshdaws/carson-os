@@ -110,7 +110,9 @@ export function ProjectsPage() {
       confirmLabel: "Disable",
       tone: "default",
     });
-    askConfirm(() => toggleMutation.mutate(project.id));
+    askConfirm(async () => {
+      await toggleMutation.mutateAsync(project.id);
+    });
   };
 
   const requestDelete = (project: Project) => {
@@ -121,7 +123,9 @@ export function ProjectsPage() {
       confirmLabel: "Delete",
       tone: "destructive",
     });
-    askConfirm(() => deleteMutation.mutate(project.id));
+    askConfirm(async () => {
+      await deleteMutation.mutateAsync(project.id);
+    });
   };
 
   return (

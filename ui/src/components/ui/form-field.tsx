@@ -61,11 +61,16 @@ export function FormField({
   autoComplete,
 }: FormFieldProps) {
   const generatedId = React.useId();
-  const id = idOverride ?? generatedId;
+  const childProps = children.props as Record<string, unknown>;
+  // Preserve an id the caller already wired on the child input — clobbering
+  // it would silently break external <label htmlFor>, aria-* references, and
+  // tests that select by id. Only fall back to the generated id if neither
+  // FormField nor the child has one.
+  const id =
+    idOverride ?? (childProps.id as string | undefined) ?? generatedId;
   const helperId = `${id}-helper`;
   const errorId = `${id}-error`;
 
-  const childProps = children.props as Record<string, unknown>;
   const child = React.cloneElement(children, {
     id,
     name: name ?? (childProps.name as string | undefined),

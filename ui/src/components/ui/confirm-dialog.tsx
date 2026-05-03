@@ -58,7 +58,10 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [pending, setPending] = React.useState(false);
   // Disable confirm for 250ms after open to prevent enter-key carry-over
-  // from a quick double-tap on the trigger.
+  // from a quick double-tap on the trigger. armed is reset to false whenever
+  // the dialog closes so the next open re-runs the guard from scratch — without
+  // the close-side reset, a second open kept armed=true for a frame and let
+  // an in-flight Enter sneak past the delay.
   const [armed, setArmed] = React.useState(false);
   React.useEffect(() => {
     if (open) {
@@ -66,9 +69,21 @@ export function ConfirmDialog({
       const t = window.setTimeout(() => setArmed(true), 250);
       return () => window.clearTimeout(t);
     } else {
+      setArmed(false);
       setPending(false);
     }
   }, [open]);
+
+  // While onConfirm is in flight, ESC and click-outside must not close the
+  // dialog — that would violate the async-aware contract callers rely on.
+  // We still let Radix open the dialog freely; we only block close-while-pending.
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      if (pending && !next) return;
+      onOpenChange(next);
+    },
+    [pending, onOpenChange],
+  );
 
   const handleConfirm = async () => {
     if (!armed || pending) return;
@@ -82,7 +97,7 @@ export function ConfirmDialog({
   };
 
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
@@ -115,7 +130,7 @@ export function ConfirmDialog({
           <div className="mt-5 flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={pending}
               className="min-h-[44px] rounded-md border border-carson-border bg-carson-ivory px-4 text-sm font-medium text-carson-text-body transition-colors hover:bg-carson-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >

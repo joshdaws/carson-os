@@ -50,9 +50,10 @@ export function PageShell({
     <div
       className={cn(
         // Top inset on mobile so the fixed hamburger button (44x44 in the
-        // top-left corner) doesn't overlap page content. lg+ doesn't show
-        // the hamburger so we drop the inset.
-        "pt-14 lg:pt-0",
+        // top-left corner) doesn't overlap page content. The hamburger hides
+        // at md, so the inset has to drop at the same breakpoint — otherwise
+        // every page gets a 56px blank gap between 768px and 1023px wide.
+        "pt-14 md:pt-0",
         // Horizontal padding scales up at sm. Max-width caps the content
         // so it doesn't stretch on ultrawide displays.
         "px-4 sm:px-6 lg:px-8",

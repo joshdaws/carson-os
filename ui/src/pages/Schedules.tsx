@@ -472,7 +472,11 @@ function TaskRow({
               aria-label="Delete schedule"
               variant="destructive"
               size="sm"
-              onClick={() => askConfirm(() => deleteMutation.mutate())}
+              onClick={() =>
+                askConfirm(async () => {
+                  await deleteMutation.mutateAsync();
+                })
+              }
             >
               <Trash2 />
             </IconButton>
