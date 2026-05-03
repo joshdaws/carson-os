@@ -99,8 +99,8 @@ function FamilyStep({
   return (
     <div className="max-w-lg mx-auto w-full">
       <h3
-        className="text-xl font-normal mb-1"
-        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+        className="text-xl font-normal mb-1 font-serif"
+        style={{ color: "var(--carson-navy)" }}
       >
         Your Family
       </h3>
@@ -227,8 +227,8 @@ function AgentStep({
   return (
     <div className="max-w-lg mx-auto w-full">
       <h3
-        className="text-xl font-normal mb-1"
-        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+        className="text-xl font-normal mb-1 font-serif"
+        style={{ color: "var(--carson-navy)" }}
       >
         Your Chief of Staff
       </h3>
@@ -322,8 +322,8 @@ function DoneStep({ agentName }: { agentName: string }) {
         <Check className="h-8 w-8" style={{ color: "var(--carson-success)" }} />
       </div>
       <h3
-        className="text-xl font-normal mb-2"
-        style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+        className="text-xl font-normal mb-2 font-serif"
+        style={{ color: "var(--carson-navy)" }}
       >
         You're all set
       </h3>
@@ -413,8 +413,8 @@ export function OnboardingPage() {
       {/* Header */}
       <div className="py-6 px-6 text-center border-b" style={{ borderColor: "var(--carson-border)" }}>
         <h1
-          className="text-lg font-bold tracking-wide"
-          style={{ color: "var(--carson-navy)", fontFamily: "'Instrument Serif', Georgia, serif" }}
+          className="text-lg font-bold tracking-wide font-serif"
+          style={{ color: "var(--carson-navy)" }}
         >
           CarsonOS
         </h1>

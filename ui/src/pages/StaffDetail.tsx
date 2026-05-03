@@ -352,8 +352,8 @@ export function StaffDetailPage() {
             <div className="flex items-center gap-3 flex-wrap">
               {editingName ? (
                 <input
-                  className="text-xl font-normal border-b-2 bg-transparent outline-none px-1"
-                  style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif", borderColor: "#8b6f4e" }}
+                  className="text-xl font-normal border-b-2 bg-transparent outline-none px-1 font-serif text-carson-text-primary"
+                  style={{ borderColor: "#8b6f4e" }}
                   value={nameDraft ?? agent.name}
                   onChange={(e) => setNameDraft(e.target.value)}
                   onBlur={handleSaveName}
@@ -362,8 +362,7 @@ export function StaffDetailPage() {
                 />
               ) : (
                 <h2
-                  className="text-xl font-normal cursor-pointer hover:opacity-70"
-                  style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
+                  className="text-xl font-normal cursor-pointer hover:opacity-70 font-serif text-carson-text-primary"
                   onClick={() => { setEditingName(true); setNameDraft(agent.name); }}
                   title="Click to edit name"
                 >

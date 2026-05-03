@@ -210,10 +210,7 @@ function GoogleHelpOverlay({ onClose }: { onClose: () => void }) {
         }}
       >
         <div className="px-5 py-4 flex items-center justify-between border-b" style={{ borderColor: "#ddd5c8" }}>
-          <h3
-            className="text-base font-normal"
-            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-          >
+          <h3 className="text-base font-normal font-serif text-carson-text-primary">
             Connect Google Services
           </h3>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5">

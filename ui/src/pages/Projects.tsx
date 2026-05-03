@@ -132,7 +132,7 @@ export function ProjectsPage() {
     <PageShell maxWidth="5xl">
       <PageShell.Header>
         <div>
-          <h1 className="text-2xl font-bold mb-1" style={{ fontFamily: "Georgia, serif" }}>
+          <h1 className="text-2xl font-bold mb-1 font-serif">
             Projects
           </h1>
           <p className="text-sm text-carson-text-body">

@@ -576,7 +576,7 @@ function AddStaffModal({
         style={{ background: "#faf6ef", border: "1px solid #ddd5c8" }}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#eee8dd" }}>
-          <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+          <h3 className="text-base font-medium font-serif text-carson-text-primary">
             New Staff Agent
           </h3>
           <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
@@ -938,10 +938,7 @@ export function HouseholdPage() {
       <div className="mb-10">
         <PageShell.Header>
           <div>
-            <h2
-              className="text-[22px] font-normal flex items-center gap-2"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal flex items-center gap-2 font-serif text-carson-text-primary">
               <Users className="h-5 w-5 text-carson-text-muted" />
               Family Members
             </h2>
@@ -998,10 +995,7 @@ export function HouseholdPage() {
               {parents.length > 0 && (
                 <div>
                   <div className="mb-5">
-                    <h2
-                      className="text-[22px] font-normal"
-                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-                    >
+                    <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
                       Parents
                     </h2>
                     <p className="text-[13px] mt-1 text-carson-text-meta">
@@ -1026,10 +1020,7 @@ export function HouseholdPage() {
               {children.length > 0 && (
                 <div>
                   <div className="mb-5">
-                    <h2
-                      className="text-[22px] font-normal"
-                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-                    >
+                    <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
                       Kids
                     </h2>
                     <p className="text-[13px] mt-1 text-carson-text-meta">
@@ -1104,10 +1095,7 @@ export function HouseholdPage() {
       <div className="mb-10">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h2
-              className="text-[22px] font-normal flex items-center gap-2"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal flex items-center gap-2 font-serif text-carson-text-primary">
               <Users className="h-5 w-5 text-carson-text-muted" />
               Personal agents
             </h2>
@@ -1150,10 +1138,7 @@ export function HouseholdPage() {
       <div>
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h2
-              className="text-[22px] font-normal flex items-center gap-2"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal flex items-center gap-2 font-serif text-carson-text-primary">
               <Shield className="h-5 w-5 text-carson-text-muted" />
               Staff
             </h2>

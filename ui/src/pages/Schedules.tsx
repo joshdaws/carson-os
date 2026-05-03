@@ -591,7 +591,7 @@ function AddTaskModal({
         style={{ background: "#faf6ef", border: "1px solid #ddd5c8" }}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#eee8dd" }}>
-          <h3 className="text-base font-medium" style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}>
+          <h3 className="text-base font-medium font-serif text-carson-text-primary">
             New Scheduled Task
           </h3>
           <IconButton aria-label="Close dialog" size="md" onClick={onClose}>
@@ -713,10 +713,7 @@ export function SchedulesPage() {
         <div>
           <div className="flex items-center gap-2">
             <Clock className="h-5 w-5 text-carson-text-muted" />
-            <h2
-              className="text-[22px] font-normal"
-              style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-            >
+            <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
               Scheduled Tasks
             </h2>
           </div>

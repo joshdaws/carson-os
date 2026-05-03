@@ -401,10 +401,7 @@ export function ConversationsPage() {
       <div className="mb-4">
         <div className="flex items-center gap-2">
           <MessageSquare className="h-5 w-5 text-carson-text-muted" />
-          <h2
-            className="text-[22px] font-normal"
-            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-          >
+          <h2 className="text-[22px] font-normal font-serif text-carson-text-primary">
             Conversations
           </h2>
         </div>

@@ -177,10 +177,7 @@ export function ConstitutionPage() {
       <PageShell.Header>
         <div className="flex items-center gap-2">
           <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
-          <h1
-            className="text-xl font-normal"
-            style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-          >
+          <h1 className="text-xl font-normal font-serif text-carson-text-primary">
             Family Constitution
           </h1>
           <span className="text-xs ml-2 text-carson-text-muted">
@@ -367,17 +364,14 @@ export function ConstitutionPage() {
                 components={{
                   h1: ({ children }) => (
                     <h1
-                      className="text-xl font-normal mb-4 pb-2 border-b"
-                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif", borderColor: "#ddd5c8" }}
+                      className="text-xl font-normal mb-4 pb-2 border-b font-serif text-carson-text-primary"
+                      style={{ borderColor: "#ddd5c8" }}
                     >
                       {children}
                     </h1>
                   ),
                   h2: ({ children }) => (
-                    <h2
-                      className="text-lg font-normal mt-8 mb-3"
-                      style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-                    >
+                    <h2 className="text-lg font-normal mt-8 mb-3 font-serif text-carson-text-primary">
                       {children}
                     </h2>
                   ),
@@ -516,10 +510,7 @@ function ConstitutionEmptyState() {
     <PageShell maxWidth="4xl">
       <div className="flex items-center gap-2 mb-6">
         <ScrollText className="h-5 w-5" style={{ color: "#8b6f4e" }} />
-        <h1
-          className="text-xl font-normal"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-        >
+        <h1 className="text-xl font-normal font-serif text-carson-text-primary">
           Family Constitution
         </h1>
       </div>
@@ -528,10 +519,7 @@ function ConstitutionEmptyState() {
         style={{ background: "#ffffff", border: "1px solid #ddd5c8" }}
       >
         <ScrollText className="h-10 w-10 mx-auto mb-4" style={{ color: "#8b6f4e" }} />
-        <h3
-          className="text-lg font-normal mb-2"
-          style={{ color: "#1a1f2e", fontFamily: "Georgia, 'Times New Roman', serif" }}
-        >
+        <h3 className="text-lg font-normal mb-2 font-serif text-carson-text-primary">
           Build Your Family Constitution
         </h3>
         <p className="text-sm mb-5 max-w-md mx-auto text-carson-text-muted">
