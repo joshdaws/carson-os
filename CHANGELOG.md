@@ -4,6 +4,23 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.3] - 2026-05-02
+
+### Added
+
+- **Mobile-aware page shell.** Every routed page now wraps in a `PageShell` component that reserves 56px of top inset on mobile so the fixed hamburger button doesn't overlap the page title, applies responsive horizontal padding, and locks the horizontal axis so a stray fixed-width child can't introduce page-level horizontal scroll. `PageShell.Header` stacks vertically on mobile and goes side-by-side on tablet+ so title/action rows don't fight for the same line at 390px wide. (Issues #43, #50.)
+- **`IconButton` primitive.** Icon-only controls (member edit, schedule pause/edit/delete, password reveal eye, mobile hamburger, modal close X buttons, the secret delete trash) now use a shared `IconButton` component with a 44x44 hit area (per WCAG 2.5.5), a required `aria-label` enforced at compile time, a focus-visible ring, and a radix Tooltip. Pre-v0.5.3 these were 28-36px buttons with no accessible names. (Issue #45.)
+- **`ConfirmDialog` for destructive actions.** Replaces the previous mix of `window.confirm()`, ad-hoc inline two-step confirmations, and immediate-fire icon buttons with a single radix-Dialog-based confirmation flow. Verb-named confirm buttons (Delete / Disable / Revoke instead of OK), 250ms enter-key arming so a quick double-click can't pop and immediately confirm, async-aware so the dialog stays open with a pending state until the underlying mutation resolves. Wired through Projects (delete + disable), Schedules (delete), Household (staff delete), and Tools (tool delete + secret delete). (Issue #49.)
+- **Custom Tools mobile card layout.** Below the `md` breakpoint, the Tools page renders as stacked cards with a 2-column metadata grid (kind, created-by, usage, last-used) instead of the desktop table. Bundles preserve their expand/collapse semantics. Tablet+ keeps the existing table. (Issue #44.)
+
+### Changed
+
+- **Semantic text tokens replace hard-coded muted hex.** `globals.css` now defines WCAG-AA-verified `--carson-text-primary` / `-body` / `-muted` / `-meta` / `-on-navy` / `-on-navy-muted` tokens, exposed as Tailwind classes (`text-carson-text-muted` etc). Pre-v0.5.3 the codebase used inline `style={{ color: "#8a8070" }}` etc. with values that failed contrast on cream/white/navy at small text sizes. Sidebar section labels alone went from 2.38:1 (fail) to 5.0:1 (pass AA). All page-level muted/meta hex now routes through the tokens. (Issue #46.)
+
+### Why this matters
+
+v0.5.3 is the audit-fix release. It closes 6 of the 8 UI-audit issues opened against the dashboard (#43, #44, #45, #46, #49, #50). Mobile users no longer get clipped headings or hidden controls at 390px. Screen-reader and keyboard users get accessible names on every icon-only control. Destructive actions consistently route through a single confirmation flow instead of three different patterns. Text contrast hits AA across the app. The two remaining issues (#48 search/URL filters and #51 form-field accessibility) are deferred to v0.5.4 — the foundation primitives are already in place; only the per-page migrations remain.
+
 ## [0.5.2] - 2026-05-02
 
 ### Security

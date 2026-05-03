@@ -1,5 +1,21 @@
 # TODOS
 
+## v0.5.4 — FormField migration + modal dirty-guard (UI audit #51)
+- **What:** Wire the new `FormField` component (already shipped in v0.5.3 foundation at `ui/src/components/ui/form-field.tsx`) through Projects, Schedules, Household member-and-agent forms, Onboarding family setup, and Settings. Add `useDirtyGuard` to modal/drawer editors so closing-while-dirty asks before discarding.
+- **Why:** Pre-v0.5.3 forms wired their own labels (`<label>` siblings without `htmlFor`), skipped `name` and `autocomplete`, and signaled error/required state through copy alone. That weakens browser autofill, screen reader traversal, and validation recovery. The component contract is in place — only the per-page migration remains.
+- **Pros:** Closes the last UI-audit form item. Browser autofill works correctly across all setup flows. First-error focus + dirty-guard reduce data-loss accidents on long forms.
+- **Cons:** Touches every form on every page. ~400-600 LOC across 5 page files. Visual regression risk during conversion if existing forms have bespoke layouts.
+- **Context:** Issue #51. Originally part of v0.5.3 scope; deferred to v0.5.4 because the bug-class items (#43, #44, #45, #46, #49) plus the Tools mobile card and the destructive-action standardization filled the v0.5.3 release.
+- **Depends on:** v0.5.3 foundation shipped (FormField + useDirtyGuard primitives are in `ui/src/components/ui/form-field.tsx`).
+
+## v0.5.4 — Tasks/Conversations search + URL-backed filters (UI audit #48)
+- **What:** URL-backed filter state via React Router `useSearchParams`, search input on both pages, simple pagination once counts exceed a modest threshold (~50 items), selected task/conversation persisted in the URL for reload + deep-link.
+- **Why:** Audit measured 51 tasks and 80 conversations on the live instance. Both pages render full `.map()` lists without virtualization, search, pagination, or URL-backed filters. Filter state is local component state, so a filtered view can't be bookmarked or shared and resets on reload.
+- **Pros:** Pages stay fast as activity grows. Bookmark/share-friendly. Works the way every other production list-view does.
+- **Cons:** ~200-300 LOC across Tasks and Conversations. Existing local filter state needs to migrate to URL state without breaking the empty-default behavior. Pagination needs a per-list threshold decision.
+- **Context:** Issue #48. Deferred from v0.5.3 release scope (paired with #51).
+- **Depends on:** None.
+
 ## [COMPLETED v0.5.1] v0.5.1 — Fix `/api/health` adapter probe (false-negative on launchd)
 - **What:** `ClaudeAgentSdkAdapter.healthCheck()` at `server/src/services/subprocess-adapter.ts:841-848` runs `which claude` to confirm CLI presence. The Agent SDK doesn't use the `claude` CLI at runtime — it's an npm package (`@anthropic-ai/claude-agent-sdk`) that talks to Anthropic via OAuth. The CLI probe is a copy-paste vestige from `ClaudeCodeAdapter`.
 - **Why:** Under launchd the service's PATH is `/Users/{user}/.nvm/.../bin:/usr/local/bin:/usr/bin:/bin`. Users who installed `claude` via the official installer (which puts it at `~/.local/bin/claude`) get a CLI that's not on the launchd PATH. `which claude` returns non-zero → `/api/health` reports `adapter.healthy: false` even though SDK runtime is fine. Surfaced 2026-05-01 during /land-and-deploy on the v0.5.0 PR.
