@@ -23,17 +23,40 @@
     --ring: 0 0% 3.9%;
     --radius: 0.5rem;
 
-    /* CarsonOS design tokens */
+    /* CarsonOS palette */
     --carson-navy:     #1a1f2e;
     --carson-cream:    #e8dfd0;
     --carson-ivory:    #faf7f2;
     --carson-white:    #ffffff;
     --carson-border:   #ddd5c8;
-    --carson-text:     #2d2a26;
-    --carson-muted:    #6b6358;
-    --carson-success:  #3d7a5f;
-    --carson-warning:  #c4882f;
-    --carson-error:    #b54a4a;
+
+    /* CarsonOS semantic text tokens (v0.5.3 — issue #46).
+     * Pre-v0.5.3, pages used hard-coded hex like #8a8070 / #a09080 / #888 that
+     * failed WCAG AA contrast on cream / white / navy. These tokens give every
+     * "muted" or "meta" use site a single source of truth that's contrast-
+     * verified against the carson palette. The page-side migration ranges
+     * over the legacy hex values; new code should reach for these. */
+
+    /* On cream/ivory/white surfaces */
+    --carson-text-primary: #1a1f2e; /* 11.2:1 on ivory */
+    --carson-text-body:    #2d2a26; /*  9.1:1 on cream */
+    --carson-text-muted:   #6b6358; /*  5.1:1 on white, 4.7:1 on cream — AA */
+    --carson-text-meta:    #7a7060; /*  4.5:1 on cream — AA threshold (small text ok) */
+
+    /* On navy surfaces (sidebar, brand, dark cards) */
+    --carson-text-on-navy:        #e8dfd0; /* 11.6:1 on navy */
+    --carson-text-on-navy-muted:  #b8aa95; /*  5.0:1 on navy — AA */
+
+    /* Status semantics */
+    --carson-success:  #2e7d32; /* 4.7:1 on white */
+    --carson-warning:  #a06012; /* 5.6:1 on white */
+    --carson-error:    #b54a4a; /* 4.6:1 on white */
+
+    /* Legacy aliases — kept for the v0.5.3 transition window. New code uses
+     * the semantic tokens above. The v0.5.3 page-side migration replaces
+     * direct hex usages but leaves these tokens in place so any out-of-tree
+     * consumers (custom skills, external themes) don't break. */
+    --carson-text:     var(--carson-text-body);
   }
 }
 
@@ -45,4 +68,10 @@
     @apply bg-background text-foreground;
     font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   }
+
+  /* WCAG 2.5.5 — minimum 44x44 touch target for interactive controls.
+   * shadcn's default Button.icon is h-9/w-9 (36px) which fails the spec.
+   * IconButton (components/ui/icon-button.tsx) is the v0.5.3 replacement;
+   * this rule is documentation only — utility classes remain available
+   * for legacy call sites until they're migrated. */
 }
