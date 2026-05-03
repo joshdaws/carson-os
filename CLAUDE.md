@@ -33,9 +33,9 @@ pnpm test          # run all tests
 ## Testing
 
 ```bash
-pnpm test                            # all tests (505 across 29 files)
+pnpm test                            # all tests (506 across 29 files)
 pnpm --filter @carsonos/server test  # server tests only (vitest, 466 tests)
-pnpm --filter @carsonos/ui test      # ui tests only (vitest + happy-dom + RTL, 39 tests)
+pnpm --filter @carsonos/ui test      # ui tests only (vitest + happy-dom + RTL, 40 tests)
 ```
 
 Test files live next to source. Server: `services/__tests__/`, `routes/__tests__/`. UI: `components/__tests__/`, `components/ui/__tests__/`. UI vitest config is `ui/vitest.config.ts`; setup file at `ui/src/test/setup.ts` polyfills `ResizeObserver` + `matchMedia` for radix primitives. New UI tests must render through `IconButtonTooltipProvider` when they touch IconButton (App.tsx wires it at the route root).
