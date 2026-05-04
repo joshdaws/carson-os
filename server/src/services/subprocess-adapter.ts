@@ -99,6 +99,33 @@ function shortHash(text: string): string {
 }
 
 /**
+ * Process-global MCP server counter. Incrementing at module scope (not inside
+ * execute()) ensures server names like "carsonos-memory-1", "carsonos-memory-2"
+ * are stable and predictable across conversation turns. Using Date.now() inside
+ * execute() caused the suffix to change every turn, making previously-seen tool
+ * names invalid on the next message.
+ */
+let _mcpServerCounter = 0;
+const MCP_SERVER_BASE = "carsonos-memory";
+
+/**
+ * Generate the next MCP server name. Module-scope so the counter survives
+ * across `execute()` calls and across `triggerRefresh` rotations within a
+ * call. Predictable, monotonically increasing per process lifetime.
+ */
+export function nextMcpServerName(): string {
+  return `${MCP_SERVER_BASE}-${++_mcpServerCounter}`;
+}
+
+/**
+ * Test-only: reset the module-scope counter so tests can assert exact names
+ * without relying on test-execution order. Not intended for runtime use.
+ */
+export function __TEST_resetMcpServerCounter(): void {
+  _mcpServerCounter = 0;
+}
+
+/**
  * Process-global cache of `tool()` return values keyed by tool name.
  *
  * The Claude Agent SDK's tool()/createSdkMcpServer pair retains global state
@@ -496,14 +523,12 @@ export class ClaudeAgentSdkAdapter implements Adapter {
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
 
     // Each execute() invocation + each mid-session refresh gets a unique MCP
-    // server name. createSdkMcpServer / tool() retain process-global state
-    // about registered tool names, so re-creating a server with the same name
-    // and overlapping tools throws "Tool X is already registered". Unique
-    // names force the SDK to cleanly disconnect the prior server via
-    // setMcpServers (or avoid the collision on initial init across calls).
-    const MCP_SERVER_BASE = "carsonos-memory";
-    let mcpServerCounter = 0;
-    const nextMcpServerName = () => `${MCP_SERVER_BASE}-${Date.now()}-${++mcpServerCounter}`;
+    // server name from the module-scope `nextMcpServerName()`. createSdkMcpServer
+    // / tool() retain process-global state about registered tool names, so
+    // re-creating a server with the same name and overlapping tools throws
+    // "Tool X is already registered". Unique names force the SDK to cleanly
+    // disconnect the prior server via setMcpServers (or avoid the collision on
+    // initial init across calls).
     let currentMcpServerName = nextMcpServerName();
 
     // Forward-declared so the tool() callback can call it after a successful
