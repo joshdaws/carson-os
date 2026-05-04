@@ -106,6 +106,24 @@ function shortHash(text: string): string {
  * names invalid on the next message.
  */
 let _mcpServerCounter = 0;
+const MCP_SERVER_BASE = "carsonos-memory";
+
+/**
+ * Generate the next MCP server name. Module-scope so the counter survives
+ * across `execute()` calls and across `triggerRefresh` rotations within a
+ * call. Predictable, monotonically increasing per process lifetime.
+ */
+export function nextMcpServerName(): string {
+  return `${MCP_SERVER_BASE}-${++_mcpServerCounter}`;
+}
+
+/**
+ * Test-only: reset the module-scope counter so tests can assert exact names
+ * without relying on test-execution order. Not intended for runtime use.
+ */
+export function __TEST_resetMcpServerCounter(): void {
+  _mcpServerCounter = 0;
+}
 
 /**
  * Process-global cache of `tool()` return values keyed by tool name.
@@ -505,13 +523,12 @@ export class ClaudeAgentSdkAdapter implements Adapter {
     const allToolCalls: Array<{ name: string; input: Record<string, unknown>; result: { content: string; is_error?: boolean } }> = [];
 
     // Each execute() invocation + each mid-session refresh gets a unique MCP
-    // server name. createSdkMcpServer / tool() retain process-global state
-    // about registered tool names, so re-creating a server with the same name
-    // and overlapping tools throws "Tool X is already registered". Unique
-    // names force the SDK to cleanly disconnect the prior server via
-    // setMcpServers (or avoid the collision on initial init across calls).
-    const MCP_SERVER_BASE = "carsonos-memory";
-    const nextMcpServerName = () => `${MCP_SERVER_BASE}-${++_mcpServerCounter}`;
+    // server name from the module-scope `nextMcpServerName()`. createSdkMcpServer
+    // / tool() retain process-global state about registered tool names, so
+    // re-creating a server with the same name and overlapping tools throws
+    // "Tool X is already registered". Unique names force the SDK to cleanly
+    // disconnect the prior server via setMcpServers (or avoid the collision on
+    // initial init across calls).
     let currentMcpServerName = nextMcpServerName();
 
     // Forward-declared so the tool() callback can call it after a successful
