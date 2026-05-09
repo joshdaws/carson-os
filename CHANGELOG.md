@@ -4,6 +4,12 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.6] - 2026-05-09
+
+### Fixed
+
+- **Onboarding checklist now honors disk-based identity files.** `/api/households/current` was filtering `membersWithProfiles` by `m.profileContent !== null` and `agentsWithSoul` by `s.soulContent !== null`, consulting only the legacy DB columns. v0.5+ stores member profiles as `~/.carsonos/members/<slug>/USER.md` and agent personalities as `~/.carsonos/agents/<slug>/PERSONALITY.md`; either source should count. Members and agents whose identity content lived only on disk made the dashboard checklist falsely report "Build member profiles" / "Configure agent personalities" as incomplete, even though the prompt-compilation path was already loading the disk file. Existing members migrated from the v0.4 → v0.5 transition were not affected because `migrateIdentityToFiles` writes the disk file without nulling the DB column — this only bit fresh disk-only profiles. Same bug class as #64 (`hasProfile` in constitution-engine), one layer up. Fix factors a small `hasIdentityContent(disk, db)` predicate into `identity-files.ts`, threads `dataDir` through `AppDeps`, and updates both filters to consult disk + DB. 11 unit tests pin the predicate contract (null/undefined/empty/whitespace/disk-only/db-only/both) plus three integration tests that write a real `USER.md` / `PERSONALITY.md` and verify the filter counts them.
+
 ## [0.5.5] - 2026-05-03
 
 ### Added

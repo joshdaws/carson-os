@@ -64,6 +64,10 @@ export interface AppDeps {
    * source of truth — a future widening of ReindexHealthSource is type-
    * checked here automatically. */
   memoryProvider?: ReindexHealthSource | null;
+  /** Optional. When provided, routes that resolve disk-based identity
+   * files (USER.md, PERSONALITY.md) check the filesystem in addition to
+   * DB columns. Without it, callers fall back to DB-only behavior. */
+  dataDir?: string | null;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -133,7 +137,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   // --------------- routes ---------------
 
   app.use("/api/health", createHealthRoutes({ adapter, memoryProvider: deps.memoryProvider ?? null }));
-  app.use("/api/households", createHouseholdRoutes(db));
+  app.use("/api/households", createHouseholdRoutes(db, deps.dataDir ?? null));
   app.use("/api/households", createMemberRoutes(db));
   app.use("/api/staff", createStaffRoutes({ db, personalityInterviewEngine, multiRelay: deps.multiRelay, signalRelay: deps.signalRelay, delegationService: deps.delegationService }));
   app.use("/api/tasks", createTaskRoutes({ db, taskEngine, oversight, delegationService: deps.delegationService }));
