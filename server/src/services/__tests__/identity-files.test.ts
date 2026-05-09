@@ -15,6 +15,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  hasIdentityContent,
   loadPersonalityMd,
   loadUserMd,
   personalityMdPath,
@@ -99,5 +100,53 @@ describe("write helpers", () => {
     writeUserMd(tmpDataDir, "x", "first");
     writeUserMd(tmpDataDir, "x", "second");
     expect(readFileSync(userMdPath(tmpDataDir, "x"), "utf-8")).toBe("second");
+  });
+});
+
+describe("hasIdentityContent", () => {
+  it("false when both sources are null", () => {
+    expect(hasIdentityContent(null, null)).toBe(false);
+  });
+  it("false when both sources are undefined", () => {
+    expect(hasIdentityContent(undefined, undefined)).toBe(false);
+  });
+  it("false when both sources are empty strings", () => {
+    expect(hasIdentityContent("", "")).toBe(false);
+  });
+  it("false when both sources are whitespace only", () => {
+    expect(hasIdentityContent("   \n\t ", " \n  ")).toBe(false);
+  });
+  it("true when only the legacy DB column has content", () => {
+    expect(hasIdentityContent(null, "Grant is 17.")).toBe(true);
+  });
+  // Regression: onboarding checklist falsely reported "Build member profiles"
+  // as incomplete when the profile lived only on disk (USER.md), and the
+  // analogous bug for "Configure agent personalities" with PERSONALITY.md.
+  it("true when only the disk-based file has content (DB null)", () => {
+    expect(hasIdentityContent("# Grant\n\nProfile body.", null)).toBe(true);
+  });
+  it("true when only the disk-based file has content (DB empty string)", () => {
+    expect(hasIdentityContent("# Grant\n\nProfile body.", "")).toBe(true);
+  });
+  it("true when both sources have content", () => {
+    expect(hasIdentityContent("# disk", "db")).toBe(true);
+  });
+});
+
+describe("hasIdentityContent integration with disk reads", () => {
+  it("reflects USER.md on disk for a freshly-created member", () => {
+    writeUserMd(tmpDataDir, "elsie", "# Elsie\n\nLoves horses.\n");
+    const disk = loadUserMd(tmpDataDir, "elsie");
+    // DB column is null for a v0.5+ disk-only profile.
+    expect(hasIdentityContent(disk, null)).toBe(true);
+  });
+  it("reflects PERSONALITY.md on disk for a freshly-configured agent", () => {
+    writePersonalityMd(tmpDataDir, "mozart", "# Mozart\n\nMusic specialist.\n");
+    const disk = loadPersonalityMd(tmpDataDir, "mozart");
+    expect(hasIdentityContent(disk, null)).toBe(true);
+  });
+  it("returns false for a member with neither USER.md nor DB content", () => {
+    const disk = loadUserMd(tmpDataDir, "ghost");
+    expect(hasIdentityContent(disk, null)).toBe(false);
   });
 });

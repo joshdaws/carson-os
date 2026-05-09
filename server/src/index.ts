@@ -451,6 +451,7 @@ async function main() {
     toolRegistry,
     multiRelay,
     signalRelay,
+    dataDir: config.dataDir,
     // Pass through for /api/health → QMD reindex health surface. AppDeps
     // exposes `memoryProvider?: ReindexHealthSource | null`; only providers
     // that implement getReindexHealth get surfaced.

@@ -46,6 +46,21 @@ export function personalityMdPath(dataDir: string, agentSlug: string): string {
 }
 
 /**
+ * Predicate: does either source supply non-whitespace identity content?
+ * v0.5+ stores USER.md / PERSONALITY.md on disk; the DB columns
+ * (`profile_content`, `soul_content`) remain as a fallback during the
+ * transition window. Either source counts. Used wherever code needs to
+ * answer "does this member have a profile?" / "does this agent have a
+ * personality?" without baking in assumptions about storage.
+ */
+export function hasIdentityContent(
+  diskContent: string | null | undefined,
+  dbContent: string | null | undefined,
+): boolean {
+  return !!(diskContent?.trim() || dbContent?.trim());
+}
+
+/**
  * Read USER.md for a member. Returns null if the file doesn't exist —
  * caller should fall back to the DB column for the one-release back-
  * compat window.

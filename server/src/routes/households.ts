@@ -8,8 +8,14 @@ import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { households, familyMembers, staffAgents, constitutions, staffAssignments } from "@carsonos/db";
+import {
+  hasIdentityContent,
+  loadPersonalityMd,
+  loadUserMd,
+  slugifyName,
+} from "../services/identity-files.js";
 
-export function createHouseholdRoutes(db: Db): Router {
+export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
   const router = Router();
 
   // GET /current -- return the current (only) household with counts
@@ -47,8 +53,21 @@ export function createHouseholdRoutes(db: Db): Router {
       .get();
 
     const familyStaff = staff.filter((s) => s.visibility === "family");
-    const membersWithProfiles = members.filter((m) => m.profileContent !== null);
-    const agentsWithSoul = familyStaff.filter((s) => s.soulContent !== null);
+    // v0.5+ stores profiles/personalities on disk as USER.md / PERSONALITY.md;
+    // the DB columns remain as fallback. Consult both so disk-only identity
+    // content doesn't leave the onboarding checklist falsely incomplete.
+    const membersWithProfiles = members.filter((m) =>
+      hasIdentityContent(
+        dataDir ? loadUserMd(dataDir, slugifyName(m.name)) : null,
+        m.profileContent,
+      ),
+    );
+    const agentsWithSoul = familyStaff.filter((s) =>
+      hasIdentityContent(
+        dataDir ? loadPersonalityMd(dataDir, slugifyName(s.name)) : null,
+        s.soulContent,
+      ),
+    );
     const agentsWithTelegram = familyStaff.filter((s) => s.telegramBotToken !== null);
 
     // Count assignments for non-parent members
