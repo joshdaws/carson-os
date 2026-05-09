@@ -294,6 +294,20 @@ function leanResumeEnabled(): boolean {
   return process.env.CARSONOS_LEAN_RESUME === "true";
 }
 
+/**
+ * Decide whether a member has a usable profile. v0.5+ stores the profile
+ * on disk as USER.md; the legacy `family_members.profile_content` DB column
+ * remains as a fallback during the transition window. Either source counts.
+ *
+ * Returns true if either input contains non-whitespace content.
+ */
+export function computeHasProfile(
+  userMdContent: string | null | undefined,
+  profileContent: string | null | undefined,
+): boolean {
+  return !!(userMdContent?.trim() || profileContent?.trim());
+}
+
 export class ConstitutionEngine {
   private cache = new Map<string, CachedConstitution>();
   private cachedMemorySchema: string | null = null;
@@ -572,8 +586,15 @@ export class ConstitutionEngine {
       : await this.getConversationHistory(conversationId);
     perf.historyMs = Date.now() - historyStart;
 
-    // Detect first-contact onboarding: no profile + member is not a parent
-    const hasProfile = !!(member.profileContent && member.profileContent.trim());
+    // Detect first-contact onboarding: no profile + member is not a parent.
+    // hasProfile must consider both the disk-based USER.md (v0.5+ preference)
+    // and the legacy DB column. Without the disk check, agents whose profile
+    // lives only on disk would incorrectly trigger first-contact onboarding.
+    const memberSlugForProfile = slugifyName(member.name);
+    const userMdForProfile = this.dataDir
+      ? loadUserMd(this.dataDir, memberSlugForProfile)
+      : null;
+    const hasProfile = computeHasProfile(userMdForProfile, member.profileContent);
     const assistantTurnCount = history.filter((m) => m.role === "assistant").length;
     const isFirstContact = !hasProfile && member.role !== "parent";
 
@@ -601,9 +622,9 @@ export class ConstitutionEngine {
     // Prefer USER.md / PERSONALITY.md from disk; fall back to DB columns
     // during the v0.5.0 transition window. v0.5.x will deprecate the
     // DB columns once all instances have been migrated.
-    const memberSlug = slugifyName(member.name);
+    const memberSlug = memberSlugForProfile;
     const agentSlug = slugifyName(agent.name);
-    const userMdContent = this.dataDir ? loadUserMd(this.dataDir, memberSlug) : null;
+    const userMdContent = userMdForProfile;
     const personalityMdContent = this.dataDir ? loadPersonalityMd(this.dataDir, agentSlug) : null;
 
     // Chief-of-Staff-only sections. Determined here so we can decide
