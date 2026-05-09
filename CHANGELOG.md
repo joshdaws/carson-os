@@ -4,6 +4,16 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.7] - 2026-05-09
+
+### Fixed
+
+- **[P0/security] Cross-tenant tool-cache leak (#63).** `subprocess-adapter.ts`'s module-scope `mcpToolCache` was keyed by tool name only, with a mutable `handlerRef.current = executor` pattern. When two `execute()` calls registered the same tool name concurrently, the second call mutated the shared ref and the first call's in-flight tool invocation ran against the second call's executor. In a family product where members A and B can be in flight at the same time, that's a privacy boundary violation: A's agent would read/write B's memories. Surfaced during adversarial /review of PR #62, originally introduced in `cfbf3f2` ("custom tool registry"). Fix: per-execute() request context now lives in an `AsyncLocalStorage<{ current: ToolContext }>` (`toolContextStorage`). The cached tool closure reads its OWN executor + onCall via `als.getStore()` at tool-call time. The SDK's "Tool X is already registered" error stays handled (the cache itself is preserved), but the mutation-on-hit is gone — concurrent execute() calls each see their own context. `triggerRefresh` mid-session swaps stay supported by mutating the ALS-stored ref (request-scoped, not module-scoped). 6 new isolation tests in `subprocess-adapter-tool-isolation.test.ts` pin the contract: single-context dispatch, the headline regression (concurrent A+B contexts → each closure runs its own executor), no-context throw, mid-session refresh swap, is_error propagation. Carson surfaced the bug; the fix takes her option-4 (AsyncLocalStorage) recommendation.
+
+- **launchd plist: unconditional `KeepAlive`.** The plist template emitted `<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>`, meaning launchd respawned the service ONLY on non-zero exits. CarsonOS catches SIGTERM and exits cleanly (exit 0) during graceful shutdown — including the `launchctl kickstart -k` path used by `update-service.sh` — so the conditional clause silently let the process die without respawning. This is the root cause of the v0.5.5 hotfix downtime ("`OnDemand=true` in the launchd plist not respawning after Carson asked for a restart" — the literal key was different but the symptom was the same: conditional respawn missed a graceful exit). v0.5.7 flips the plist to `<key>KeepAlive</key><true/>` (unconditional). The `--stop` and `--uninstall` flags continue to work because they go through `launchctl bootout`, which removes the plist load entirely regardless of `KeepAlive` value.
+
+  **Migration:** existing installs need to re-emit the plist once. From the project root: `./scripts/install-service.sh`. The script overwrites `~/Library/LaunchAgents/com.carsonos.server.plist` (and the signal-cli plist) with the new template and reloads launchd. `update-service.sh` does NOT auto-migrate on purpose — code updates shouldn't side-effect launchd config silently.
+
 ## [0.5.6] - 2026-05-09
 
 ### Fixed

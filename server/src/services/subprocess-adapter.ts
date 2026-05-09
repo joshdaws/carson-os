@@ -11,6 +11,7 @@
  * This is the same pattern mr-carson uses.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -130,15 +131,17 @@ export function __TEST_resetMcpServerCounter(): void {
  *
  * The Claude Agent SDK's tool()/createSdkMcpServer pair retains global state
  * about registered tool names and throws "Tool X is already registered" when
- * you call tool() twice with the same name — which happens in our flow
- * whenever we rebuild the MCP server (either for a mid-session refresh or on
- * a subsequent execute() call).
+ * you call tool() twice with the same name — which happens whenever we
+ * rebuild the MCP server (mid-session refresh or subsequent execute() call).
  *
- * By caching the SdkMcpToolDefinition objects by name, we avoid the SDK's
- * global-state tripwire entirely. Each cached entry carries a mutable
- * `handlerRef` so the actual executor invoked at tool-call time always
- * resolves to the current request's engine-provided executor, not a stale
- * closure from when the tool was first registered.
+ * The cached `tool()` def is reused across requests, but the executor +
+ * onCall recorded for each request live in `toolContextStorage` (an
+ * AsyncLocalStorage scoped per-execute()). The cached closure reads the
+ * store at tool-call time, so two concurrent execute() calls each see
+ * their OWN executor + audit-log callback. Pre-v0.5.7 this state was
+ * shared via a mutable module-scope `handlerRef`, which produced a
+ * cross-tenant leak when concurrent execute() calls registered the same
+ * tool name (#63).
  *
  * Tradeoff: the SdkMcpToolDefinition's cached `description` and Zod `shape`
  * are sticky for the process lifetime. If a tool's name is reused with a
@@ -146,22 +149,70 @@ export function __TEST_resetMcpServerCounter(): void {
  * For M1 this is acceptable — update_custom_tool changes rarely and a
  * server restart picks them up. Revisit if/when that becomes painful.
  */
-type HandlerRef = { current: import("@carsonos/shared").ToolExecutor };
-type CachedTool = { def: ReturnType<typeof tool>; handlerRef: HandlerRef };
-const mcpToolCache = new Map<string, CachedTool>();
+export type ToolContext = {
+  executor: import("@carsonos/shared").ToolExecutor;
+  onCall: (name: string, input: Record<string, unknown>, result: import("@carsonos/shared").ToolResult) => void;
+};
+
+/**
+ * Fallback executor used when execute() has no toolExecutor. Should never
+ * be invoked because no MCP server is built without a real executor; this
+ * exists so the ALS context is always non-null even on the no-tools path.
+ */
+const noopToolExecutor: import("@carsonos/shared").ToolExecutor = async (name) => {
+  throw new Error(`Tool '${name}' invoked but execute() was called without a toolExecutor.`);
+};
+
+/**
+ * Per-execute() request context. The store carries a mutable `current`
+ * ref so triggerRefresh can swap the executor mid-session (when a
+ * tool-list-modifying call rebuilds the MCP server) without leaving ALS.
+ */
+export const toolContextStorage = new AsyncLocalStorage<{ current: ToolContext }>();
+
+const mcpToolCache = new Map<string, ReturnType<typeof tool>>();
+
+/** Test-only: reset the tool cache between isolation tests. */
+export function __TEST_resetToolCache(): void {
+  mcpToolCache.clear();
+}
+
+/**
+ * Closure body extracted to a module-scope function so unit tests can
+ * invoke it directly without spinning up the SDK. `getOrCreateCachedTool`
+ * registers a `tool()` whose handler delegates here.
+ */
+async function runCachedTool(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError: boolean }> {
+  const store = toolContextStorage.getStore();
+  if (!store) {
+    throw new Error(`Tool '${name}' invoked outside of execute() context — no toolContextStorage in scope.`);
+  }
+  const { executor, onCall } = store.current;
+  const result = await executor(name, input);
+  onCall(name, input, result);
+  return {
+    content: [{ type: "text" as const, text: result.content }],
+    isError: result.is_error ?? false,
+  };
+}
+
+/** Test-only: invoke the cached closure for a tool by name. */
+export async function __TEST_invokeCachedTool(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError: boolean }> {
+  return runCachedTool(name, input);
+}
 
 function getOrCreateCachedTool(
   def: import("@carsonos/shared").ToolDefinition,
-  executor: import("@carsonos/shared").ToolExecutor,
-  onCall: (name: string, input: Record<string, unknown>, result: import("@carsonos/shared").ToolResult) => void,
 ): ReturnType<typeof tool> {
   const cached = mcpToolCache.get(def.name);
-  if (cached) {
-    cached.handlerRef.current = executor;
-    return cached.def;
-  }
+  if (cached) return cached;
 
-  const handlerRef: HandlerRef = { current: executor };
   const properties = (def.input_schema.properties ?? {}) as Record<string, JsonSchemaProperty>;
   const required = (def.input_schema.required ?? []) as string[];
   const shape: Record<string, z.ZodTypeAny> = {};
@@ -172,16 +223,11 @@ function getOrCreateCachedTool(
     shape[key] = fieldSchema;
   }
 
-  const newDef = tool(def.name, def.description, shape, async (input: Record<string, unknown>) => {
-    const result = await handlerRef.current(def.name, input);
-    onCall(def.name, input, result);
-    return {
-      content: [{ type: "text" as const, text: result.content }],
-      isError: result.is_error,
-    };
-  });
+  const newDef = tool(def.name, def.description, shape, async (input: Record<string, unknown>) =>
+    runCachedTool(def.name, input),
+  );
 
-  mcpToolCache.set(def.name, { def: newDef, handlerRef });
+  mcpToolCache.set(def.name, newDef);
   return newDef;
 }
 
@@ -535,6 +581,34 @@ export class ClaudeAgentSdkAdapter implements Adapter {
     // tool-list-modifying tool returns. Assigned below once conversation exists.
     let triggerRefresh: (toolName: string) => Promise<void> = async () => {};
 
+    // Per-execute() onCall: lifted out of buildMcpServer because its
+    // semantics don't change across mid-session refreshes — every refresh
+    // pushes to the SAME `allToolCalls` array and triggers refresh by
+    // name. Refreshes only need to swap the executor.
+    const onCall = (
+      name: string,
+      input: Record<string, unknown>,
+      result: import("@carsonos/shared").ToolResult,
+    ) => {
+      allToolCalls.push({ name, input, result });
+      if (!result.is_error && TOOL_LIST_MODIFYING.has(name)) {
+        // Fire and forget — the MCP swap runs async so we don't block
+        // returning this tool's result to the SDK.
+        void triggerRefresh(name);
+      }
+    };
+
+    /**
+     * Per-request tool context, kept alive in `toolContextStorage` for
+     * the duration of this execute() call. The cached tool closures read
+     * `current` at tool-call time. `triggerRefresh` mutates `current` so
+     * subsequent tool calls use the freshly-rebuilt executor without
+     * leaving the ALS scope.
+     */
+    const toolContextRef: { current: ToolContext } = {
+      current: { executor: toolExecutor ?? noopToolExecutor, onCall },
+    };
+
     /**
      * Build an MCP server config from a tool list + executor. Reuses cached
      * SdkMcpToolDefinitions keyed by name to avoid the SDK's "Tool X is
@@ -544,18 +618,12 @@ export class ClaudeAgentSdkAdapter implements Adapter {
       toolDefs: import("@carsonos/shared").ToolDefinition[],
       executor: import("@carsonos/shared").ToolExecutor,
     ) => {
-      const onCall = (
-        name: string,
-        input: Record<string, unknown>,
-        result: import("@carsonos/shared").ToolResult,
-      ) => {
-        allToolCalls.push({ name, input, result });
-        if (!result.is_error && TOOL_LIST_MODIFYING.has(name)) {
-          // Fire and forget — the MCP swap runs async so we don't block
-          // returning this tool's result to the SDK.
-          void triggerRefresh(name);
-        }
-      };
+      // Update the per-request executor so subsequent tool-call closures
+      // see the freshly-rebuilt one. This is the per-request equivalent
+      // of the old module-scope handlerRef mutation, but scoped via ALS
+      // so concurrent execute() calls can't trample each other.
+      toolContextRef.current = { executor, onCall };
+
       // Defensive dedup by tool name. If upstream hands us duplicates (e.g.
       // a tool resolving via both the bare-name path and the scoped-name
       // path in getAgentTools), createSdkMcpServer throws "already
@@ -570,7 +638,7 @@ export class ClaudeAgentSdkAdapter implements Adapter {
         seenNames.add(t.name);
         uniqueDefs.push(t);
       }
-      const mcpTools = uniqueDefs.map((t) => getOrCreateCachedTool(t, executor, onCall));
+      const mcpTools = uniqueDefs.map((t) => getOrCreateCachedTool(t));
       console.log(`${tracePrefix} buildMcpServer server=${currentMcpServerName} tools=${uniqueDefs.length}${toolDefs.length !== uniqueDefs.length ? ` (deduped from ${toolDefs.length})` : ""}`);
       return createSdkMcpServer({
         name: currentMcpServerName,
@@ -740,6 +808,11 @@ export class ClaudeAgentSdkAdapter implements Adapter {
     };
 
     try {
+      // Wrap the SDK pump in toolContextStorage so the cached tool closures
+      // can read this request's executor + onCall via AsyncLocalStorage at
+      // tool-call time. Without this scope, two concurrent execute() calls
+      // sharing a cached tool def would race on the executor reference (#63).
+      await toolContextStorage.run(toolContextRef, async () => {
       for await (const message of conversation) {
         // Capture session_id from any message that carries it
         if ("session_id" in message && typeof message.session_id === "string") {
@@ -843,6 +916,7 @@ export class ClaudeAgentSdkAdapter implements Adapter {
           }
         }
       }
+      }); // end toolContextStorage.run
     } catch (err) {
       // The SDK throws mid-iteration on some failures (including the turn limit
       // when no final result message is produced). Classify and convert to a
@@ -870,8 +944,12 @@ export class ClaudeAgentSdkAdapter implements Adapter {
 
     const totalMs = Date.now() - t0;
     console.log(`${tracePrefix} Agent SDK: ${totalMs}ms, firstDelta=${firstDeltaMs ?? "none"}ms, ${numTurns} turns, ${allToolCalls.length} tool calls, inputTokens=${inputTokens ?? "unknown"}, outputTokens=${outputTokens ?? "unknown"}, resume=${isResume ? 'yes' : 'no'}, session=${capturedSessionId ?? 'none'}`);
-    if (totalCost != null) {
-      console.log(`${tracePrefix} Cost: $${totalCost.toFixed(4)}`);
+    // TS flow analysis can't see mutations inside the toolContextStorage.run
+    // closure above, so it narrows totalCost to `null` here. Re-bind through
+    // a cast to recover the runtime type for the format call.
+    const finalTotalCost = totalCost as number | null;
+    if (finalTotalCost != null) {
+      console.log(`${tracePrefix} Cost: $${finalTotalCost.toFixed(4)}`);
     }
 
     return {
