@@ -301,6 +301,143 @@ describe("CompilationAgent.tick — CAS pattern (eng-review critical gap #2)", (
     expect(row.dirtyAt).not.toBeNull();
   });
 
+  it("clears dirty_at on permanent failure (non-compilable type) so it stops retrying", async () => {
+    const { provider } = makeMemoryProvider({
+      "josh:weather": {
+        id: "weather",
+        title: "Weather",
+        content: "Sunny.",
+        frontmatter: { type: "fact" },
+        filePath: "/fake/w.md",
+      },
+    });
+    const agent = new CompilationAgent({
+      db,
+      memoryProvider: provider,
+      adapter: makeAdapter(VALID_LLM_RESPONSE),
+      memoryRoot: tmpRoot,
+      debounceSeconds: 0,
+    });
+
+    await agent.markDirty("weather", "josh");
+    const r = await agent.tick();
+
+    expect(r.compiled).toBe(0);
+    expect(r.failed).toBe(1);
+
+    const [row] = await db.select().from(compilationState);
+    expect(row.dirtyAt).toBeNull();
+    expect(row.lastError).toMatch(/not compilable/);
+  });
+
+  it("clears dirty_at on permanent failure (entity not found)", async () => {
+    const { provider } = makeMemoryProvider({});
+    const agent = new CompilationAgent({
+      db,
+      memoryProvider: provider,
+      adapter: makeAdapter(VALID_LLM_RESPONSE),
+      memoryRoot: tmpRoot,
+      debounceSeconds: 0,
+    });
+
+    await agent.markDirty("ghost", "household");
+    const r = await agent.tick();
+
+    expect(r.failed).toBe(1);
+    const [row] = await db.select().from(compilationState);
+    expect(row.dirtyAt).toBeNull();
+    expect(row.lastError).toMatch(/not found/);
+  });
+
+  it("KEEPS dirty_at set on transient failure (LLM error) so it retries", async () => {
+    const { provider } = makeMemoryProvider({
+      "household:grant-daws": {
+        id: "grant-daws",
+        title: "Grant Daws",
+        content: TWO_LAYER_BODY,
+        frontmatter: { type: "person" },
+        filePath: "/fake/g.md",
+      },
+    });
+    const adapter: Adapter = {
+      name: "fake",
+      execute: async () => {
+        throw new Error("LLM rate limit exceeded");
+      },
+      healthCheck: async () => true,
+    };
+    const agent = new CompilationAgent({
+      db,
+      memoryProvider: provider,
+      adapter,
+      memoryRoot: tmpRoot,
+      debounceSeconds: 0,
+    });
+
+    await agent.markDirty("grant-daws", "household");
+    const r = await agent.tick();
+
+    expect(r.failed).toBe(1);
+    const [row] = await db.select().from(compilationState);
+    expect(row.dirtyAt).not.toBeNull();
+    expect(row.lastError).toMatch(/rate limit/);
+  });
+
+  it("CAS-protects permanent-failure dirty_at clear: a markDirty mid-tick is preserved", async () => {
+    // Adversarial review caught: the permanent-failure path was wiping
+    // dirty_at by id only, ignoring the CAS guard the success path uses.
+    // If markDirty fired between snapshot and the failure write, the
+    // fresh dirty_at would be silently wiped and the entity would never
+    // get re-compiled.
+    //
+    // compileEntity's permanent-failure throw happens immediately after
+    // memoryProvider.read() returns (the type check is synchronous).
+    // To open a race window, slow the read() and fire a fresh markDirty
+    // from inside it — by the time the catch block runs, dirty_at has
+    // moved forward.
+    let agent!: CompilationAgent;
+    const files: Record<string, FakeFile> = {
+      "josh:weather": {
+        id: "weather",
+        title: "Weather",
+        content: "Sunny.",
+        frontmatter: { type: "fact" },
+        filePath: "/fake/w.md",
+      },
+    };
+    const provider: MemoryProvider = {
+      search: async () => ({ entries: [] }),
+      save: async () => ({ id: "x", filePath: "/fake/x.md" }),
+      update: async () => ({ id: "x", filePath: "/fake/x.md" }),
+      delete: async () => undefined,
+      list: async () => [],
+      read: async (collection, id) => {
+        // SQLite stores timestamps at 1s resolution — wait >1s so the
+        // new dirty_at differs from the snapshot the tick already read.
+        await new Promise((r) => setTimeout(r, 1100));
+        await agent.markDirty("weather", "josh");
+        return files[`${collection}:${id}`] ?? null;
+      },
+    };
+
+    agent = new CompilationAgent({
+      db,
+      memoryProvider: provider,
+      adapter: makeAdapter(VALID_LLM_RESPONSE),
+      memoryRoot: tmpRoot,
+      debounceSeconds: 0,
+    });
+
+    await agent.markDirty("weather", "josh");
+    await agent.tick();
+
+    const [row] = await db.select().from(compilationState);
+    // Pre-fix: dirtyAt would be NULL (failure handler wiped it by id).
+    // Post-fix: CAS guard preserves the mid-tick markDirty.
+    expect(row.dirtyAt).not.toBeNull();
+    expect(row.lastError).toMatch(/not compilable/);
+  });
+
   it("appends to `_disagreements.md` when the LLM returns contradictions", async () => {
     const { provider } = makeMemoryProvider({
       "household:grant-daws": {

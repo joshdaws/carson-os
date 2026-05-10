@@ -18,13 +18,13 @@ import {
 describe("parseWikilinks", () => {
   it("extracts simple [[slug]] references", () => {
     expect(parseWikilinks("Hello [[grant-daws]] world")).toEqual([
-      { slug: "grant-daws", display: null },
+      { slug: "grant-daws", rawSlug: "grant-daws", display: null },
     ]);
   });
 
   it("extracts [[slug|display]] references", () => {
     expect(parseWikilinks("See [[grant-daws|Grant]] for details")).toEqual([
-      { slug: "grant-daws", display: "Grant" },
+      { slug: "grant-daws", rawSlug: "grant-daws", display: "Grant" },
     ]);
   });
 
@@ -39,11 +39,45 @@ describe("parseWikilinks", () => {
     expect(links.map((l) => l.slug)).toEqual(["grant-daws", "lincoln-elementary"]);
   });
 
-  it("rejects malformed slugs (slash, dot, underscore)", () => {
+  it("rejects malformed slugs (slash, dot)", () => {
     const links = parseWikilinks(
-      "Bad: [[some/slug]] [[has.dot]] [[under_score]]. Good: [[ok-slug]]",
+      "Bad: [[some/slug]] [[has.dot]]. Good: [[ok-slug]]",
     );
     expect(links.map((l) => l.slug)).toEqual(["ok-slug"]);
+  });
+
+  it("normalizes underscores to hyphens but preserves rawSlug", () => {
+    const links = parseWikilinks("[[user_josh]] and [[project_carsonos|Carson]]");
+    expect(links).toEqual([
+      { slug: "user-josh", rawSlug: "user_josh", display: null },
+      { slug: "project-carsonos", rawSlug: "project_carsonos", display: "Carson" },
+    ]);
+  });
+
+  it("collapses underscore + hyphen variants of the same slug", () => {
+    const links = parseWikilinks("[[user_josh]] and [[user-josh]]");
+    expect(links).toHaveLength(1);
+    expect(links[0].slug).toBe("user-josh");
+  });
+
+  it("normalizes pathological underscore forms to clean kebab", () => {
+    // Adversarial review: naive `_` → `-` produces invalid kebab slugs
+    // for double underscores and leading/trailing underscores.
+    // `[[__foo]]` and `[[foo__]]` both normalize to "foo" and collapse
+    // via the Map key (same as the existing dedup behavior).
+    const links = parseWikilinks(
+      "[[foo__bar]] [[__foo]] [[foo__]] [[a___b]]",
+    );
+    expect(links.map((l) => l.slug)).toEqual([
+      "foo-bar",
+      "foo",
+      "a-b",
+    ]);
+  });
+
+  it("rejects slugs that normalize to empty string", () => {
+    const links = parseWikilinks("Bad: [[___]] [[_]]. Good: [[ok]]");
+    expect(links.map((l) => l.slug)).toEqual(["ok"]);
   });
 
   it("returns empty for body without wikilinks", () => {
@@ -104,6 +138,34 @@ describe("inferLinkType", () => {
     expect(
       inferLinkType("Mention of [[grant-daws]] in a neutral context.", slug),
     ).toBe("references");
+  });
+
+  it("locates wikilinks by raw slug, including underscore form", () => {
+    // Regression: when an agent emits [[user_josh]] in a body, parseWikilinks
+    // normalizes the slug to "user-josh" — but inferLinkType has to find the
+    // wikilink in the ORIGINAL body to read the surrounding context. Using
+    // the raw underscore form keeps that lookup working.
+    expect(
+      inferLinkType("Josh is married to [[becca_daws]]", "becca_daws"),
+    ).toBe("spouse");
+  });
+
+  it("does not prefix-match a shorter slug into a longer wikilink", () => {
+    // Adversarial review: previous code did `body.indexOf("[[" + slug)`
+    // (open bracket prefix only). Searching for "josh" matched
+    // `[[josh-daws]]` — wrong context window.
+    const body = "Josh is married to [[josh-daws]] and works at [[josh]].";
+    // [[josh]] follows "works at" — should classify as works_at, not spouse
+    // (spouse precedes [[josh-daws]], a DIFFERENT slug).
+    expect(inferLinkType(body, "josh")).toBe("works_at");
+    // [[josh-daws]] is the spouse target.
+    expect(inferLinkType(body, "josh-daws")).toBe("spouse");
+  });
+
+  it("matches wikilinks with display text (`[[slug|display]]`)", () => {
+    expect(
+      inferLinkType("Becca is the mother of [[grant-daws|Grant]]", "grant-daws"),
+    ).toBe("parent");
   });
 });
 
@@ -182,5 +244,25 @@ describe("reconcileMemoryLinks + getBacklinks", () => {
     expect(backlinks[0].linkType).toBe("works_at");
     const blueBottleBacklinks = await getBacklinks(db, "blue-bottle");
     expect(blueBottleBacklinks[0].linkType).toBe("likes");
+  });
+
+  it("classifies underscore-form wikilinks correctly (slug normalizes, link type still infers)", async () => {
+    // End-to-end regression: agents emit [[user_josh]] which parseWikilinks
+    // normalizes to "user-josh" before insertion. The link type inference
+    // must still see "married to" preceding [[user_josh]] in the body, even
+    // though the persisted slug is the hyphen form.
+    await reconcileMemoryLinks(
+      db,
+      "page-about-becca",
+      "household",
+      "Becca is married to [[josh_daws]] and is the mother of [[grant_daws]].",
+    );
+    const joshBacklinks = await getBacklinks(db, "josh-daws");
+    expect(joshBacklinks).toHaveLength(1);
+    expect(joshBacklinks[0].linkType).toBe("spouse");
+
+    const grantBacklinks = await getBacklinks(db, "grant-daws");
+    expect(grantBacklinks).toHaveLength(1);
+    expect(grantBacklinks[0].linkType).toBe("parent");
   });
 });

@@ -58,6 +58,18 @@ const COMPILABLE_TYPES = new Set<string>([
 
 // ── Schema for the LLM's structured response ────────────────────────
 
+/**
+ * Thrown when an entity can never be compiled (wrong type, missing file).
+ * The tick loop catches this specifically and clears `dirty_at` so the
+ * row stops retrying every tick — `last_error` is preserved for forensics.
+ */
+export class NonCompilableEntityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonCompilableEntityError";
+  }
+}
+
 const CompilationResponseSchema = z.object({
   summary: z.string().min(1).max(2000),
   state: z.string().max(2000).optional().default(""),
@@ -226,10 +238,28 @@ export class CompilationAgent {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // Always record lastError for forensics. No CAS — we want to
+        // surface the failure even if markDirty raced.
         await this.db
           .update(compilationState)
           .set({ lastError: msg.slice(0, 500) })
           .where(eq(compilationState.id, row.id));
+        // Permanent failures (wrong type, missing entity) clear dirty_at
+        // so the row stops retrying every tick. CAS-protected: if a
+        // markDirty fired during compile, dirty_at moved forward — leave
+        // it set so the next tick picks up the new state (the entity may
+        // have been re-created or fixed).
+        if (err instanceof NonCompilableEntityError) {
+          await this.db
+            .update(compilationState)
+            .set({ dirtyAt: null })
+            .where(
+              and(
+                eq(compilationState.id, row.id),
+                eq(compilationState.dirtyAt, dirtySnapshot!),
+              ),
+            );
+        }
         failed++;
       }
     }
@@ -264,11 +294,11 @@ export class CompilationAgent {
       }
     }
     if (!entry) {
-      throw new Error(`Entity not found: ${slug} in ${collection}`);
+      throw new NonCompilableEntityError(`Entity not found: ${slug} in ${collection}`);
     }
     const type = String(entry.frontmatter.type ?? "");
     if (!COMPILABLE_TYPES.has(type)) {
-      throw new Error(`Type "${type}" is not compilable (must be an entity type)`);
+      throw new NonCompilableEntityError(`Type "${type}" is not compilable (must be an entity type)`);
     }
 
     const { compiledViewPart, timelinePart } = splitTwoLayer(entry.content);
