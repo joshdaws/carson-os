@@ -744,40 +744,6 @@ export class ClaudeAgentSdkAdapter implements Adapter {
       };
     };
 
-    const conversation = query({
-      prompt: promptForSdk,
-      options: {
-        systemPrompt,
-        model: sdkModel as "sonnet" | "opus" | "haiku",
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        // Explicit empty array → SDK passes `--setting-sources=` to the CLI,
-        // which isolates the subprocess from ~/.claude/. Omitting the option
-        // entirely lets the CLI fall back to its user-loading default.
-        settingSources: [],
-        // Restrict MCP servers to only what we pass via `mcpServers` below.
-        // Without this, the CLI also loads claude.ai account-level connectors
-        // (Gmail/Drive/Calendar/Notion/Canva). CarsonOS has its own google/
-        // imap/caldav providers — those connectors are redundant.
-        strictMcpConfig: true,
-        maxTurns: params.maxTurns ?? MAX_TURNS,
-        ...(params.cwd ? { cwd: params.cwd } : {}),
-        canUseTool: canUseToolCallback,
-        tools: params.builtinTools ?? [],
-        allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
-        ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
-        // Enable streaming when a delta callback is provided
-        ...(onTextDelta ? { includePartialMessages: true } : {}),
-        // Resume existing session for conversation continuity
-        ...(params.resumeSessionId ? { resume: params.resumeSessionId } : {}),
-        // v0.4 cancel-actually-stops-compute: when the dispatcher aborts this
-        // controller, the SDK terminates the CLI subprocess and the for-await
-        // below throws. We catch, tag as aborted, and return an aborted result.
-        ...(params.abortController ? { abortController: params.abortController } : {}),
-        env,
-      },
-    });
-
     let hasStreamedText = false;
     let hitTurnLimit = false;
     let sdkErrorMessage: string | null = null;
@@ -785,34 +751,91 @@ export class ClaudeAgentSdkAdapter implements Adapter {
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;
 
-    // Assign the refresh function now that `conversation` exists in scope.
-    triggerRefresh = async (lastToolName: string) => {
-      if (!params.refreshTools) return;
-      try {
-        const fresh = await params.refreshTools();
-        const newSignature = computeToolSignature(fresh.tools);
-        if (newSignature === currentToolSignature) {
-          return;
-        }
-        // Rotate server name so the SDK disconnects the previous server cleanly
-        // (avoids "Tool X is already registered" from overlapping tool names).
-        currentMcpServerName = nextMcpServerName();
-        const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
-        await conversation.setMcpServers({ [currentMcpServerName]: newServer });
-        currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
-        currentToolSignature = newSignature;
-        console.log(`${tracePrefix} MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
-      } catch (err) {
-        console.warn(`${tracePrefix} Failed to refresh MCP tools after ${lastToolName}:`, err);
-      }
-    };
-
     try {
-      // Wrap the SDK pump in toolContextStorage so the cached tool closures
-      // can read this request's executor + onCall via AsyncLocalStorage at
-      // tool-call time. Without this scope, two concurrent execute() calls
-      // sharing a cached tool def would race on the executor reference (#63).
+      // Run the ENTIRE SDK lifecycle (query() construction + for-await pump +
+      // setMcpServers refreshes) inside toolContextStorage so async resources
+      // the SDK creates (subprocess stdio listeners, MCP server callbacks,
+      // ProcessTransport handlers) snapshot this request's ALS context when
+      // they're wired up. Node's async_hooks restores that context when those
+      // resources fire later, so the cached tool closure's
+      // `toolContextStorage.getStore()` returns the right per-request
+      // executor/onCall — even though the firing path goes through event
+      // emitters that wouldn't otherwise propagate ALS.
+      //
+      // Pre-fix (v0.5.7): query() was called outside the run() frame, so the
+      // SDK captured an empty context. Every tool call hit "no
+      // toolContextStorage in scope", got marshalled as a tool error, and the
+      // model fell back to text-only replies (0 tool calls observed across 25
+      // post-deploy conversations). #63's cross-tenant isolation contract is
+      // unchanged: each execute() still has its own toolContextRef, and the
+      // unit tests in subprocess-adapter-tool-isolation.test.ts still pin
+      // concurrent isolation via direct __TEST_invokeCachedTool calls.
       await toolContextStorage.run(toolContextRef, async () => {
+      const conversation = query({
+        prompt: promptForSdk,
+        options: {
+          systemPrompt,
+          model: sdkModel as "sonnet" | "opus" | "haiku",
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          // Explicit empty array → SDK passes `--setting-sources=` to the CLI,
+          // which isolates the subprocess from ~/.claude/. Omitting the option
+          // entirely lets the CLI fall back to its user-loading default.
+          settingSources: [],
+          // Restrict MCP servers to only what we pass via `mcpServers` below.
+          // Without this, the CLI also loads claude.ai account-level connectors
+          // (Gmail/Drive/Calendar/Notion/Canva). CarsonOS has its own google/
+          // imap/caldav providers — those connectors are redundant.
+          strictMcpConfig: true,
+          maxTurns: params.maxTurns ?? MAX_TURNS,
+          ...(params.cwd ? { cwd: params.cwd } : {}),
+          canUseTool: canUseToolCallback,
+          tools: params.builtinTools ?? [],
+          allowedTools: allAllowedTools.length > 0 ? allAllowedTools : undefined,
+          ...(mcpConfig ? { mcpServers: mcpConfig } : {}),
+          // Enable streaming when a delta callback is provided
+          ...(onTextDelta ? { includePartialMessages: true } : {}),
+          // Resume existing session for conversation continuity
+          ...(params.resumeSessionId ? { resume: params.resumeSessionId } : {}),
+          // v0.4 cancel-actually-stops-compute: when the dispatcher aborts this
+          // controller, the SDK terminates the CLI subprocess and the for-await
+          // below throws. We catch, tag as aborted, and return an aborted result.
+          ...(params.abortController ? { abortController: params.abortController } : {}),
+          env,
+        },
+      });
+
+      // Tracks whether the SDK pump has exited. `triggerRefresh` is
+      // fire-and-forget from `onCall`, so a refresh can be enqueued just
+      // before the conversation winds down — `setMcpServers` then races
+      // with the SDK's transport teardown and throws "ProcessTransport
+      // is not ready for writing". Bailing once the loop is done keeps
+      // the log clean.
+      let pumpDone = false;
+      triggerRefresh = async (lastToolName: string) => {
+        if (!params.refreshTools || pumpDone) return;
+        try {
+          const fresh = await params.refreshTools();
+          if (pumpDone) return;
+          const newSignature = computeToolSignature(fresh.tools);
+          if (newSignature === currentToolSignature) {
+            return;
+          }
+          // Rotate server name so the SDK disconnects the previous server cleanly
+          // (avoids "Tool X is already registered" from overlapping tool names).
+          currentMcpServerName = nextMcpServerName();
+          const newServer = buildMcpServer(fresh.tools, fresh.toolExecutor);
+          await conversation.setMcpServers({ [currentMcpServerName]: newServer });
+          currentMcpToolNames = new Set(fresh.tools.map((t) => t.name));
+          currentToolSignature = newSignature;
+          console.log(`${tracePrefix} MCP tool list refreshed after ${lastToolName} (${fresh.tools.length} tools, server=${currentMcpServerName})`);
+        } catch (err) {
+          if (pumpDone) return;
+          console.warn(`${tracePrefix} Failed to refresh MCP tools after ${lastToolName}:`, err);
+        }
+      };
+
+      try {
       for await (const message of conversation) {
         // Capture session_id from any message that carries it
         if ("session_id" in message && typeof message.session_id === "string") {
@@ -915,6 +938,12 @@ export class ClaudeAgentSdkAdapter implements Adapter {
             }
           }
         }
+      }
+      } finally {
+        // Set in finally so a thrown for-await (turn limit, abort, transport
+        // close) still flips the flag and stops in-flight triggerRefresh
+        // attempts from racing with subprocess teardown.
+        pumpDone = true;
       }
       }); // end toolContextStorage.run
     } catch (err) {
