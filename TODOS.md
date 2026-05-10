@@ -1,5 +1,29 @@
 # TODOS
 
+## v0.5.9 — memory-links: recompute linkType on body change (deferred from v0.5.8 adversarial review)
+- **What:** `reconcileMemoryLinks` skips re-evaluation for slugs that already exist in `memory_links` (`if (existingSlugs.has(link.slug)) continue;`). If body text changes from neutral `"Mention of [[josh-daws]]"` to `"Becca is married to [[josh-daws]]"`, the row stays as `linkType=references` instead of updating to `spouse`.
+- **Why:** Pre-existing bug, but v0.5.8's underscore normalization made it slightly more likely to surface (body changes between `[[user_josh]]` and `[[user-josh]]` produce the same canonical slug).
+- **Approach:** Move `inferLinkType()` call before the `existingSlugs.has` check, then UPDATE link_type on the existing row when it differs.
+- **Depends on:** None.
+
+## v0.5.9 — memory-links: one-time migration for legacy underscore `to_slug` rows
+- **What:** v0.5.8's underscore-to-hyphen normalization means `reconcileMemoryLinks` will DELETE old `to_slug='user_josh'` rows on first run and INSERT `to_slug='user-josh'` replacements. Automatic for `source='markdown'` rows but `source='manual'` rows are NOT touched, so manual underscore rows persist forever and `getBacklinks('user-josh')` won't find them.
+- **Why:** Adversarial review (Claude) flagged the migration footgun. Affects family memory consistency.
+- **Approach:** One-shot migration: scan `memory_links` for any `to_slug` containing `_`, normalize to canonical kebab, update in place. Run once, log count.
+- **Depends on:** None.
+
+## v0.5.9 — subprocess-adapter: serialize concurrent `triggerRefresh` calls
+- **What:** Two TOOL_LIST_MODIFYING tools landing back-to-back (e.g., `create_script_tool` then `update_custom_tool`) trigger concurrent `triggerRefresh` paths. Each rotates `currentMcpServerName` and calls `setMcpServers` — two in flight on the same SDK conversation has undefined behavior.
+- **Why:** Pre-existing risk flagged by v0.5.8 adversarial review. Hasn't bitten in production yet but could under bursty agent activity (e.g., an agent installing multiple tools in one turn).
+- **Approach:** Serialize with a Promise chain: `pendingRefresh = pendingRefresh.then(() => doRefresh(name))`.
+- **Depends on:** None.
+
+## v0.5.9 — subprocess-adapter: `currentMcpToolNames` updated after `setMcpServers` await
+- **What:** During the `await conversation.setMcpServers(...)` window, `canUseTool` reads the OLD tool-name set against the NEW server name prefix. A tool that exists in the new set but not the old is denied with "not available at this trust level" during the rotation window.
+- **Why:** Pre-existing race flagged by v0.5.8 adversarial review. Window is short (single SDK round-trip) but real.
+- **Approach:** Update `currentMcpToolNames` and `currentMcpServerName` atomically before the await, OR have `canUseTool` also accept tools from a "pending" set during refresh.
+- **Depends on:** None.
+
 ## v0.5.6 — Onboarding form audit (UI audit #51 follow-up)
 - **What:** Migrate the `Onboarding.tsx` multi-step flow to FormField. v0.5.5 deferred this because the onboarding flow has bespoke per-step styling and a designed mission-statement reveal moment that's currently working — careless migration could break it.
 - **Why:** v0.5.5 closed the FormField migration on every other form (Settings, Projects, Schedules, Household), but Onboarding still uses `<label>` siblings without `htmlFor` and lacks browser-autofill metadata. First impression for a new install passes through this flow.
