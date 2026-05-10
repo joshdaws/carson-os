@@ -9,8 +9,10 @@
  * manually-added links (`source='manual'`) survive.
  *
  * Slug grammar: kebab-case ASCII lowercase + digits + hyphens. Slugs
- * containing `/`, `\`, `.`, or `_` are rejected as malformed (a parse
- * warning is logged) per the design doc's slug-grammar rule.
+ * containing `/`, `\`, or `.` are rejected as malformed (a parse warning
+ * is logged) per the design doc's slug-grammar rule. Underscores are
+ * tolerated and normalized to hyphens so that agents emitting
+ * `[[user_josh]]` still resolve to the canonical `user-josh` entity.
  */
 
 import type { Db } from "@carsonos/db";
@@ -18,18 +20,25 @@ import { memoryLinks } from "@carsonos/db";
 import { and, eq } from "drizzle-orm";
 
 const WIKILINK_PATTERN = /\[\[([^\[\]\n]+?)\]\]/g;
-const SLUG_FORBIDDEN = /[\/\\._]/;
+const SLUG_FORBIDDEN = /[\/\\.]/;
 
 export interface ParsedLink {
+  /** Canonical kebab-case slug (underscores normalized to hyphens). */
   slug: string;
+  /**
+   * Slug as it appeared in the body (may contain underscores). Used by
+   * `inferLinkType` to locate the wikilink in the original text — the
+   * normalized slug won't match the raw `[[user_josh]]` form.
+   */
+  rawSlug: string;
   display: string | null;
 }
 
 /**
  * Extract `[[slug]]` and `[[slug|display]]` wikilinks from a body.
  * Returns the unique set of (slug, display) pairs; duplicates collapse.
- * Malformed slugs (containing `/`, `\`, `.`, or `_`) are skipped and
- * logged once per call.
+ * Malformed slugs (containing `/`, `\`, or `.`) are skipped and logged
+ * once per call. Underscores are normalized to hyphens.
  */
 export function parseWikilinks(body: string): ParsedLink[] {
   const seen = new Map<string, ParsedLink>();
@@ -51,9 +60,22 @@ export function parseWikilinks(body: string): ParsedLink[] {
       warnings.push(slug);
       continue;
     }
+    const rawSlug = slug;
+    // Normalize underscores to hyphens, then collapse runs of hyphens
+    // (so `[[foo__bar]]` → `foo-bar`, not `foo--bar`) and trim leading/
+    // trailing hyphens (so `[[_foo_]]` → `foo`, not `-foo-`). Reject if
+    // nothing usable is left.
+    slug = slug
+      .replace(/_/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!slug) {
+      warnings.push(rawSlug);
+      continue;
+    }
     const key = slug;
     if (!seen.has(key)) {
-      seen.set(key, { slug, display });
+      seen.set(key, { slug, rawSlug, display });
     }
   }
 
@@ -92,10 +114,16 @@ const INFER_PATTERNS: Array<{ type: string; re: RegExp }> = [
 export function inferLinkType(body: string, slug: string): string {
   // Window ends right before the target's `[[`, so the patterns can
   // match the keyword nearest to THIS link without picking up earlier
-  // links' context.
-  const target = `[[${slug}`;
-  const idx = body.indexOf(target);
-  if (idx < 0) return "references";
+  // links' context. Match either `[[slug]]` or `[[slug|display]]` — the
+  // only legal terminators — so a search for "josh" doesn't match
+  // `[[josh-daws]]` by prefix.
+  const idxClose = body.indexOf(`[[${slug}]]`);
+  const idxPipe = body.indexOf(`[[${slug}|`);
+  let idx: number;
+  if (idxClose < 0 && idxPipe < 0) return "references";
+  if (idxClose < 0) idx = idxPipe;
+  else if (idxPipe < 0) idx = idxClose;
+  else idx = Math.min(idxClose, idxPipe);
   const start = Math.max(0, idx - 240);
   const window = body.slice(start, idx);
   for (const { type, re } of INFER_PATTERNS) {
@@ -144,7 +172,7 @@ export async function reconcileMemoryLinks(
   let added = 0;
   for (const link of parsed) {
     if (existingSlugs.has(link.slug)) continue;
-    const linkType = inferLinkType(body, link.slug);
+    const linkType = inferLinkType(body, link.rawSlug);
     await db.insert(memoryLinks).values({
       fromSlug,
       fromCollection,
