@@ -70,3 +70,40 @@ Five canonical roles, label string equals role name: `needs-triage`, `needs-info
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## Deploy Configuration (configured by /setup-deploy)
+
+CarsonOS is a **single-machine local service** — not a cloud platform. It runs on Josh's Mac as a launchd user agent (`com.carsonos.server`), serving the family's Telegram bots and a localhost UI. There is exactly one production environment. There is no staging.
+
+- **Platform:** launchd (macOS user agent)
+- **Plist:** `~/Library/LaunchAgents/com.carsonos.server.plist`
+- **Production URL:** `http://127.0.0.1:3300`
+- **Project type:** backend (Express + tsx) + UI (React/Vite, served from `ui/dist/` in production)
+- **Deploy target:** Josh's Mac only — `/land-and-deploy` from any other machine merges the PR but cannot run the service update step
+- **Deploy workflow:** none in CI. Deploy is a local shell script.
+
+### Deploy commands
+
+- **Pre-merge:** none — `/ship` handles VERSION bump, CHANGELOG, and tests
+- **Deploy trigger (post-merge):** `./scripts/update-service.sh` — pulls main, installs deps, builds UI + server, restarts launchd service
+- **Deploy status:** `launchctl print gui/$(id -u)/com.carsonos.server | grep -E 'state|pid'`
+- **Restart only (no pull/build):** `./scripts/restart-service.sh`
+- **Health check:** `curl -sf http://127.0.0.1:3300/api/health` — expects 200 with JSON `{status: "ok", version, adapter.healthy: true, memory.reindex.errorCount: 0}`
+
+### Merge method
+
+Squash. PR titles use `vX.Y.Z <type>: <summary>` prefix per `/ship`'s workspace-aware ship rule.
+
+### Custom deploy hooks
+
+- **Pre-merge:** none — `/ship` already runs typecheck + 567 tests + adversarial review
+- **Deploy trigger:** `./scripts/update-service.sh` (manual on the family Mac, or auto by `/land-and-deploy` when running on that machine)
+- **Deploy status:** `launchctl list | grep com.carsonos.server` shows PID + last exit code; `last terminating signal` field flags SIGKILL/SIGTERM
+- **Health check:** `http://127.0.0.1:3300/api/health` (single endpoint, fast, idempotent)
+
+### Operational notes
+
+- The launchd plist has unconditional `KeepAlive: true` (set in v0.5.7) — graceful SIGTERM exits respawn automatically. Existing installs need `./scripts/install-service.sh` once if their plist still has the old conditional KeepAlive.
+- Restarts interrupt in-flight Telegram conversations briefly. Schedule deploys when family activity is low if it matters.
+- The local working tree IS the deployed code — `pnpm start` runs `tsx src/index.ts` directly. There is no separate build artifact for the server (UI is bundled to `ui/dist/`).
+- **Never delete `~/.carsonos/carsonos.db` or `~/.carsonos/memory/`** — see "Critical Rules" above. The boot sequence backs up the DB to `~/.carsonos/backups/` automatically.
