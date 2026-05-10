@@ -220,10 +220,7 @@ if [[ "$SERVICE_TYPE" == "launchd" ]]; then
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
+  <true/>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/signal-cli-stdout.log</string>
   <key>StandardErrorPath</key>
@@ -269,10 +266,7 @@ PLIST
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
+  <true/>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/stdout.log</string>
   <key>StandardErrorPath</key>
