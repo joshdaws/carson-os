@@ -302,6 +302,50 @@ describe("buildExtractionPrompt", () => {
     const { system, user } = __test.buildExtractionPrompt(validPayload);
     expect(system).toMatch(/STRICT JSON/);
     expect(user).toMatch(/Grant got the role/);
-    expect(user).toMatch(/Member: Josh/);
+    expect(user).toMatch(/Member name: Josh/);
+  });
+
+  it("inverts the routing default to member-slug, not household", () => {
+    // Regression for the household-contamination bug: prior wording read
+    // "'household' for facts that affect the family, otherwise the
+    // member-slug" which routed ~73% of personal CarsonOS dev conversations
+    // to `household` instead of `josh`. Default must now be the member slug.
+    const { system, user } = __test.buildExtractionPrompt(validPayload);
+
+    // 1. System prompt states the default explicitly.
+    expect(system).toContain("Default collection: josh");
+
+    // 2. System prompt no longer contains the old, vague wording.
+    expect(system).not.toMatch(/household' for facts that affect the family/);
+
+    // 3. User message exposes the slug so the model can copy it directly.
+    expect(user).toContain("Member slug: josh");
+  });
+
+  it("derives member slug via sanitizeSlug for names with whitespace/case", () => {
+    const { user } = __test.buildExtractionPrompt({
+      ...validPayload,
+      member: "Grant Daws",
+    });
+    expect(user).toContain("Member slug: grant-daws");
+    expect(user).toContain("Default collection: grant-daws");
+  });
+
+  it("includes the pre-filter rules and few-shot examples", () => {
+    const { system } = __test.buildExtractionPrompt(validPayload);
+    expect(system).toMatch(/agent self-description/);
+    expect(system).toMatch(/Agents are not memory entities/);
+    expect(system).toMatch(/Examples:/);
+    expect(system).toMatch(/CarsonOS PR.*collection: "josh"/);
+  });
+});
+
+describe("__test exports", () => {
+  it("still exposes the test surface the rest of the suite relies on", () => {
+    expect(typeof __test.fingerprintPayload).toBe("function");
+    expect(typeof __test.buildExtractionPrompt).toBe("function");
+    expect(typeof __test.extractJsonBlock).toBe("function");
+    expect(__test.AtomCandidateSchema).toBeDefined();
+    expect(__test.ExtractionResponseSchema).toBeDefined();
   });
 });
