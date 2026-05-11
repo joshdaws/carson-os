@@ -261,15 +261,16 @@ export class EnrichmentWorker {
   }
 
   /**
-   * Existing entity slugs across all collections, refreshed on a 60-second
-   * TTL. Disk-walks all entity-type files via the provider's listEntities,
-   * so the LLM can be given a list of known slugs to reuse instead of
-   * inventing a new one. If the provider doesn't implement listEntities
-   * (non-QMD provider), returns an empty list.
+   * Raw cache of existing entity slugs across all collections, refreshed on a
+   * 60-second TTL. Disk-walks all entity-type files via the provider's
+   * listEntities. If the provider doesn't implement listEntities (non-QMD
+   * provider), returns an empty list.
+   *
+   * NOTE: Returns the list UNSORTED. The member-priority sort + 100-entry cap
+   * lives inside `buildExtractionPrompt` so that callers can't accidentally
+   * skip it and so the sort/cap invariant is self-contained in one place.
    */
-  private getCachedEntityList(
-    memberSlug?: string,
-  ): Array<{ collection: string; slug: string; type: string; title: string }> {
+  private getCachedEntityList(): Array<{ collection: string; slug: string; type: string; title: string }> {
     const ENTITY_LIST_TTL_MS = 60_000;
     const now = Date.now();
     if (this.entityListCache.length === 0 || now - this.entityListCachedAt >= ENTITY_LIST_TTL_MS) {
@@ -279,22 +280,7 @@ export class EnrichmentWorker {
       this.entityListCache = provider.listEntities?.() ?? [];
       this.entityListCachedAt = now;
     }
-    // Return a member-prioritized view so the LLM sees the current member's
-    // entities (and household) first. The 100-entry cap further keeps the
-    // prompt small and prevents household contamination from drowning out
-    // the member's own slugs.
-    if (!memberSlug) return this.entityListCache;
-    const rank = (collection: string): number => {
-      if (collection === memberSlug) return 0;
-      if (collection === "household") return 1;
-      return 2;
-    };
-    return [...this.entityListCache].sort((a, b) => {
-      const ra = rank(a.collection);
-      const rb = rank(b.collection);
-      if (ra !== rb) return ra - rb;
-      return a.collection.localeCompare(b.collection) || a.slug.localeCompare(b.slug);
-    });
+    return this.entityListCache;
   }
 
   /** Has interactive activity been detected within the yield window? */
@@ -380,8 +366,7 @@ export class EnrichmentWorker {
    * the adapter, validate the response, append atoms.
    */
   private async processItem(item: { id: string; payload: EnrichmentTurnPayload }): Promise<void> {
-    const memberSlug = sanitizeSlug(item.payload.member);
-    const prompt = buildExtractionPrompt(item.payload, this.getCachedEntityList(memberSlug));
+    const prompt = buildExtractionPrompt(item.payload, this.getCachedEntityList());
     const result = await this.adapter.execute({
       systemPrompt: prompt.system,
       messages: [{ role: "user", content: prompt.user }],
@@ -598,19 +583,35 @@ function buildExtractionPrompt(
 ): { system: string; user: string } {
   const memberSlug = sanitizeSlug(payload.member);
 
-  // Format the existing-entity list as one entry per line. The caller is
-  // expected to have already sorted the array by member-priority (own
-  // collection first, then household, then others); we preserve that order
-  // here and cap at 100 entries to keep the prompt small and prevent
-  // household contamination from dominating the list.
+  // Format the existing-entity list as one entry per line.
+  //
+  // Own the sort + cap here (rather than relying on the caller) so the
+  // member-priority invariant (own collection → household → other) and the
+  // 100-entry cap are self-contained. Collapsing both into one place avoids
+  // a hidden contract where the caller is silently expected to pre-sort.
   const knownEntitiesBlock = (() => {
     if (existingEntities.length === 0) return "";
+    // Sort: member's own collection first, then household, then others.
+    // Stable secondary sort by collection then slug for deterministic prompts.
+    const rank = (collection: string): number => {
+      if (collection === memberSlug) return 0;
+      if (collection === "household") return 1;
+      return 2;
+    };
+    const sorted = [...existingEntities].sort((a, b) => {
+      const ra = rank(a.collection);
+      const rb = rank(b.collection);
+      if (ra !== rb) return ra - rb;
+      return a.collection.localeCompare(b.collection) || a.slug.localeCompare(b.slug);
+    });
     // Display the date-stripped slug — internal storage prepends YYYY-MM-DD
     // to file ids, but the LLM should see (and emit) the bare slug. Showing
     // the dated form caused the LLM to copy `2026-04-29-claire` verbatim,
     // which `generateMemoryId` then re-date-prefixed to
-    // `2026-04-29-2026-04-29-claire` on save.
-    const capped = existingEntities
+    // `2026-04-29-2026-04-29-claire` on save. The 100-entry cap keeps the
+    // prompt small and prevents household contamination from dominating
+    // the list once the member-own slugs have been promoted to the front.
+    const capped = sorted
       .map((e) => ({ ...e, displaySlug: stripDatePrefix(e.slug) }))
       .slice(0, 100);
     const lines = capped.map(
@@ -643,8 +644,9 @@ function buildExtractionPrompt(
     "- importance: 1-3 trivial, 4-6 normal, 7-9 high signal, 10 corrections only.",
     "",
     "Examples:",
-    "- Josh + Carson discussing a CarsonOS PR → collection: \"josh\"",
-    "- Josh + Carson noting Becca's birthday → collection: \"household\"",
+    "- Josh + Carson discussing a CarsonOS PR → collection: \"josh\", entity_slug: \"carson-os\" (project)",
+    "- Josh + Carson scheduling a family dinner all five members are attending → collection: \"household\"",
+    "- Josh noting Becca's birthday is next week → collection: \"becca\" (atom is about one person)",
     "- Grant + Django working on a song → collection: \"grant\"",
     "- Carson saying \"I am measured and precise\" → {\"atoms\":[]} (agent self-description, no atom)",
     knownEntitiesBlock,
