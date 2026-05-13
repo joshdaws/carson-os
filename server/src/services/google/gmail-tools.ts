@@ -275,13 +275,73 @@ export function htmlToText(html: string): string {
 }
 
 /**
+ * Decode a base64url-encoded string (Gmail API's native encoding for message
+ * part bodies). Base64url uses `-` and `_` in place of `+` and `/` and omits
+ * trailing `=` padding. We convert to standard base64 before decoding.
+ */
+export function decodeBase64Url(data: string): string {
+  if (!data) return "";
+  try {
+    const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+    return Buffer.from(normalized, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Walk a Gmail API `payload` tree (or any part within it) and collect the
+ * decoded text/plain and text/html bodies we find. Gmail multipart messages
+ * nest parts arbitrarily deep (`multipart/alternative` inside
+ * `multipart/mixed` inside `multipart/related`, etc.), so we recurse.
+ *
+ * Returned strings are already base64url-decoded UTF-8.
+ */
+export function collectPayloadBodies(payload: unknown): {
+  plain: string;
+  html: string;
+} {
+  const out = { plain: "", html: "" };
+  if (!payload || typeof payload !== "object") return out;
+  walk(payload as Record<string, unknown>);
+  return out;
+
+  function walk(node: Record<string, unknown>): void {
+    const mime = typeof node.mimeType === "string" ? node.mimeType.toLowerCase() : "";
+    const body = node.body as { data?: unknown } | undefined;
+    const data =
+      body && typeof body === "object" && typeof body.data === "string" ? body.data : "";
+    if (data) {
+      const decoded = decodeBase64Url(data);
+      if (decoded) {
+        if (mime === "text/plain" && !out.plain) out.plain = decoded;
+        else if (mime === "text/html" && !out.html) out.html = decoded;
+        else if (!mime && !out.plain && !looksLikeHtml(decoded)) out.plain = decoded;
+        else if (!mime && !out.html && looksLikeHtml(decoded)) out.html = decoded;
+      }
+    }
+    const parts = node.parts;
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        if (p && typeof p === "object") walk(p as Record<string, unknown>);
+      }
+    }
+  }
+}
+
+/**
  * Pick the best body content from a Gmail message JSON returned by the `gws`
- * CLI. Handles both shapes we've observed:
+ * CLI. Handles every shape we've observed:
  *
  *   - `{ body: "..." }` — plain text (CLI's default rendering)
  *   - `{ text: "...", html: "..." }` — multipart messages where the CLI exposes
  *     both parts. Prefer plain text per the task spec; fall back to HTML.
  *   - `{ html: "..." }` — HTML-only message returned via `--html`.
+ *   - `{ payload: { parts: [...] } }` — Gmail API's native shape. The CLI
+ *     passes this through when called with `--headers`/`--format json`. Each
+ *     part has a `mimeType` and a base64url-encoded `body.data` blob. We walk
+ *     the part tree, prefer `text/plain`, fall back to `text/html`.
+ *   - `{ snippet: "..." }` — last-resort preview Gmail always returns.
  *
  * Returns the converted plain text plus a flag indicating whether the source
  * was HTML (so the caller can annotate the output).
@@ -290,6 +350,7 @@ export function pickEmailBody(msg: Record<string, unknown>): {
   text: string;
   fromHtml: boolean;
 } {
+  // 1. Top-level string fields the CLI sometimes flattens for us.
   const plain =
     typeof msg.text === "string" && msg.text.trim()
       ? msg.text.trim()
@@ -306,7 +367,63 @@ export function pickEmailBody(msg: Record<string, unknown>): {
       : "";
   if (html) return { text: htmlToText(html), fromHtml: true };
 
+  // 2. Walk Gmail's native `payload.parts[].body.data` tree.
+  const fromParts = collectPayloadBodies(msg.payload);
+  if (fromParts.plain.trim()) {
+    return { text: fromParts.plain.trim(), fromHtml: false };
+  }
+  if (fromParts.html.trim()) {
+    return { text: htmlToText(fromParts.html), fromHtml: true };
+  }
+
+  // 3. Final fallback: Gmail's `snippet` preview (always present in API
+  //    responses; a truncated plain-text excerpt of the first ~200 chars).
+  if (typeof msg.snippet === "string" && msg.snippet.trim()) {
+    return { text: msg.snippet.trim(), fromHtml: false };
+  }
+
   return { text: "", fromHtml: false };
+}
+
+/**
+ * Render a Gmail address header value as a readable "Name <email>" string.
+ * The `gws` CLI returns these as structured objects (`{ name, email }`) or
+ * arrays of objects rather than the raw RFC 5322 string, so naive string
+ * interpolation gives `[object Object]`. We handle:
+ *
+ *   - `"Bob Smith <bob@example.com>"` (raw string) — passed through as-is
+ *   - `{ name: "Bob Smith", email: "bob@example.com" }` → `"Bob Smith <bob@example.com>"`
+ *   - `{ email: "bob@example.com" }` → `"bob@example.com"`
+ *   - `{ name: "Bob Smith" }` → `"Bob Smith"`
+ *   - `{ address: "bob@example.com" }` (alternate key name) — same as `email`
+ *   - `[{...}, {...}]` arrays — joined with `", "`
+ *   - `null`/`undefined`/other primitives — empty string / coerced
+ */
+export function formatAddress(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (Array.isArray(v)) {
+    return v
+      .map(formatAddress)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join(", ");
+  }
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const name = typeof o.name === "string" ? o.name.trim() : "";
+    const email =
+      typeof o.email === "string"
+        ? o.email.trim()
+        : typeof o.address === "string"
+        ? o.address.trim()
+        : "";
+    if (name && email) return `${name} <${email}>`;
+    if (email) return email;
+    if (name) return name;
+    return "";
+  }
+  return String(v);
 }
 
 /**
@@ -353,9 +470,13 @@ export function createGmailToolHandler(
           }
 
           const formatted = messages
-            .map((m: Record<string, string>) =>
-              `- ${m.from ?? "Unknown"}: ${m.subject ?? "(no subject)"} (${m.date ?? ""}) [id: ${m.id ?? ""}]`
-            )
+            .map((m: Record<string, unknown>) => {
+              const from = formatAddress(m.from) || "Unknown";
+              const subject = (typeof m.subject === "string" && m.subject) || "(no subject)";
+              const date = typeof m.date === "string" ? m.date : "";
+              const id = typeof m.id === "string" ? m.id : "";
+              return `- ${from}: ${subject} (${date}) [id: ${id}]`;
+            })
             .join("\n");
 
           return { content: `${messages.length} messages:\n${formatted}` };
@@ -368,9 +489,13 @@ export function createGmailToolHandler(
           const jsonStart = stdout.indexOf("{");
           const msg = JSON.parse(jsonStart >= 0 ? extractBalancedJson(stdout, jsonStart) : stdout);
 
-          const parts = [];
-          if (msg.from) parts.push(`From: ${msg.from}`);
-          if (msg.to) parts.push(`To: ${msg.to}`);
+          const parts: string[] = [];
+          const from = formatAddress(msg.from);
+          const to = formatAddress(msg.to);
+          const cc = formatAddress(msg.cc);
+          if (from) parts.push(`From: ${from}`);
+          if (to) parts.push(`To: ${to}`);
+          if (cc) parts.push(`Cc: ${cc}`);
           if (msg.subject) parts.push(`Subject: ${msg.subject}`);
           if (msg.date) parts.push(`Date: ${msg.date}`);
           parts.push("");
@@ -452,7 +577,7 @@ export function createGmailToolHandler(
           const readStart = readOut.indexOf("{");
           const original = JSON.parse(readStart >= 0 ? readOut.slice(readStart) : readOut);
 
-          const replyTo = original.from ?? "";
+          const replyTo = formatAddress(original.from);
           const subject = original.subject?.startsWith("Re: ")
             ? original.subject
             : `Re: ${original.subject ?? ""}`;

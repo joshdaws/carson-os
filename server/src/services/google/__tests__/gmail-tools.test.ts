@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
-import { htmlToText, looksLikeHtml, pickEmailBody, createGmailToolHandler } from "../gmail-tools.js";
+import {
+  htmlToText,
+  looksLikeHtml,
+  pickEmailBody,
+  createGmailToolHandler,
+  formatAddress,
+  decodeBase64Url,
+  collectPayloadBodies,
+} from "../gmail-tools.js";
 import type { GoogleCalendarProvider } from "../calendar-provider.js";
 
 describe("htmlToText", () => {
@@ -250,6 +258,330 @@ describe("pickEmailBody", () => {
     // The CLI sometimes returns numeric / null fields for missing parts.
     const msg = { text: null, html: undefined, body: 42 };
     expect(pickEmailBody(msg)).toEqual({ text: "", fromHtml: false });
+  });
+});
+
+describe("formatAddress", () => {
+  it("returns empty string for nullish input", () => {
+    expect(formatAddress(null)).toBe("");
+    expect(formatAddress(undefined)).toBe("");
+  });
+
+  it("passes through raw RFC 5322 strings", () => {
+    expect(formatAddress("Bob Smith <bob@example.com>")).toBe(
+      "Bob Smith <bob@example.com>",
+    );
+    expect(formatAddress("bob@example.com")).toBe("bob@example.com");
+  });
+
+  it("renders { name, email } as 'Name <email>'", () => {
+    expect(formatAddress({ name: "Bob Smith", email: "bob@example.com" })).toBe(
+      "Bob Smith <bob@example.com>",
+    );
+  });
+
+  it("falls back to email-only when name is missing", () => {
+    expect(formatAddress({ email: "bob@example.com" })).toBe("bob@example.com");
+    expect(formatAddress({ name: "", email: "bob@example.com" })).toBe(
+      "bob@example.com",
+    );
+  });
+
+  it("falls back to name-only when email is missing", () => {
+    expect(formatAddress({ name: "Bob Smith" })).toBe("Bob Smith");
+  });
+
+  it("accepts `address` as an alias for `email`", () => {
+    expect(formatAddress({ name: "Bob", address: "bob@example.com" })).toBe(
+      "Bob <bob@example.com>",
+    );
+  });
+
+  it("joins arrays with comma separation", () => {
+    expect(
+      formatAddress([
+        { name: "Bob", email: "bob@example.com" },
+        { name: "Carol", email: "carol@example.com" },
+      ]),
+    ).toBe("Bob <bob@example.com>, Carol <carol@example.com>");
+  });
+
+  it("never returns '[object Object]'", () => {
+    // The original bug — string interpolation gave this for object inputs.
+    expect(formatAddress({ name: "Bob", email: "bob@example.com" })).not.toContain(
+      "[object Object]",
+    );
+    expect(formatAddress([{ email: "bob@example.com" }])).not.toContain(
+      "[object Object]",
+    );
+  });
+
+  it("skips empty entries when joining arrays", () => {
+    expect(formatAddress([{ email: "bob@example.com" }, null, { name: "" }])).toBe(
+      "bob@example.com",
+    );
+  });
+});
+
+describe("decodeBase64Url", () => {
+  it("decodes standard base64url content", () => {
+    // "Hello, world!" → base64url
+    expect(decodeBase64Url("SGVsbG8sIHdvcmxkIQ")).toBe("Hello, world!");
+  });
+
+  it("decodes content using `-` and `_` in place of `+` and `/`", () => {
+    // The bytes 0xFB 0xEF 0xFF encode as `++//` in base64 and `--__` in base64url.
+    const original = Buffer.from([0xfb, 0xef, 0xff]).toString("utf8");
+    expect(decodeBase64Url("--__")).toBe(original);
+  });
+
+  it("handles missing padding", () => {
+    expect(decodeBase64Url("SGk")).toBe("Hi"); // standard would be "SGk="
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(decodeBase64Url("")).toBe("");
+  });
+});
+
+describe("collectPayloadBodies", () => {
+  function b64(s: string): string {
+    return Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  }
+
+  it("returns empty bodies for non-payload input", () => {
+    expect(collectPayloadBodies(null)).toEqual({ plain: "", html: "" });
+    expect(collectPayloadBodies(undefined)).toEqual({ plain: "", html: "" });
+    expect(collectPayloadBodies("not-an-object")).toEqual({ plain: "", html: "" });
+  });
+
+  it("decodes a flat single-part text/plain payload", () => {
+    const payload = {
+      mimeType: "text/plain",
+      body: { data: b64("Hello there.") },
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "Hello there.",
+      html: "",
+    });
+  });
+
+  it("walks multipart/alternative and keeps both plain and html", () => {
+    const payload = {
+      mimeType: "multipart/alternative",
+      body: { size: 0 },
+      parts: [
+        { mimeType: "text/plain", body: { data: b64("Plain version") } },
+        { mimeType: "text/html", body: { data: b64("<p>HTML version</p>") } },
+      ],
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "Plain version",
+      html: "<p>HTML version</p>",
+    });
+  });
+
+  it("recurses into nested multipart parts", () => {
+    const payload = {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "multipart/alternative",
+          parts: [
+            { mimeType: "text/plain", body: { data: b64("Nested plain") } },
+            { mimeType: "text/html", body: { data: b64("<p>Nested html</p>") } },
+          ],
+        },
+        // Attachment part — has data but a non-text mimeType. Ignored.
+        {
+          mimeType: "application/pdf",
+          body: { data: b64("fake-pdf-bytes") },
+        },
+      ],
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "Nested plain",
+      html: "<p>Nested html</p>",
+    });
+  });
+
+  it("ignores attachment parts", () => {
+    const payload = {
+      mimeType: "multipart/mixed",
+      parts: [
+        { mimeType: "text/plain", body: { data: b64("Body") } },
+        { mimeType: "image/png", body: { data: b64("PNG-BYTES") } },
+      ],
+    };
+    expect(collectPayloadBodies(payload).plain).toBe("Body");
+    expect(collectPayloadBodies(payload).html).toBe("");
+  });
+});
+
+describe("pickEmailBody — Gmail API native payload shape", () => {
+  function b64(s: string): string {
+    return Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  }
+
+  it("extracts text from payload.parts when top-level fields are missing", () => {
+    const msg = {
+      subject: "Hi",
+      payload: {
+        mimeType: "multipart/alternative",
+        parts: [
+          { mimeType: "text/plain", body: { data: b64("Real body content.") } },
+          { mimeType: "text/html", body: { data: b64("<p>Real body content.</p>") } },
+        ],
+      },
+    };
+    const { text, fromHtml } = pickEmailBody(msg);
+    expect(text).toBe("Real body content.");
+    expect(fromHtml).toBe(false);
+  });
+
+  it("falls back to text/html part when plain is absent in payload", () => {
+    const msg = {
+      payload: {
+        mimeType: "text/html",
+        body: { data: b64("<h1>Marketing</h1><p>Buy now.</p>") },
+      },
+    };
+    const { text, fromHtml } = pickEmailBody(msg);
+    expect(text).toContain("Marketing");
+    expect(text).toContain("Buy now.");
+    expect(fromHtml).toBe(true);
+  });
+
+  it("uses Gmail snippet as last-resort fallback", () => {
+    const msg = {
+      subject: "Bare",
+      snippet: "Short preview from Gmail API.",
+    };
+    const { text, fromHtml } = pickEmailBody(msg);
+    expect(text).toBe("Short preview from Gmail API.");
+    expect(fromHtml).toBe(false);
+  });
+
+  it("prefers top-level text over payload parts when both present", () => {
+    const msg = {
+      text: "Top-level plain.",
+      payload: {
+        parts: [{ mimeType: "text/plain", body: { data: b64("Payload plain.") } }],
+      },
+    };
+    expect(pickEmailBody(msg)).toEqual({
+      text: "Top-level plain.",
+      fromHtml: false,
+    });
+  });
+
+  it("prefers payload plain over snippet", () => {
+    const msg = {
+      snippet: "snippet preview",
+      payload: {
+        parts: [{ mimeType: "text/plain", body: { data: b64("full body") } }],
+      },
+    };
+    expect(pickEmailBody(msg).text).toBe("full body");
+  });
+});
+
+describe("gmail_read handler — From/To rendering", () => {
+  function stubProvider(
+    responses: Array<string | (() => string)>,
+  ): { provider: GoogleCalendarProvider; calls: string[][] } {
+    const calls: string[][] = [];
+    let i = 0;
+    const provider = {
+      gws: vi.fn(async (_member: string, args: string[]) => {
+        calls.push(args);
+        const r = responses[i++];
+        if (typeof r === "function") return r();
+        if (r === undefined) throw new Error("no more stub responses");
+        return r;
+      }),
+    } as unknown as GoogleCalendarProvider;
+    return { provider, calls };
+  }
+
+  it("renders object-shaped from/to as 'Name <email>', not [object Object]", async () => {
+    const { provider } = stubProvider([
+      JSON.stringify({
+        from: { name: "Tyler Coach", email: "tyler@example.com" },
+        to: { name: "Josh Daws", email: "josh@example.com" },
+        subject: "Saturday game",
+        date: "2026-05-13",
+        text: "See you at 9am.",
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "abc123" });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("From: Tyler Coach <tyler@example.com>");
+    expect(result.content).toContain("To: Josh Daws <josh@example.com>");
+    expect(result.content).not.toContain("[object Object]");
+  });
+
+  it("renders array-of-recipients To header", async () => {
+    const { provider } = stubProvider([
+      JSON.stringify({
+        from: { email: "boss@example.com" },
+        to: [
+          { name: "Alice", email: "alice@example.com" },
+          { name: "Bob", email: "bob@example.com" },
+        ],
+        subject: "Team update",
+        text: "Body.",
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "abc123" });
+    expect(result.content).toContain("To: Alice <alice@example.com>, Bob <bob@example.com>");
+  });
+
+  it("still handles raw RFC 5322 string headers", async () => {
+    const { provider } = stubProvider([
+      JSON.stringify({
+        from: "Tyler <tyler@example.com>",
+        to: "josh@example.com",
+        subject: "Old shape",
+        text: "Body.",
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "abc123" });
+    expect(result.content).toContain("From: Tyler <tyler@example.com>");
+    expect(result.content).toContain("To: josh@example.com");
+  });
+
+  it("reads body from Gmail API native payload.parts shape", async () => {
+    const b64 = (s: string) =>
+      Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+    const { provider, calls } = stubProvider([
+      JSON.stringify({
+        from: { name: "Sender", email: "s@example.com" },
+        to: { email: "josh@example.com" },
+        subject: "Real message",
+        date: "2026-05-13",
+        // No top-level text/body/html — only Gmail's native payload tree.
+        payload: {
+          mimeType: "multipart/alternative",
+          parts: [
+            { mimeType: "text/plain", body: { data: b64("This is the body.") } },
+            {
+              mimeType: "text/html",
+              body: { data: b64("<p>This is the body.</p>") },
+            },
+          ],
+        },
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "abc123" });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("This is the body.");
+    // No re-fetch needed — payload had the body.
+    expect(calls).toHaveLength(1);
   });
 });
 
