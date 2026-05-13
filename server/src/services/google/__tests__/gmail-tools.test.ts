@@ -260,6 +260,85 @@ describe("pickEmailBody", () => {
     const msg = { text: null, html: undefined, body: 42 };
     expect(pickEmailBody(msg)).toEqual({ text: "", fromHtml: false });
   });
+
+  // ── `gws +read` helper shape ─────────────────────────────────────
+  //
+  // This is the shape `gmail_read` actually receives in production. PR #70
+  // shipped a `payload.parts[]` walker but missed that the higher-level
+  // `gws gmail +read --format json` helper decodes the body itself and
+  // exposes it as `body_text` / `body_html`. These regressions exercise
+  // exactly that shape.
+  describe("gws +read helper shape (body_text / body_html)", () => {
+    it("uses body_text when present (real gws +read shape)", () => {
+      const msg = {
+        thread_id: "abc",
+        message_id: "xyz",
+        from: { name: "Miranda Larsen", email: "mlarsen@blazemedia.com" },
+        to: [{ name: "Josh", email: "josh@example.com" }],
+        subject: "IT opportunity | Blaze Media | Follow up",
+        date: "Tue, 12 May 2026 21:12:14 +0000",
+        body_text: "Hi Josh,\r\n\r\nI am reaching out from the recruiting team...",
+        body_html: "<html><body>Hi Josh,</body></html>",
+      };
+      const { text, fromHtml } = pickEmailBody(msg);
+      expect(text).toContain("Hi Josh");
+      expect(text).toContain("recruiting team");
+      expect(fromHtml).toBe(false);
+    });
+
+    it("prefers body_text over body_html when both are present", () => {
+      const msg = {
+        body_text: "Plain version.",
+        body_html: "<p>HTML version.</p>",
+      };
+      const { text, fromHtml } = pickEmailBody(msg);
+      expect(text).toBe("Plain version.");
+      expect(fromHtml).toBe(false);
+    });
+
+    it("falls back to body_html when body_text is empty/whitespace", () => {
+      const msg = {
+        body_text: "   ",
+        body_html: '<p>HTML only <a href="https://x.test">link</a>.</p>',
+      };
+      const { text, fromHtml } = pickEmailBody(msg);
+      expect(text).toContain("HTML only");
+      expect(text).toContain("[https://x.test]");
+      expect(fromHtml).toBe(true);
+    });
+
+    it("falls back to body_html when body_text is missing", () => {
+      const msg = { body_html: "<p>HTML body only.</p>" };
+      const { text, fromHtml } = pickEmailBody(msg);
+      expect(text).toContain("HTML body only.");
+      expect(fromHtml).toBe(true);
+    });
+
+    it("ignores non-string body_text/body_html values", () => {
+      expect(pickEmailBody({ body_text: null, body_html: 42 })).toEqual({
+        text: "",
+        fromHtml: false,
+      });
+    });
+
+    it("body_text takes precedence over payload.parts[] walking", () => {
+      // If both shapes are somehow present, the pre-decoded helper output is
+      // canonical — fall through to payload.parts only when it's missing.
+      const msg = {
+        body_text: "helper decoded body",
+        payload: {
+          parts: [
+            {
+              mimeType: "text/plain",
+              body: { data: Buffer.from("payload body", "utf8").toString("base64url") },
+            },
+          ],
+        },
+      };
+      const { text } = pickEmailBody(msg);
+      expect(text).toBe("helper decoded body");
+    });
+  });
 });
 
 describe("formatAddress", () => {
@@ -721,6 +800,48 @@ describe("gmail_read handler — From/To rendering", () => {
     expect(result.content).toContain("Subject: Saturday game");
     expect(result.content).toContain("Date: Mon, 13 May 2026 10:00:00 -0700");
     expect(result.content).toContain("See you at 9am.");
+  });
+
+  // Regression: PR #70 added a payload.parts[] walker but missed the
+  // higher-level `gws gmail +read` helper shape (snake_case body_text /
+  // body_html, thread_id, from/to as { name, email } objects). That's what
+  // gmail_read actually receives in production — the Miranda Larsen email
+  // from Blaze Media (msg id 19e1e08c28e6bef0, sent 2026-05-12) reproduces
+  // it exactly. The body was coming back as "(empty)" even though the body
+  // text was right there in `body_text`.
+  it("reads body_text from real `gws +read` helper response (Miranda Larsen regression)", async () => {
+    const { provider, calls } = stubProvider([
+      JSON.stringify({
+        thread_id: "19e1e08c28e6bef0",
+        message_id:
+          "CYXP220MB11280737209AF5DDF037B77BCB392@CYXP220MB1128.NAMP220.PROD.OUTLOOK.COM",
+        references: [],
+        from: { name: "Miranda Larsen", email: "mlarsen@blazemedia.com" },
+        reply_to: null,
+        to: [{ name: "jdaws47@gmail.com", email: "jdaws47@gmail.com" }],
+        cc: null,
+        subject: "IT opportunity | Blaze Media | Follow up",
+        date: "Tue, 12 May 2026 21:12:14 +0000",
+        body_text:
+          "Hi Josh,\r\n\r\nI am reaching out from the recruiting team at Blaze to connect as things continue to take shape on our end following conversations with Tyler recently.\r\n\r\nGiven the scope of what Blaze is looking to build, I'd love to spend some time with you this week...\r\n\r\nBest,\r\nMiranda",
+        body_html: "<html><body>Hi Josh,</body></html>",
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "19e1e08c28e6bef0" });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("From: Miranda Larsen <mlarsen@blazemedia.com>");
+    expect(result.content).toContain(
+      "Subject: IT opportunity | Blaze Media | Follow up",
+    );
+    // The critical assertion: real body text actually appears in the output.
+    expect(result.content).toContain("Hi Josh");
+    expect(result.content).toContain("recruiting team at Blaze");
+    expect(result.content).toContain("Best,");
+    expect(result.content).toContain("Miranda");
+    expect(result.content).not.toContain("(empty — could not retrieve message body)");
+    // No re-fetch — body_text was satisfied on the first call.
+    expect(calls).toHaveLength(1);
   });
 
   it("reads body from Gmail API native payload.parts shape", async () => {

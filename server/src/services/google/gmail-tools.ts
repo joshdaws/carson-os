@@ -408,14 +408,18 @@ export function collectPayloadBodies(payload: unknown): {
  * Pick the best body content from a Gmail message JSON returned by the `gws`
  * CLI. Handles every shape we've observed:
  *
+ *   - `{ body_text: "...", body_html: "..." }` — the `gws gmail +read` helper's
+ *     native output. The helper pre-decodes the message and exposes plain and
+ *     HTML parts as snake_case top-level fields. THIS is the shape `gmail_read`
+ *     actually receives in production. Prefer plain text; fall back to HTML.
  *   - `{ body: "..." }` — plain text (CLI's default rendering)
  *   - `{ text: "...", html: "..." }` — multipart messages where the CLI exposes
  *     both parts. Prefer plain text per the task spec; fall back to HTML.
  *   - `{ html: "..." }` — HTML-only message returned via `--html`.
- *   - `{ payload: { parts: [...] } }` — Gmail API's native shape. The CLI
- *     passes this through when called with `--headers`/`--format json`. Each
- *     part has a `mimeType` and a base64url-encoded `body.data` blob. We walk
- *     the part tree, prefer `text/plain`, fall back to `text/html`.
+ *   - `{ payload: { parts: [...] } }` — Gmail API's native shape. The lower-level
+ *     `gws gmail users messages get` returns this. Each part has a `mimeType`
+ *     and a base64url-encoded `body.data` blob. We walk the part tree, prefer
+ *     `text/plain`, fall back to `text/html`.
  *   - `{ snippet: "..." }` — last-resort preview Gmail always returns.
  *
  * Returns the converted plain text plus a flag indicating whether the source
@@ -425,7 +429,16 @@ export function pickEmailBody(msg: Record<string, unknown>): {
   text: string;
   fromHtml: boolean;
 } {
-  // 1. Top-level string fields the CLI sometimes flattens for us.
+  // 1. The `gws +read` helper's own snake_case output. This is what the
+  //    `gmail_read` handler actually receives — the helper decodes Gmail's
+  //    base64url multipart body internally and exposes the result as plain
+  //    `body_text` / `body_html` strings. PR #70 missed this shape because
+  //    its tests fed in raw Gmail-API payloads instead of `gws +read` output.
+  if (typeof msg.body_text === "string" && msg.body_text.trim()) {
+    return { text: msg.body_text.trim(), fromHtml: false };
+  }
+
+  // 2. Other top-level string fields the CLI sometimes flattens for us.
   const plain =
     typeof msg.text === "string" && msg.text.trim()
       ? msg.text.trim()
@@ -433,6 +446,10 @@ export function pickEmailBody(msg: Record<string, unknown>): {
       ? msg.body.trim()
       : "";
   if (plain) return { text: plain, fromHtml: false };
+
+  if (typeof msg.body_html === "string" && msg.body_html.trim()) {
+    return { text: htmlToText(msg.body_html), fromHtml: true };
+  }
 
   const html =
     typeof msg.html === "string" && msg.html.trim()
@@ -442,7 +459,7 @@ export function pickEmailBody(msg: Record<string, unknown>): {
       : "";
   if (html) return { text: htmlToText(html), fromHtml: true };
 
-  // 2. Walk Gmail's native `payload.parts[].body.data` tree.
+  // 3. Walk Gmail's native `payload.parts[].body.data` tree.
   const fromParts = collectPayloadBodies(msg.payload);
   if (fromParts.plain.trim()) {
     return { text: fromParts.plain.trim(), fromHtml: false };
@@ -451,7 +468,7 @@ export function pickEmailBody(msg: Record<string, unknown>): {
     return { text: htmlToText(fromParts.html), fromHtml: true };
   }
 
-  // 3. Final fallback: Gmail's `snippet` preview (always present in API
+  // 4. Final fallback: Gmail's `snippet` preview (always present in API
   //    responses; a truncated plain-text excerpt of the first ~200 chars).
   if (typeof msg.snippet === "string" && msg.snippet.trim()) {
     return { text: msg.snippet.trim(), fromHtml: false };
@@ -682,8 +699,14 @@ export function createGmailToolHandler(
           const subject = origSubjectRaw.startsWith("Re: ")
             ? origSubjectRaw
             : `Re: ${origSubjectRaw}`;
+          // gws +read exposes thread id as snake_case `thread_id`. Lower-level
+          // gmail.users.messages.get returns camelCase `threadId`. Accept either.
           const threadId =
-            typeof original.threadId === "string" ? original.threadId : undefined;
+            typeof original.thread_id === "string"
+              ? original.thread_id
+              : typeof original.threadId === "string"
+              ? original.threadId
+              : undefined;
 
           const raw = buildRawEmail({
             to: replyTo,
