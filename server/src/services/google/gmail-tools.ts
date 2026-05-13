@@ -278,15 +278,74 @@ export function htmlToText(html: string): string {
  * Decode a base64url-encoded string (Gmail API's native encoding for message
  * part bodies). Base64url uses `-` and `_` in place of `+` and `/` and omits
  * trailing `=` padding. We convert to standard base64 before decoding.
+ *
+ * `Buffer.from(s, "base64")` silently drops invalid characters rather than
+ * throwing, which would produce garbled mojibake if the input is not actually
+ * base64url. To avoid surfacing that to the user, we:
+ *
+ *   1. Validate the input is composed only of base64url-safe characters
+ *      (`A-Z a-z 0-9 - _ =`). Anything else → `""`.
+ *   2. Wrap the decode itself in try/catch as a belt-and-suspenders.
  */
 export function decodeBase64Url(data: string): string {
   if (!data) return "";
   try {
+    if (!/^[A-Za-z0-9_\-]*=*$/.test(data)) return "";
     const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
     return Buffer.from(normalized, "base64").toString("utf8");
   } catch {
     return "";
   }
+}
+
+/**
+ * Detect whether a Gmail API payload part is an attachment (versus an inline
+ * body part). An attachment-shaped `text/plain` part ordered before the real
+ * body can otherwise shadow the body and end up displayed instead.
+ *
+ * Two signals — either one wins:
+ *   - `filename` set and non-empty (Gmail API exposes this on every part; only
+ *     attachment parts have it populated).
+ *   - `Content-Disposition: attachment[; …]` header.
+ */
+function isAttachmentPart(node: Record<string, unknown>): boolean {
+  const filename = typeof node.filename === "string" ? node.filename.trim() : "";
+  if (filename) return true;
+  const headers = node.headers;
+  if (Array.isArray(headers)) {
+    for (const h of headers) {
+      if (!h || typeof h !== "object") continue;
+      const ho = h as Record<string, unknown>;
+      const hname = typeof ho.name === "string" ? ho.name.toLowerCase() : "";
+      const hval = typeof ho.value === "string" ? ho.value.trim().toLowerCase() : "";
+      if (hname === "content-disposition" && hval.startsWith("attachment")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Read a single header value (case-insensitive) from a Gmail API
+ * `payload.headers[]` array. Used as a fallback for From/To/Subject/Date when
+ * the surrounding tooling stops flattening these onto the top-level message
+ * object (pure Gmail API responses keep them only in `payload.headers[]`).
+ */
+export function readPayloadHeader(payload: unknown, name: string): string {
+  if (!payload || typeof payload !== "object") return "";
+  const headers = (payload as Record<string, unknown>).headers;
+  if (!Array.isArray(headers)) return "";
+  const target = name.toLowerCase();
+  for (const h of headers) {
+    if (!h || typeof h !== "object") continue;
+    const ho = h as Record<string, unknown>;
+    const hname = typeof ho.name === "string" ? ho.name.toLowerCase() : "";
+    if (hname === target) {
+      return typeof ho.value === "string" ? ho.value : "";
+    }
+  }
+  return "";
 }
 
 /**
@@ -296,17 +355,33 @@ export function decodeBase64Url(data: string): string {
  * `multipart/mixed` inside `multipart/related`, etc.), so we recurse.
  *
  * Returned strings are already base64url-decoded UTF-8.
+ *
+ * Safety/correctness guards:
+ *   - **Attachment skip**: parts marked with `Content-Disposition: attachment`
+ *     (or carrying a `filename`) are ignored even if their `mimeType` is
+ *     `text/plain` — otherwise a plain-text attachment ordered before the body
+ *     could shadow the real body.
+ *   - **mimeType matching**: uses `startsWith` so `text/plain; charset=utf-8`
+ *     and `text/html; charset=iso-8859-1` both match.
+ *   - **Recursion cap**: bails after `MAX_DEPTH` levels to bound work on
+ *     pathological / malicious payloads.
  */
+const MAX_PAYLOAD_DEPTH = 10;
+
 export function collectPayloadBodies(payload: unknown): {
   plain: string;
   html: string;
 } {
   const out = { plain: "", html: "" };
   if (!payload || typeof payload !== "object") return out;
-  walk(payload as Record<string, unknown>);
+  walk(payload as Record<string, unknown>, 0);
   return out;
 
-  function walk(node: Record<string, unknown>): void {
+  function walk(node: Record<string, unknown>, depth: number): void {
+    if (depth > MAX_PAYLOAD_DEPTH) return;
+    // Skip attachment parts entirely — both their body and their children.
+    if (isAttachmentPart(node)) return;
+
     const mime = typeof node.mimeType === "string" ? node.mimeType.toLowerCase() : "";
     const body = node.body as { data?: unknown } | undefined;
     const data =
@@ -314,8 +389,8 @@ export function collectPayloadBodies(payload: unknown): {
     if (data) {
       const decoded = decodeBase64Url(data);
       if (decoded) {
-        if (mime === "text/plain" && !out.plain) out.plain = decoded;
-        else if (mime === "text/html" && !out.html) out.html = decoded;
+        if (mime.startsWith("text/plain") && !out.plain) out.plain = decoded;
+        else if (mime.startsWith("text/html") && !out.html) out.html = decoded;
         else if (!mime && !out.plain && !looksLikeHtml(decoded)) out.plain = decoded;
         else if (!mime && !out.html && looksLikeHtml(decoded)) out.html = decoded;
       }
@@ -323,7 +398,7 @@ export function collectPayloadBodies(payload: unknown): {
     const parts = node.parts;
     if (Array.isArray(parts)) {
       for (const p of parts) {
-        if (p && typeof p === "object") walk(p as Record<string, unknown>);
+        if (p && typeof p === "object") walk(p as Record<string, unknown>, depth + 1);
       }
     }
   }
@@ -490,14 +565,30 @@ export function createGmailToolHandler(
           const msg = JSON.parse(jsonStart >= 0 ? extractBalancedJson(stdout, jsonStart) : stdout);
 
           const parts: string[] = [];
-          const from = formatAddress(msg.from);
-          const to = formatAddress(msg.to);
-          const cc = formatAddress(msg.cc);
+          // Headers may be flattened onto the top-level message object (the
+          // `gws` CLI does this) or live only inside `payload.headers[]` (pure
+          // Gmail API response shape). Read both, preferring the flattened
+          // form when present.
+          const from =
+            formatAddress(msg.from) ||
+            formatAddress(readPayloadHeader(msg.payload, "From"));
+          const to =
+            formatAddress(msg.to) ||
+            formatAddress(readPayloadHeader(msg.payload, "To"));
+          const cc =
+            formatAddress(msg.cc) ||
+            formatAddress(readPayloadHeader(msg.payload, "Cc"));
+          const subject =
+            (typeof msg.subject === "string" && msg.subject) ||
+            readPayloadHeader(msg.payload, "Subject");
+          const date =
+            (typeof msg.date === "string" && msg.date) ||
+            readPayloadHeader(msg.payload, "Date");
           if (from) parts.push(`From: ${from}`);
           if (to) parts.push(`To: ${to}`);
           if (cc) parts.push(`Cc: ${cc}`);
-          if (msg.subject) parts.push(`Subject: ${msg.subject}`);
-          if (msg.date) parts.push(`Date: ${msg.date}`);
+          if (subject) parts.push(`Subject: ${subject}`);
+          if (date) parts.push(`Date: ${date}`);
           parts.push("");
 
           // Try to extract a body from whatever the CLI returned. Multipart
@@ -577,17 +668,29 @@ export function createGmailToolHandler(
           const readStart = readOut.indexOf("{");
           const original = JSON.parse(readStart >= 0 ? readOut.slice(readStart) : readOut);
 
-          const replyTo = formatAddress(original.from);
-          const subject = original.subject?.startsWith("Re: ")
-            ? original.subject
-            : `Re: ${original.subject ?? ""}`;
+          // Same defensive handling as gmail_read: From may be an object or
+          // array, may live in payload.headers[], and Subject may be missing
+          // or non-string. Coerce everything carefully before stuffing it into
+          // the outgoing draft.
+          const replyTo =
+            formatAddress(original.from) ||
+            formatAddress(readPayloadHeader(original.payload, "From"));
+          const origSubjectRaw =
+            (typeof original.subject === "string" && original.subject) ||
+            readPayloadHeader(original.payload, "Subject") ||
+            "";
+          const subject = origSubjectRaw.startsWith("Re: ")
+            ? origSubjectRaw
+            : `Re: ${origSubjectRaw}`;
+          const threadId =
+            typeof original.threadId === "string" ? original.threadId : undefined;
 
           const raw = buildRawEmail({
             to: replyTo,
             subject,
             body: input.body as string,
             inReplyTo: input.messageId as string,
-            threadId: original.threadId,
+            threadId,
           });
 
           const tmpFile = join(tmpdir(), `carsonos-reply-${Date.now()}.eml`);
@@ -595,7 +698,7 @@ export function createGmailToolHandler(
 
           try {
             const draftJson: Record<string, unknown> = {
-              message: { threadId: original.threadId },
+              message: threadId ? { threadId } : {},
             };
             const args = [
               "gmail", "users", "drafts", "create",

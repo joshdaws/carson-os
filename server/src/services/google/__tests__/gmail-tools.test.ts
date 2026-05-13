@@ -7,6 +7,7 @@ import {
   formatAddress,
   decodeBase64Url,
   collectPayloadBodies,
+  readPayloadHeader,
 } from "../gmail-tools.js";
 import type { GoogleCalendarProvider } from "../calendar-provider.js";
 
@@ -342,6 +343,19 @@ describe("decodeBase64Url", () => {
   it("returns empty string for empty input", () => {
     expect(decodeBase64Url("")).toBe("");
   });
+
+  it("returns empty string for non-base64url input rather than garbled text", () => {
+    // `Buffer.from(..., "base64")` silently strips invalid chars and produces
+    // mojibake; we want a clean empty string instead.
+    expect(decodeBase64Url("not valid base64!@#")).toBe("");
+    expect(decodeBase64Url("plain english sentence")).toBe("");
+    expect(decodeBase64Url("contains\nnewlines")).toBe("");
+  });
+
+  it("accepts trailing `=` padding", () => {
+    expect(decodeBase64Url("SGVsbG8=")).toBe("Hello");
+    expect(decodeBase64Url("SGk=")).toBe("Hi");
+  });
 });
 
 describe("collectPayloadBodies", () => {
@@ -415,6 +429,128 @@ describe("collectPayloadBodies", () => {
     };
     expect(collectPayloadBodies(payload).plain).toBe("Body");
     expect(collectPayloadBodies(payload).html).toBe("");
+  });
+
+  it("ignores text/plain parts marked Content-Disposition: attachment", () => {
+    // The bug: an attachment ordered BEFORE the real body would shadow it
+    // because both are mimeType text/plain.
+    const payload = {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "text/plain",
+          filename: "notes.txt",
+          headers: [
+            { name: "Content-Disposition", value: 'attachment; filename="notes.txt"' },
+          ],
+          body: { data: b64("ATTACHED FILE CONTENT — should not win") },
+        },
+        {
+          mimeType: "text/plain",
+          body: { data: b64("Real body text.") },
+        },
+      ],
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "Real body text.",
+      html: "",
+    });
+  });
+
+  it("ignores text/plain attachments detected by filename alone (no header)", () => {
+    const payload = {
+      mimeType: "multipart/mixed",
+      parts: [
+        {
+          mimeType: "text/plain",
+          filename: "log.txt",
+          body: { data: b64("log content") },
+        },
+        {
+          mimeType: "text/plain",
+          body: { data: b64("Body") },
+        },
+      ],
+    };
+    expect(collectPayloadBodies(payload).plain).toBe("Body");
+  });
+
+  it("matches text/plain even with charset parameter", () => {
+    const payload = {
+      mimeType: "text/plain; charset=utf-8",
+      body: { data: b64("Charset-tagged body") },
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "Charset-tagged body",
+      html: "",
+    });
+  });
+
+  it("matches text/html with charset parameter", () => {
+    const payload = {
+      mimeType: "text/html; charset=ISO-8859-1",
+      body: { data: b64("<p>Charset-tagged html</p>") },
+    };
+    expect(collectPayloadBodies(payload)).toEqual({
+      plain: "",
+      html: "<p>Charset-tagged html</p>",
+    });
+  });
+
+  it("caps recursion depth (pathological deeply-nested payload)", () => {
+    // Build a part nested 25 levels deep with text at the leaf. Past depth 10
+    // the walker should bail rather than blow the stack or chew CPU.
+    let leaf: Record<string, unknown> = {
+      mimeType: "text/plain",
+      body: { data: b64("buried treasure") },
+    };
+    for (let i = 0; i < 25; i++) {
+      leaf = { mimeType: "multipart/mixed", parts: [leaf] };
+    }
+    // Should not throw and should not find the leaf body.
+    const result = collectPayloadBodies(leaf);
+    expect(result.plain).toBe("");
+    expect(result.html).toBe("");
+  });
+
+  it("still reaches a leaf within the depth cap (sanity)", () => {
+    // 5 levels of nesting — well under the cap, body should be found.
+    let leaf: Record<string, unknown> = {
+      mimeType: "text/plain",
+      body: { data: b64("found me") },
+    };
+    for (let i = 0; i < 5; i++) {
+      leaf = { mimeType: "multipart/mixed", parts: [leaf] };
+    }
+    expect(collectPayloadBodies(leaf).plain).toBe("found me");
+  });
+});
+
+describe("readPayloadHeader", () => {
+  it("returns empty string when payload is missing or shaped wrong", () => {
+    expect(readPayloadHeader(null, "From")).toBe("");
+    expect(readPayloadHeader(undefined, "From")).toBe("");
+    expect(readPayloadHeader({}, "From")).toBe("");
+    expect(readPayloadHeader({ headers: "not-an-array" }, "From")).toBe("");
+  });
+
+  it("reads a header value (case-insensitive on name)", () => {
+    const payload = {
+      headers: [
+        { name: "From", value: "Bob <bob@example.com>" },
+        { name: "To", value: "josh@example.com" },
+        { name: "Subject", value: "Hi" },
+      ],
+    };
+    expect(readPayloadHeader(payload, "From")).toBe("Bob <bob@example.com>");
+    expect(readPayloadHeader(payload, "from")).toBe("Bob <bob@example.com>");
+    expect(readPayloadHeader(payload, "TO")).toBe("josh@example.com");
+    expect(readPayloadHeader(payload, "Subject")).toBe("Hi");
+  });
+
+  it("returns empty string when header is absent", () => {
+    const payload = { headers: [{ name: "From", value: "x@y.test" }] };
+    expect(readPayloadHeader(payload, "Cc")).toBe("");
   });
 });
 
@@ -554,6 +690,39 @@ describe("gmail_read handler — From/To rendering", () => {
     expect(result.content).toContain("To: josh@example.com");
   });
 
+  it("falls back to payload.headers[] when top-level header fields are missing", async () => {
+    // Pure Gmail API payload shape: From/To/Subject/Date live only inside
+    // payload.headers[]. The `gws` CLI used to flatten these onto the top
+    // level; if it stops, gmail_read must still render them.
+    const b64 = (s: string) =>
+      Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+    const { provider } = stubProvider([
+      JSON.stringify({
+        id: "abc",
+        payload: {
+          headers: [
+            { name: "From", value: "Tyler <tyler@example.com>" },
+            { name: "To", value: "josh@example.com" },
+            { name: "Cc", value: "coach@example.com" },
+            { name: "Subject", value: "Saturday game" },
+            { name: "Date", value: "Mon, 13 May 2026 10:00:00 -0700" },
+          ],
+          mimeType: "text/plain",
+          body: { data: b64("See you at 9am.") },
+        },
+      }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_read", { id: "abc" });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("From: Tyler <tyler@example.com>");
+    expect(result.content).toContain("To: josh@example.com");
+    expect(result.content).toContain("Cc: coach@example.com");
+    expect(result.content).toContain("Subject: Saturday game");
+    expect(result.content).toContain("Date: Mon, 13 May 2026 10:00:00 -0700");
+    expect(result.content).toContain("See you at 9am.");
+  });
+
   it("reads body from Gmail API native payload.parts shape", async () => {
     const b64 = (s: string) =>
       Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
@@ -674,5 +843,107 @@ describe("gmail_read handler — re-fetch fallback", () => {
     expect(result.is_error).toBeFalsy();
     expect(result.content).toContain("(empty — could not retrieve message body)");
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("gmail_reply handler — defensive coercion of original message", () => {
+  function stubProvider(
+    responses: Array<string | (() => string)>,
+  ): { provider: GoogleCalendarProvider; calls: string[][] } {
+    const calls: string[][] = [];
+    let i = 0;
+    const provider = {
+      gws: vi.fn(async (_member: string, args: string[]) => {
+        calls.push(args);
+        const r = responses[i++];
+        if (typeof r === "function") return r();
+        if (r === undefined) throw new Error("no more stub responses");
+        return r;
+      }),
+    } as unknown as GoogleCalendarProvider;
+    return { provider, calls };
+  }
+
+  it("reads object-shaped From through formatAddress, not raw interpolation", async () => {
+    const { provider, calls } = stubProvider([
+      // First call: read original
+      JSON.stringify({
+        from: { name: "Tyler Coach", email: "tyler@example.com" },
+        subject: "Saturday game",
+        threadId: "thread-xyz",
+      }),
+      // Second call: create draft
+      JSON.stringify({ id: "draft-1" }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_reply", {
+      messageId: "abc123",
+      body: "Sounds good, see you at 9.",
+    });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("Reply draft created");
+    // The raw MIME the draft was built from must use the formatted address
+    // and the Re: subject — never `[object Object]` or `undefined`.
+    // The --upload temp file path is in args[7] of the create call; we can't
+    // read it back, but we can verify the create call happened and the read
+    // call happened in the right order.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("+read");
+    expect(calls[1]).toContain("create");
+  });
+
+  it("falls back to payload.headers[] when From/Subject not flattened", async () => {
+    const { provider, calls } = stubProvider([
+      JSON.stringify({
+        threadId: "thread-pure",
+        payload: {
+          headers: [
+            { name: "From", value: "Tyler <tyler@example.com>" },
+            { name: "Subject", value: "Re: Saturday game" },
+          ],
+        },
+      }),
+      JSON.stringify({ id: "draft-2" }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_reply", {
+      messageId: "abc123",
+      body: "Confirmed.",
+    });
+    expect(result.is_error).toBeFalsy();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not crash when subject is missing entirely (no `.startsWith` on undefined)", async () => {
+    const { provider } = stubProvider([
+      JSON.stringify({
+        from: { email: "x@y.test" },
+        // subject intentionally absent
+      }),
+      JSON.stringify({ id: "draft-3" }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_reply", {
+      messageId: "abc",
+      body: "ok",
+    });
+    expect(result.is_error).toBeFalsy();
+    expect(result.content).toContain("Reply draft created");
+  });
+
+  it("does not crash when subject is non-string (e.g. null)", async () => {
+    const { provider } = stubProvider([
+      JSON.stringify({
+        from: { email: "x@y.test" },
+        subject: null,
+      }),
+      JSON.stringify({ id: "draft-4" }),
+    ]);
+    const handler = createGmailToolHandler(provider, "josh");
+    const result = await handler("gmail_reply", {
+      messageId: "abc",
+      body: "ok",
+    });
+    expect(result.is_error).toBeFalsy();
   });
 });
