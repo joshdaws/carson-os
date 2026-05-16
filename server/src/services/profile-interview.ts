@@ -18,7 +18,7 @@ import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewPhase } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
-import { slugifyName, writeUserMd } from "./identity-files.js";
+import { getMemberSlug, writeUserMd } from "./identity-files.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -243,25 +243,38 @@ export class ProfileInterviewEngine {
     // If profile document was generated, save it to the member record
     // and mirror to USER.md on disk so the file is editable as a
     // first-class artifact (the rest of the codebase reads disk-first).
+    //
+    // Disk-first ordering: write USER.md before the DB column. If disk
+    // write fails we throw and leave the interview state mid-flight (so
+    // the user can retry) rather than silently splitting state between
+    // disk and DB. Mirrors the route-level dual-write contract.
     if (profileDocument) {
+      let resolvedSlug: string | null = null;
+      if (this.dataDir) {
+        const slug = getMemberSlug(member);
+        try {
+          writeUserMd(this.dataDir, slug, profileDocument);
+          resolvedSlug = slug;
+        } catch (err) {
+          console.error(
+            `[profile-interview] USER.md write failed for ${member.name}; aborting commit:`,
+            err,
+          );
+          throw err;
+        }
+      }
+
+      const slugBackfill =
+        resolvedSlug && !member.profileSlug ? { profileSlug: resolvedSlug } : {};
+
       await this.db
         .update(familyMembers)
         .set({
           profileContent: profileDocument,
           profileUpdatedAt: new Date(),
+          ...slugBackfill,
         })
         .where(eq(familyMembers.id, memberId));
-
-      if (this.dataDir) {
-        try {
-          writeUserMd(this.dataDir, slugifyName(member.name), profileDocument);
-        } catch (err) {
-          console.warn(
-            `[profile-interview] USER.md write failed for ${member.name}:`,
-            err,
-          );
-        }
-      }
     }
 
     // Clean the response for the user

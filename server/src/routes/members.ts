@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAssignments } from "@carsonos/db";
 import type { MemberRole } from "@carsonos/shared";
+import { slugifyName } from "../services/identity-files.js";
 
 export function createMemberRoutes(db: Db): Router {
   const router = Router();
@@ -42,6 +43,11 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
+    // Capture profileSlug at creation time so identity-file paths
+    // (USER.md etc.) stay anchored across future renames. Empty slugs
+    // (e.g. all-emoji names) defer to lazy backfill on first write.
+    const profileSlug = slugifyName(name) || null;
+
     try {
       const [member] = await db
         .insert(familyMembers)
@@ -54,6 +60,7 @@ export function createMemberRoutes(db: Db): Router {
           signalNumber: signalNumber ?? null,
           signalUuid: signalUuid ?? null,
           memoryDir: memoryDir ?? null,
+          profileSlug,
         })
         .returning();
 

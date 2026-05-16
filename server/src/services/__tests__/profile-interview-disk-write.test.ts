@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -116,6 +117,60 @@ describe("ProfileInterviewEngine writes USER.md on completion", () => {
     const result = await engine.processMessage(memberId, "msg");
 
     expect(result.profileDocument).toContain("# About Josh");
+
+    // The DB column is still written even when the engine has no dataDir
+    // — that's the actual contract this test verifies. (Previously this
+    // test only asserted existsSync against tmpDataDir, which the engine
+    // wasn't given, so it passed trivially.)
+    const member = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+    expect(member?.profileContent).toContain("# About Josh");
+
+    // Sanity: no USER.md was written anywhere we'd expect, since dataDir was null.
     expect(existsSync(userMdPath(tmpDataDir, "josh"))).toBe(false);
+  });
+
+  it("survives a member rename via stable profile_slug column", async () => {
+    const adapter = new StubAdapter();
+    adapter.responses.push(
+      "[PHASE: review_complete][PROFILE_START]# About Josh\nfirst-write[PROFILE_END]",
+    );
+
+    const engine = new ProfileInterviewEngine({
+      db,
+      adapter,
+      dataDir: tmpDataDir,
+    });
+
+    // First save lazy-backfills profile_slug = "josh"
+    await engine.processMessage(memberId, "first message");
+    expect(existsSync(userMdPath(tmpDataDir, "josh"))).toBe(true);
+    const m1 = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+    expect(m1?.profileSlug).toBe("josh");
+
+    // Rename the member ("Josh" → "Joshua")
+    await db
+      .update(familyMembers)
+      .set({ name: "Joshua" })
+      .where(eq(familyMembers.id, memberId));
+
+    // Second save: must keep writing to the ORIGINAL slug, not derive a
+    // new one from the new name. Otherwise USER.md gets orphaned and
+    // disk-first reads serve stale-or-empty content.
+    adapter.responses.push(
+      "[PHASE: review_complete][PROFILE_START]# About Joshua\nsecond-write[PROFILE_END]",
+    );
+    await engine.processMessage(memberId, "second message");
+
+    const stableFile = readFileSync(userMdPath(tmpDataDir, "josh"), "utf-8");
+    expect(stableFile).toContain("second-write");
+    expect(existsSync(userMdPath(tmpDataDir, "joshua"))).toBe(false);
   });
 });

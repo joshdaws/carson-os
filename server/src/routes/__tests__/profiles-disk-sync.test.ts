@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -105,6 +106,58 @@ describe("PUT /:id/profile mirrors to USER.md", () => {
     });
     expect(res.status).toBe(200);
     expect(existsSync(userMdPath(tmpDataDir, "josh"))).toBe(false);
+  });
+
+  it("returns 500 and leaves DB unchanged when disk write fails", async () => {
+    // Point dataDir at a path under a regular FILE (not a directory)
+    // so mkdirSync inside writeUserMd throws ENOTDIR. Reproduces the
+    // dual-write-rollback contract: disk failure must NOT silently
+    // succeed at the DB layer.
+    const bogusFile = join(tmpDataDir, "bogus-file");
+    writeFileSync(bogusFile, "i am a file, not a directory");
+
+    await startServer(bogusFile);
+    const res = await fetch(`${baseUrl}/api/members/${memberId}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# should not persist" }),
+    });
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toMatch(/disk/i);
+
+    // DB column is unchanged
+    const member = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+    expect(member?.profileContent).toBe("# About Josh\n\nFrom DB column.");
+  });
+
+  it("backfills profile_slug on first successful disk write", async () => {
+    // Member was created in beforeEach without an explicit profileSlug,
+    // simulating an existing (pre-migration) row.
+    await db
+      .update(familyMembers)
+      .set({ profileSlug: null })
+      .where(eq(familyMembers.id, memberId));
+
+    await startServer(tmpDataDir);
+    const res = await fetch(`${baseUrl}/api/members/${memberId}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# fresh" }),
+    });
+    expect(res.status).toBe(200);
+
+    const member = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+    expect(member?.profileSlug).toBe("josh");
   });
 });
 

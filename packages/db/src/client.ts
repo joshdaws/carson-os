@@ -57,6 +57,7 @@ CREATE TABLE family_members (
   signal_uuid TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
+  profile_slug TEXT,
   memory_dir TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -561,6 +562,14 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // family_members: add memoryDir for per-member memory directory override
     if (!memberCols.has("memory_dir")) {
       sqlite.prepare("ALTER TABLE family_members ADD COLUMN memory_dir TEXT").run();
+      upgraded = true;
+    }
+
+    // family_members: stable filesystem slug for identity files (USER.md).
+    // Captured at create time, survives renames. Backward-compatible: falls
+    // back to slugifyName(name) and lazy-backfills on next write.
+    if (!memberCols.has("profile_slug")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN profile_slug TEXT").run();
       upgraded = true;
     }
 

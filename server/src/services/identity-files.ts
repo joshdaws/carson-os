@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -92,15 +93,44 @@ export function loadPersonalityMd(
   }
 }
 
-/** Write USER.md, creating parent dirs as needed. */
+/**
+ * Resolve the on-disk slug for a member's identity files.
+ * Uses the stable `profileSlug` column when set; falls back to
+ * `slugifyName(name)` for legacy rows. Callers that write should also
+ * lazily backfill `profile_slug` via `backfillMemberSlug` so the slug
+ * sticks across future renames.
+ */
+export function getMemberSlug(member: {
+  name: string;
+  profileSlug?: string | null;
+}): string {
+  const stable = member.profileSlug?.trim();
+  if (stable) return stable;
+  const fallback = slugifyName(member.name);
+  if (!fallback) {
+    throw new Error(
+      `getMemberSlug: cannot derive slug from name "${member.name}" (collapses to empty)`,
+    );
+  }
+  return fallback;
+}
+
+/** Write USER.md atomically (tempfile + rename) so a crash mid-write
+ *  can't truncate the canonical file. */
 export function writeUserMd(
   dataDir: string,
   memberSlug: string,
   content: string,
 ): void {
-  const path = userMdPath(dataDir, memberSlug);
-  mkdirSync(join(dataDir, "members", memberSlug), { recursive: true });
-  writeFileSync(path, content, "utf-8");
+  if (!memberSlug) {
+    throw new Error("writeUserMd: memberSlug must be non-empty");
+  }
+  const dir = join(dataDir, "members", memberSlug);
+  mkdirSync(dir, { recursive: true });
+  const finalPath = userMdPath(dataDir, memberSlug);
+  const tmpPath = `${finalPath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, content, "utf-8");
+  renameSync(tmpPath, finalPath);
 }
 
 /** Write PERSONALITY.md, creating parent dirs as needed. */

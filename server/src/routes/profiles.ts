@@ -14,8 +14,8 @@ import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewEngine } from "../services/profile-interview.js";
 import {
+  getMemberSlug,
   loadUserMd,
-  slugifyName,
   writeUserMd,
 } from "../services/identity-files.js";
 
@@ -58,7 +58,7 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
     // to the DB column when the file doesn't exist (older members or
     // pre-migration state).
     const diskContent = dataDir
-      ? loadUserMd(dataDir, slugifyName(member.name))
+      ? loadUserMd(dataDir, getMemberSlug(member))
       : null;
     const profileContent = diskContent ?? member.profileContent ?? null;
 
@@ -98,27 +98,44 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
       return;
     }
 
+    // Disk-first ordering: write USER.md before the DB column. If disk
+    // fails we return 500 and leave the DB untouched, so we never end up
+    // with a "saved" toast while the canonical (disk) source is stale.
+    // The DB column is the mirror; it's safe to update only after disk wins.
+    let resolvedSlug: string | null = null;
+    if (dataDir) {
+      try {
+        resolvedSlug = getMemberSlug(member);
+        writeUserMd(dataDir, resolvedSlug, profileContent);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[profiles] USER.md write failed for ${member.name}; aborting save:`,
+          err,
+        );
+        res.status(500).json({
+          error: "Failed to write profile to disk; nothing was saved.",
+          detail: msg,
+        });
+        return;
+      }
+    }
+
+    // Lazy-backfill profile_slug so this member's disk path becomes stable
+    // across future renames. Only set when we actually wrote to disk and
+    // the column is currently null.
+    const slugBackfill =
+      resolvedSlug && !member.profileSlug ? { profileSlug: resolvedSlug } : {};
+
     const [updated] = await db
       .update(familyMembers)
       .set({
         profileContent,
         profileUpdatedAt: new Date(),
+        ...slugBackfill,
       })
       .where(eq(familyMembers.id, memberId))
       .returning();
-
-    // Mirror to USER.md so disk and DB stay in sync. The disk file is
-    // what the rest of the system reads from in v0.5+.
-    if (dataDir) {
-      try {
-        writeUserMd(dataDir, slugifyName(member.name), profileContent);
-      } catch (err) {
-        console.warn(
-          `[profiles] USER.md write failed for ${member.name}:`,
-          err,
-        );
-      }
-    }
 
     res.json({
       memberId: updated.id,
