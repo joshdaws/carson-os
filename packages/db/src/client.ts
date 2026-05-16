@@ -57,6 +57,7 @@ CREATE TABLE family_members (
   signal_uuid TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
+  profile_slug TEXT,
   memory_dir TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -561,6 +562,36 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // family_members: add memoryDir for per-member memory directory override
     if (!memberCols.has("memory_dir")) {
       sqlite.prepare("ALTER TABLE family_members ADD COLUMN memory_dir TEXT").run();
+      upgraded = true;
+    }
+
+    // family_members: stable filesystem slug for identity files (USER.md).
+    // Captured at create time, survives renames. Existing rows are
+    // backfilled here from current name so a rename between this migration
+    // and the next profile write doesn't orphan the (already-migrated)
+    // USER.md file. Empty-slug names (emoji-only etc.) fall back to an
+    // id-derived slug so every member has a non-null slug post-migration.
+    if (!memberCols.has("profile_slug")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN profile_slug TEXT").run();
+      // Inline slugify — same rule as server/src/services/identity-files.ts.
+      // Duplicated here to keep the db package boundary clean (no imports
+      // from server/).
+      const slugify = (name: string) =>
+        name
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/[^a-z0-9-]/g, "")
+          .replace(/^-+|-+$/g, "");
+      const rows = sqlite
+        .prepare("SELECT id, name FROM family_members WHERE profile_slug IS NULL")
+        .all() as Array<{ id: string; name: string }>;
+      const updateStmt = sqlite.prepare(
+        "UPDATE family_members SET profile_slug = ? WHERE id = ?",
+      );
+      for (const row of rows) {
+        const slug = slugify(row.name) || `m-${row.id.replace(/-/g, "").slice(0, 12)}`;
+        updateStmt.run(slug, row.id);
+      }
       upgraded = true;
     }
 

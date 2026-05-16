@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAssignments } from "@carsonos/db";
 import type { MemberRole } from "@carsonos/shared";
+import { slugifyName } from "../services/identity-files.js";
 
 export function createMemberRoutes(db: Db): Router {
   const router = Router();
@@ -42,10 +43,20 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
+    // Capture profileSlug at creation time so identity-file paths
+    // (USER.md etc.) stay anchored across future renames. We pre-generate
+    // the id so the slug can fall back to an id-derived path for names
+    // that don't slugify (emoji-only, all-stripped, etc.) — same rule as
+    // getMemberSlug() and the migration backfill in db/client.ts.
+    const memberId = crypto.randomUUID();
+    const profileSlug =
+      slugifyName(name) || `m-${memberId.replace(/-/g, "").slice(0, 12)}`;
+
     try {
       const [member] = await db
         .insert(familyMembers)
         .values({
+          id: memberId,
           householdId,
           name,
           role,
@@ -54,6 +65,7 @@ export function createMemberRoutes(db: Db): Router {
           signalNumber: signalNumber ?? null,
           signalUuid: signalUuid ?? null,
           memoryDir: memoryDir ?? null,
+          profileSlug,
         })
         .returning();
 

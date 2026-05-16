@@ -18,12 +18,17 @@ import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewPhase } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
+import { getMemberSlug, writeUserMd } from "./identity-files.js";
 
 // -- Types -----------------------------------------------------------
 
 export interface ProfileInterviewConfig {
   db: Db;
   adapter: Adapter;
+  /** Data directory root. When set, completed profiles are mirrored to
+   * `{dataDir}/members/{slug}/USER.md` so the file is the editable
+   * source of truth and the DB column stays in sync. Tests pass null. */
+  dataDir?: string | null;
 }
 
 interface InterviewMessage {
@@ -107,10 +112,12 @@ When you reach review_complete, output the COMPLETED profile between these marke
 export class ProfileInterviewEngine {
   private db: Db;
   private adapter: Adapter;
+  private dataDir: string | null;
 
   constructor(config: ProfileInterviewConfig) {
     this.db = config.db;
     this.adapter = config.adapter;
+    this.dataDir = config.dataDir ?? null;
   }
 
   async getOrCreateState(memberId: string): Promise<ProfileInterviewStateRow> {
@@ -223,7 +230,28 @@ export class ProfileInterviewEngine {
     // Map to ProfileInterviewPhase
     const mappedPhase = this.mapPhase(phase);
 
-    // Update interview state
+    // Disk-first ordering: when a completed profile document is in this
+    // response, write USER.md BEFORE advancing the interview state DB
+    // row. If the disk write fails we throw early, leaving the state at
+    // the previous phase + transcript so the user can retry without
+    // skipping past review_complete with no persisted profile.
+    let resolvedSlug: string | null = null;
+    if (profileDocument && this.dataDir) {
+      const slug = getMemberSlug(member);
+      try {
+        writeUserMd(this.dataDir, slug, profileDocument);
+        resolvedSlug = slug;
+      } catch (err) {
+        console.error(
+          `[profile-interview] USER.md write failed for ${member.name}; aborting commit:`,
+          err,
+        );
+        throw err;
+      }
+    }
+
+    // Now safe to advance interview state — disk has the truth (or we
+    // never needed to write disk in this turn).
     await this.db
       .update(profileInterviewState)
       .set({
@@ -233,13 +261,16 @@ export class ProfileInterviewEngine {
       })
       .where(eq(profileInterviewState.id, state.id));
 
-    // If profile document was generated, save it to the member record
     if (profileDocument) {
+      const slugBackfill =
+        resolvedSlug && !member.profileSlug ? { profileSlug: resolvedSlug } : {};
+
       await this.db
         .update(familyMembers)
         .set({
           profileContent: profileDocument,
           profileUpdatedAt: new Date(),
+          ...slugBackfill,
         })
         .where(eq(familyMembers.id, memberId));
     }

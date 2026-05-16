@@ -298,6 +298,7 @@ async function main() {
   const profileInterviewEngine = new ProfileInterviewEngine({
     db,
     adapter,
+    dataDir: config.dataDir,
   });
   console.log("[engine] Profile interview engine ready");
 
