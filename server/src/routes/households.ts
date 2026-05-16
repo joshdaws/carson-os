@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { households, familyMembers, staffAgents, constitutions, staffAssignments } from "@carsonos/db";
 import {
+  getMemberSlug,
   hasIdentityContent,
   loadPersonalityMd,
   loadUserMd,
@@ -58,7 +59,7 @@ export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
     // content doesn't leave the onboarding checklist falsely incomplete.
     const membersWithProfiles = members.filter((m) =>
       hasIdentityContent(
-        dataDir ? loadUserMd(dataDir, slugifyName(m.name)) : null,
+        dataDir ? loadUserMd(dataDir, getMemberSlug(m)) : null,
         m.profileContent,
       ),
     );

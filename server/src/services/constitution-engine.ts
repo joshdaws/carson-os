@@ -45,7 +45,12 @@ import {
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
 import { readUpdateAvailable } from "./system-update-check.js";
-import { loadUserMd, loadPersonalityMd, slugifyName } from "./identity-files.js";
+import {
+  getMemberSlug,
+  loadPersonalityMd,
+  loadUserMd,
+  slugifyName,
+} from "./identity-files.js";
 import { activityLog, toolSecrets } from "@carsonos/db";
 import { decryptSecret, redactSecrets } from "./custom-tools/secrets.js";
 import {
@@ -590,7 +595,11 @@ export class ConstitutionEngine {
     // hasProfile must consider both the disk-based USER.md (v0.5+ preference)
     // and the legacy DB column. Without the disk check, agents whose profile
     // lives only on disk would incorrectly trigger first-contact onboarding.
-    const memberSlugForProfile = slugifyName(member.name);
+    //
+    // Use getMemberSlug (not slugifyName) so renamed members still read
+    // their stable USER.md path — otherwise the agent looks at the new-name
+    // path, finds nothing, and falls back to the (stale) DB column.
+    const memberSlugForProfile = getMemberSlug(member);
     const userMdForProfile = this.dataDir
       ? loadUserMd(this.dataDir, memberSlugForProfile)
       : null;

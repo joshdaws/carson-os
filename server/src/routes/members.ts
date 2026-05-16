@@ -44,14 +44,19 @@ export function createMemberRoutes(db: Db): Router {
     }
 
     // Capture profileSlug at creation time so identity-file paths
-    // (USER.md etc.) stay anchored across future renames. Empty slugs
-    // (e.g. all-emoji names) defer to lazy backfill on first write.
-    const profileSlug = slugifyName(name) || null;
+    // (USER.md etc.) stay anchored across future renames. We pre-generate
+    // the id so the slug can fall back to an id-derived path for names
+    // that don't slugify (emoji-only, all-stripped, etc.) — same rule as
+    // getMemberSlug() and the migration backfill in db/client.ts.
+    const memberId = crypto.randomUUID();
+    const profileSlug =
+      slugifyName(name) || `m-${memberId.replace(/-/g, "").slice(0, 12)}`;
 
     try {
       const [member] = await db
         .insert(familyMembers)
         .values({
+          id: memberId,
           householdId,
           name,
           role,

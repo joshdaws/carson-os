@@ -96,23 +96,25 @@ export function loadPersonalityMd(
 /**
  * Resolve the on-disk slug for a member's identity files.
  * Uses the stable `profileSlug` column when set; falls back to
- * `slugifyName(name)` for legacy rows. Callers that write should also
- * lazily backfill `profile_slug` via `backfillMemberSlug` so the slug
- * sticks across future renames.
+ * `slugifyName(name)`, and finally to an id-derived slug for names
+ * whose slugify collapses to empty (emoji-only, all-stripped, etc.).
+ * The id-derived branch is deterministic so the same member always
+ * maps to the same path. Callers that write should lazily backfill
+ * `profile_slug` so the slug sticks across future renames.
  */
 export function getMemberSlug(member: {
+  id: string;
   name: string;
   profileSlug?: string | null;
 }): string {
   const stable = member.profileSlug?.trim();
   if (stable) return stable;
-  const fallback = slugifyName(member.name);
-  if (!fallback) {
-    throw new Error(
-      `getMemberSlug: cannot derive slug from name "${member.name}" (collapses to empty)`,
-    );
-  }
-  return fallback;
+  const fromName = slugifyName(member.name);
+  if (fromName) return fromName;
+  // Name doesn't slugify (all-emoji, only stripped chars, etc.) —
+  // fall back to a stable id-derived slug. Same rule as the migration
+  // backfill in packages/db/src/client.ts so paths stay consistent.
+  return `m-${member.id.replace(/-/g, "").slice(0, 12)}`;
 }
 
 /** Write USER.md atomically (tempfile + rename) so a crash mid-write

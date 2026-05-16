@@ -230,7 +230,28 @@ export class ProfileInterviewEngine {
     // Map to ProfileInterviewPhase
     const mappedPhase = this.mapPhase(phase);
 
-    // Update interview state
+    // Disk-first ordering: when a completed profile document is in this
+    // response, write USER.md BEFORE advancing the interview state DB
+    // row. If the disk write fails we throw early, leaving the state at
+    // the previous phase + transcript so the user can retry without
+    // skipping past review_complete with no persisted profile.
+    let resolvedSlug: string | null = null;
+    if (profileDocument && this.dataDir) {
+      const slug = getMemberSlug(member);
+      try {
+        writeUserMd(this.dataDir, slug, profileDocument);
+        resolvedSlug = slug;
+      } catch (err) {
+        console.error(
+          `[profile-interview] USER.md write failed for ${member.name}; aborting commit:`,
+          err,
+        );
+        throw err;
+      }
+    }
+
+    // Now safe to advance interview state — disk has the truth (or we
+    // never needed to write disk in this turn).
     await this.db
       .update(profileInterviewState)
       .set({
@@ -240,30 +261,7 @@ export class ProfileInterviewEngine {
       })
       .where(eq(profileInterviewState.id, state.id));
 
-    // If profile document was generated, save it to the member record
-    // and mirror to USER.md on disk so the file is editable as a
-    // first-class artifact (the rest of the codebase reads disk-first).
-    //
-    // Disk-first ordering: write USER.md before the DB column. If disk
-    // write fails we throw and leave the interview state mid-flight (so
-    // the user can retry) rather than silently splitting state between
-    // disk and DB. Mirrors the route-level dual-write contract.
     if (profileDocument) {
-      let resolvedSlug: string | null = null;
-      if (this.dataDir) {
-        const slug = getMemberSlug(member);
-        try {
-          writeUserMd(this.dataDir, slug, profileDocument);
-          resolvedSlug = slug;
-        } catch (err) {
-          console.error(
-            `[profile-interview] USER.md write failed for ${member.name}; aborting commit:`,
-            err,
-          );
-          throw err;
-        }
-      }
-
       const slugBackfill =
         resolvedSlug && !member.profileSlug ? { profileSlug: resolvedSlug } : {};
 
