@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { InterviewOverlay } from "@/components/InterviewOverlay";
+import { ProfileEditModal } from "@/components/ProfileEditModal";
 import type { ChatMessage } from "@/components/ChatBubble";
 import { useToast } from "@/components/Toast";
 
@@ -108,6 +109,7 @@ const TRUST_LEVEL_OPTIONS: { value: TrustLevel; label: string; description: stri
 
 const MODEL_OPTIONS = [
   { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { value: "claude-opus-4-7", label: "Opus 4.7" },
   { value: "claude-opus-4-6", label: "Opus 4.6" },
   { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
@@ -482,11 +484,13 @@ function MemberCard({
   householdId,
   staffAssignments,
   onStartInterview,
+  onViewProfile,
 }: {
   member: HouseholdMember;
   householdId: string;
   staffAssignments: { staffName: string; staffRole: string }[];
   onStartInterview: (memberId: string) => void;
+  onViewProfile: (memberId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -544,10 +548,25 @@ function MemberCard({
             </span>
           )}
         </div>
-        {/* Profile CTA — a single button that tells you the state. If the
-            profile is built, a check glyph + "Re-interview" affords updates.
-            If empty, a muted "+" reads as a create action. */}
-        <div className="flex justify-end pt-2 border-t" style={{ borderColor: "#eee8dd" }}>
+        {/* Profile CTAs — when no profile, a single "Build profile" CTA.
+            When a profile exists, "View / Edit" opens the USER.md editor
+            and "Re-interview" restarts the guided flow. */}
+        <div
+          className="flex justify-end gap-1 pt-2 border-t"
+          style={{ borderColor: "#eee8dd" }}
+        >
+          {hasProfile && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[11px]"
+              style={{ color: "#1a1f2e" }}
+              onClick={() => onViewProfile(member.id)}
+            >
+              <Pencil className="h-3 w-3 mr-1" />
+              View / Edit
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -959,6 +978,7 @@ export function HouseholdPage() {
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [interviewMemberId, setInterviewMemberId] = useState<string | null>(null);
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [viewProfileMemberId, setViewProfileMemberId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: householdData, isLoading: loadingHousehold } = useQuery<HouseholdData>({
@@ -1119,6 +1139,7 @@ export function HouseholdPage() {
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
                         onStartInterview={handleStartInterview}
+                        onViewProfile={setViewProfileMemberId}
                       />
                     ))}
                   </div>
@@ -1144,6 +1165,7 @@ export function HouseholdPage() {
                         householdId={householdId}
                         staffAssignments={getStaffForMember(m.id)}
                         onStartInterview={handleStartInterview}
+                        onViewProfile={setViewProfileMemberId}
                       />
                     ))}
                   </div>
@@ -1159,6 +1181,19 @@ export function HouseholdPage() {
           );
         })()}
       </div>
+
+      {/* Profile View / Edit Modal — opens the raw USER.md for in-place
+          editing. Saves write through the PUT endpoint which mirrors back
+          to disk. */}
+      <ProfileEditModal
+        memberId={viewProfileMemberId}
+        memberName={
+          viewProfileMemberId
+            ? (members.find((m) => m.id === viewProfileMemberId)?.name ?? "Member")
+            : ""
+        }
+        onClose={() => setViewProfileMemberId(null)}
+      />
 
       {/* Profile Interview Overlay */}
       <InterviewOverlay

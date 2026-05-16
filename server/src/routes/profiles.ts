@@ -2,6 +2,10 @@
  * Profile routes -- per-member profile CRUD + interview wizard.
  *
  * Mounted at /api/members/:memberId/profile
+ *
+ * Reads are disk-first (USER.md) with the DB column as a fallback; writes
+ * update both. The DB column existed before v0.5 and is kept in sync so
+ * older code paths and the boot migration continue to work.
  */
 
 import { Router } from "express";
@@ -9,14 +13,23 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewEngine } from "../services/profile-interview.js";
+import {
+  loadUserMd,
+  slugifyName,
+  writeUserMd,
+} from "../services/identity-files.js";
 
 export interface ProfileRouteDeps {
   db: Db;
   profileInterviewEngine: ProfileInterviewEngine;
+  /** Data directory root. When set, GET reads USER.md first and PUT
+   * mirrors the saved content to USER.md. Null disables disk I/O. */
+  dataDir?: string | null;
 }
 
 export function createProfileRoutes(deps: ProfileRouteDeps): Router {
   const { db, profileInterviewEngine } = deps;
+  const dataDir = deps.dataDir ?? null;
   const router = Router();
 
   // GET /:memberId/profile -- get profile + interview state
@@ -41,10 +54,18 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
       .where(eq(profileInterviewState.memberId, memberId))
       .limit(1);
 
+    // Disk-first read: USER.md is the v0.5+ source of truth. Fall back
+    // to the DB column when the file doesn't exist (older members or
+    // pre-migration state).
+    const diskContent = dataDir
+      ? loadUserMd(dataDir, slugifyName(member.name))
+      : null;
+    const profileContent = diskContent ?? member.profileContent ?? null;
+
     res.json({
       memberId: member.id,
       memberName: member.name,
-      profileContent: member.profileContent ?? null,
+      profileContent,
       profileUpdatedAt: member.profileUpdatedAt ?? null,
       interview: interviewState
         ? {
@@ -85,6 +106,19 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
       })
       .where(eq(familyMembers.id, memberId))
       .returning();
+
+    // Mirror to USER.md so disk and DB stay in sync. The disk file is
+    // what the rest of the system reads from in v0.5+.
+    if (dataDir) {
+      try {
+        writeUserMd(dataDir, slugifyName(member.name), profileContent);
+      } catch (err) {
+        console.warn(
+          `[profiles] USER.md write failed for ${member.name}:`,
+          err,
+        );
+      }
+    }
 
     res.json({
       memberId: updated.id,
