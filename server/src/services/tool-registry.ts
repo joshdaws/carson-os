@@ -796,6 +796,7 @@ export class ToolRegistry {
         const execCtx = {
           db: ctx.db,
           householdId: ctx.householdId,
+          agentId: ctx.agentId,
           memberId: ctx.memberId,
           memberName: ctx.memberName,
           memoryProvider: ctx.memoryProvider,
