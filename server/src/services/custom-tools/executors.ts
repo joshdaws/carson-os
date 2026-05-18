@@ -250,14 +250,21 @@ async function loadAgentBotToken(
   agentId?: string,
 ): Promise<string | null> {
   if (agentId) {
+    // "Send-as-self or fail": if the caller has an agent identity, we must
+    // resolve THAT agent's bot token. Falling back to the head butler here
+    // would cause a non-head agent (e.g. Django, Grant's agent) to send as
+    // Carson, which is wrong and breaks inline-button routing. If the agent
+    // row exists but has no token, return null and let the handler's
+    // fallback chain (e.g. ctx.getSecret('telegram_bot_token')) decide.
     const [row] = await db
       .select({ token: staffAgents.telegramBotToken })
       .from(staffAgents)
       .where(and(eq(staffAgents.id, agentId), eq(staffAgents.householdId, householdId)))
       .limit(1);
-    if (row?.token) return row.token;
+    return row?.token ?? null;
   }
-  // Fallback: the household's head butler usually has the canonical bot token.
+  // No agent identity on the caller — fall back to the household's head
+  // butler, which usually has the canonical bot token.
   const [hb] = await db
     .select({ token: staffAgents.telegramBotToken })
     .from(staffAgents)
