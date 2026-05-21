@@ -583,13 +583,42 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
           .replace(/[^a-z0-9-]/g, "")
           .replace(/^-+|-+$/g, "");
       const rows = sqlite
-        .prepare("SELECT id, name FROM family_members WHERE profile_slug IS NULL")
-        .all() as Array<{ id: string; name: string }>;
+        .prepare(
+          "SELECT id, household_id, name FROM family_members WHERE profile_slug IS NULL",
+        )
+        .all() as Array<{ id: string; household_id: string; name: string }>;
       const updateStmt = sqlite.prepare(
         "UPDATE family_members SET profile_slug = ? WHERE id = ?",
       );
+      // Track slugs already taken per-household so two same-slug names
+      // ("Alex" + "Alex", or "J.J." + "JJ") get disambiguated. Without this
+      // both members write USER.md to the same path and overwrite each other.
+      // Mirrors the in-create dedupe in server/src/routes/members.ts.
+      //
+      // Pre-load slugs that any prior partial backfill (e.g. lazy-backfill
+      // on first write) already set, so newly-backfilled slugs don't collide
+      // with them either.
+      const takenByHousehold = new Map<string, Set<string>>();
+      const preExisting = sqlite
+        .prepare(
+          "SELECT household_id, profile_slug FROM family_members WHERE profile_slug IS NOT NULL",
+        )
+        .all() as Array<{ household_id: string; profile_slug: string }>;
+      for (const r of preExisting) {
+        const taken = takenByHousehold.get(r.household_id) ?? new Set<string>();
+        taken.add(r.profile_slug);
+        takenByHousehold.set(r.household_id, taken);
+      }
       for (const row of rows) {
-        const slug = slugify(row.name) || `m-${row.id.replace(/-/g, "").slice(0, 12)}`;
+        const base =
+          slugify(row.name) || `m-${row.id.replace(/-/g, "").slice(0, 12)}`;
+        const taken = takenByHousehold.get(row.household_id) ?? new Set<string>();
+        let slug = base;
+        if (taken.has(slug)) {
+          slug = `${base}-${row.id.replace(/-/g, "").slice(0, 4)}`;
+        }
+        taken.add(slug);
+        takenByHousehold.set(row.household_id, taken);
         updateStmt.run(slug, row.id);
       }
       upgraded = true;

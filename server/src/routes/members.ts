@@ -48,9 +48,26 @@ export function createMemberRoutes(db: Db): Router {
     // the id so the slug can fall back to an id-derived path for names
     // that don't slugify (emoji-only, all-stripped, etc.) — same rule as
     // getMemberSlug() and the migration backfill in db/client.ts.
+    //
+    // Uniqueness within household: if another member already owns this
+    // slug (e.g. two "Alex" entries, or "J.J." vs "JJ"), append a short
+    // id suffix so each member's USER.md path is distinct. Without this
+    // both members write to the same file and overwrite each other.
     const memberId = crypto.randomUUID();
-    const profileSlug =
+    const idShort = memberId.replace(/-/g, "").slice(0, 4);
+    const baseSlug =
       slugifyName(name) || `m-${memberId.replace(/-/g, "").slice(0, 12)}`;
+    const collision = await db
+      .select({ id: familyMembers.id })
+      .from(familyMembers)
+      .where(
+        and(
+          eq(familyMembers.householdId, householdId),
+          eq(familyMembers.profileSlug, baseSlug),
+        ),
+      )
+      .limit(1);
+    const profileSlug = collision.length > 0 ? `${baseSlug}-${idShort}` : baseSlug;
 
     try {
       const [member] = await db

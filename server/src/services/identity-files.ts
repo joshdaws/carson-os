@@ -162,7 +162,11 @@ export async function migrateIdentityToFiles(
   const members = await db.select().from(familyMembers);
   for (const m of members) {
     if (!m.profileContent || m.profileContent.trim().length === 0) continue;
-    const slug = slugifyName(m.name);
+    // Use getMemberSlug so emoji-only/all-stripped names fall back to the
+    // id-derived slug instead of writeUserMd throwing on empty input.
+    // Also respects any stable profile_slug already backfilled by the
+    // db/client.ts migration so paths stay consistent.
+    const slug = getMemberSlug(m);
     if (existsSync(userMdPath(dataDir, slug))) continue;
     writeUserMd(dataDir, slug, m.profileContent);
     usersWritten++;

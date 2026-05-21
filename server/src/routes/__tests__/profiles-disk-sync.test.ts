@@ -136,6 +136,63 @@ describe("PUT /:id/profile mirrors to USER.md", () => {
     expect(member?.profileContent).toBe("# About Josh\n\nFrom DB column.");
   });
 
+  it("does NOT let same-slug siblings overwrite each other on disk", async () => {
+    // Two members in the same household whose names slugify to "alex".
+    // Without per-household disambiguation they'd share a USER.md path
+    // and saving one would clobber what the other sees as their profile.
+    const [a] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: "h1",
+        name: "Alex",
+        role: "kid",
+        age: 12,
+        profileSlug: "alex",
+      })
+      .returning();
+    // Simulate what members.ts POST would assign: same base slug, but
+    // disambiguated by a short id suffix because "alex" is already taken
+    // in this household.
+    const [b] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: "h1",
+        name: "Alex",
+        role: "kid",
+        age: 9,
+      })
+      .returning();
+    const bSuffix = b.id.replace(/-/g, "").slice(0, 4);
+    await db
+      .update(familyMembers)
+      .set({ profileSlug: `alex-${bSuffix}` })
+      .where(eq(familyMembers.id, b.id));
+
+    await startServer(tmpDataDir);
+
+    // Save A's profile
+    const resA = await fetch(`${baseUrl}/api/members/${a.id}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# A — first child" }),
+    });
+    expect(resA.status).toBe(200);
+
+    // Save B's profile — should write to a DIFFERENT path
+    const resB = await fetch(`${baseUrl}/api/members/${b.id}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# B — second child" }),
+    });
+    expect(resB.status).toBe(200);
+
+    // Re-read A's profile: must NOT see B's content
+    const getA = await fetch(`${baseUrl}/api/members/${a.id}/profile`);
+    const bodyA = await getA.json();
+    expect(bodyA.profileContent).toBe("# A — first child");
+    expect(bodyA.profileContent).not.toContain("second child");
+  });
+
   it("backfills profile_slug on first successful disk write", async () => {
     // Member was created in beforeEach without an explicit profileSlug,
     // simulating an existing (pre-migration) row.

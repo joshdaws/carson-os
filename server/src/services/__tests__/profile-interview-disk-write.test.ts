@@ -133,6 +133,47 @@ describe("ProfileInterviewEngine writes USER.md on completion", () => {
     expect(existsSync(userMdPath(tmpDataDir, "josh"))).toBe(false);
   });
 
+  it("uses id-fallback slug for names that slugify to empty", async () => {
+    // Member name is emoji-only — slugifyName returns empty. Without
+    // the id-fallback in getMemberSlug, writeUserMd would throw and the
+    // commit path would 500.
+    const [emojiMember] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: "h1",
+        name: "🚀",
+        role: "kid",
+        age: 9,
+      })
+      .returning();
+
+    const adapter = new StubAdapter();
+    adapter.responses.push(
+      "[PHASE: review_complete][PROFILE_START]# About 🚀\nbody[PROFILE_END]",
+    );
+
+    const engine = new ProfileInterviewEngine({
+      db,
+      adapter,
+      dataDir: tmpDataDir,
+    });
+
+    // Should NOT throw — falls back to id-derived slug
+    await engine.processMessage(emojiMember.id, "msg");
+
+    // File exists at the id-derived path
+    const expectedSlug = `m-${emojiMember.id.replace(/-/g, "").slice(0, 12)}`;
+    expect(existsSync(userMdPath(tmpDataDir, expectedSlug))).toBe(true);
+
+    // Slug got lazy-backfilled
+    const refreshed = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, emojiMember.id))
+      .get();
+    expect(refreshed?.profileSlug).toBe(expectedSlug);
+  });
+
   it("survives a member rename via stable profile_slug column", async () => {
     const adapter = new StubAdapter();
     adapter.responses.push(
