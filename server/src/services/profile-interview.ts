@@ -18,7 +18,11 @@ import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewPhase } from "@carsonos/shared";
 import type { Adapter } from "./subprocess-adapter.js";
-import { getMemberSlug, writeUserMd } from "./identity-files.js";
+import {
+  assignUniqueMemberSlug,
+  getMemberSlug,
+  writeUserMd,
+} from "./identity-files.js";
 
 // -- Types -----------------------------------------------------------
 
@@ -237,7 +241,13 @@ export class ProfileInterviewEngine {
     // skipping past review_complete with no persisted profile.
     let resolvedSlug: string | null = null;
     if (profileDocument && this.dataDir) {
-      const slug = getMemberSlug(member);
+      // For members with a stable profile_slug already set, use it.
+      // Otherwise (legacy / non-dedupe insert path) compute a unique one
+      // so two same-name siblings don't collide on their first interview
+      // completion. Same rule as the route-level PUT.
+      const slug = member.profileSlug?.trim()
+        ? getMemberSlug(member)
+        : await assignUniqueMemberSlug(this.db, member);
       try {
         writeUserMd(this.dataDir, slug, profileDocument);
         resolvedSlug = slug;

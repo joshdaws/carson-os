@@ -193,6 +193,72 @@ describe("PUT /:id/profile mirrors to USER.md", () => {
     expect(bodyA.profileContent).not.toContain("second child");
   });
 
+  it("backfills uniquely when two null-slug siblings hit PUT (defense-in-depth for onboarding inserts)", async () => {
+    // Simulates rows inserted via a legacy path (e.g. older onboarding
+    // route) that didn't set profile_slug. The lazy backfill in the PUT
+    // route must compute a UNIQUE slug per member; otherwise both Alex
+    // rows would resolve to "alex" and overwrite each other on disk.
+    const [otherAlex] = await db
+      .insert(familyMembers)
+      .values({
+        householdId: "h1",
+        name: "Alex",
+        role: "kid",
+        age: 9,
+        profileSlug: null,
+      })
+      .returning();
+    // Default member from beforeEach is also "Josh" but with profileSlug
+    // already set; manually clear it and rename to "Alex" to simulate the
+    // collision path.
+    await db
+      .update(familyMembers)
+      .set({ name: "Alex", profileSlug: null })
+      .where(eq(familyMembers.id, memberId));
+
+    await startServer(tmpDataDir);
+
+    // Save the first Alex via PUT — lazy backfill picks "alex".
+    const res1 = await fetch(`${baseUrl}/api/members/${memberId}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# Alex A" }),
+    });
+    expect(res1.status).toBe(200);
+
+    // Save the second Alex — lazy backfill must detect collision and
+    // assign a disambiguated slug, NOT overwrite Alex A's file.
+    const res2 = await fetch(`${baseUrl}/api/members/${otherAlex.id}/profile`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileContent: "# Alex B" }),
+    });
+    expect(res2.status).toBe(200);
+
+    // Verify both members have DIFFERENT profile_slug values
+    const m1 = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, memberId))
+      .get();
+    const m2 = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, otherAlex.id))
+      .get();
+    expect(m1?.profileSlug).toBe("alex");
+    expect(m2?.profileSlug).not.toBe("alex");
+    expect(m2?.profileSlug).toMatch(/^alex-/);
+
+    // Verify reads return each Alex's own content (no overwrite)
+    const get1 = await fetch(`${baseUrl}/api/members/${memberId}/profile`);
+    const body1 = await get1.json();
+    expect(body1.profileContent).toBe("# Alex A");
+    const get2 = await fetch(`${baseUrl}/api/members/${otherAlex.id}/profile`);
+    const body2 = await get2.json();
+    expect(body2.profileContent).toBe("# Alex B");
+  });
+
   it("backfills profile_slug on first successful disk write", async () => {
     // Member was created in beforeEach without an explicit profileSlug,
     // simulating an existing (pre-migration) row.

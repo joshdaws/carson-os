@@ -9,7 +9,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAssignments } from "@carsonos/db";
 import type { MemberRole } from "@carsonos/shared";
-import { slugifyName } from "../services/identity-files.js";
+import { assignUniqueMemberSlug } from "../services/identity-files.js";
 
 export function createMemberRoutes(db: Db): Router {
   const router = Router();
@@ -43,31 +43,17 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
-    // Capture profileSlug at creation time so identity-file paths
-    // (USER.md etc.) stay anchored across future renames. We pre-generate
-    // the id so the slug can fall back to an id-derived path for names
-    // that don't slugify (emoji-only, all-stripped, etc.) — same rule as
-    // getMemberSlug() and the migration backfill in db/client.ts.
-    //
-    // Uniqueness within household: if another member already owns this
-    // slug (e.g. two "Alex" entries, or "J.J." vs "JJ"), append a short
-    // id suffix so each member's USER.md path is distinct. Without this
-    // both members write to the same file and overwrite each other.
+    // Capture profileSlug at creation time so identity-file paths stay
+    // anchored across renames + uniqueness within household. See
+    // assignUniqueMemberSlug for the rule (name-derived → id-fallback,
+    // 4-hex suffix on collision).
     const memberId = crypto.randomUUID();
-    const idShort = memberId.replace(/-/g, "").slice(0, 4);
-    const baseSlug =
-      slugifyName(name) || `m-${memberId.replace(/-/g, "").slice(0, 12)}`;
-    const collision = await db
-      .select({ id: familyMembers.id })
-      .from(familyMembers)
-      .where(
-        and(
-          eq(familyMembers.householdId, householdId),
-          eq(familyMembers.profileSlug, baseSlug),
-        ),
-      )
-      .limit(1);
-    const profileSlug = collision.length > 0 ? `${baseSlug}-${idShort}` : baseSlug;
+    const profileSlug = await assignUniqueMemberSlug(db, {
+      id: memberId,
+      householdId,
+      name,
+      profileSlug: null,
+    });
 
     try {
       const [member] = await db

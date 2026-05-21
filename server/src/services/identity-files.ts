@@ -20,6 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAgents } from "@carsonos/db";
 
@@ -115,6 +116,44 @@ export function getMemberSlug(member: {
   // fall back to a stable id-derived slug. Same rule as the migration
   // backfill in packages/db/src/client.ts so paths stay consistent.
   return `m-${member.id.replace(/-/g, "").slice(0, 12)}`;
+}
+
+/**
+ * Compute a unique `profile_slug` for a member, scoped to the household.
+ * Used at every create path (members route POST, onboarding routes) and
+ * the lazy-backfill path (profiles route PUT, interview completion) so
+ * two same-name siblings never share a USER.md path.
+ *
+ * If the member already has a non-empty `profileSlug`, returns it
+ * unchanged (no-op for already-assigned rows). Otherwise computes the
+ * name-derived (or id-fallback) base slug, then appends a 4-hex id
+ * suffix on collision within the same household.
+ */
+export async function assignUniqueMemberSlug(
+  db: Db,
+  member: {
+    id: string;
+    householdId: string;
+    name: string;
+    profileSlug?: string | null;
+  },
+): Promise<string> {
+  const existing = member.profileSlug?.trim();
+  if (existing) return existing;
+
+  const idHex = member.id.replace(/-/g, "");
+  const baseSlug = slugifyName(member.name) || `m-${idHex.slice(0, 12)}`;
+  const collision = await db
+    .select({ id: familyMembers.id })
+    .from(familyMembers)
+    .where(
+      and(
+        eq(familyMembers.householdId, member.householdId),
+        eq(familyMembers.profileSlug, baseSlug),
+      ),
+    )
+    .limit(1);
+  return collision.length > 0 ? `${baseSlug}-${idHex.slice(0, 4)}` : baseSlug;
 }
 
 /** Write USER.md atomically (tempfile + rename) so a crash mid-write

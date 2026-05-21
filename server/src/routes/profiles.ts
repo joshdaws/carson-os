@@ -14,6 +14,7 @@ import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewEngine } from "../services/profile-interview.js";
 import {
+  assignUniqueMemberSlug,
   getMemberSlug,
   loadUserMd,
   writeUserMd,
@@ -102,10 +103,17 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
     // fails we return 500 and leave the DB untouched, so we never end up
     // with a "saved" toast while the canonical (disk) source is stale.
     // The DB column is the mirror; it's safe to update only after disk wins.
+    //
+    // For members whose profile_slug is still null (legacy / pre-migration
+    // / inserted via a non-dedupe path), use assignUniqueMemberSlug so the
+    // backfill picks a unique slug — otherwise two same-name siblings can
+    // both write to the same USER.md path on their first PUT.
     let resolvedSlug: string | null = null;
     if (dataDir) {
       try {
-        resolvedSlug = getMemberSlug(member);
+        resolvedSlug = member.profileSlug?.trim()
+          ? getMemberSlug(member)
+          : await assignUniqueMemberSlug(db, member);
         writeUserMd(dataDir, resolvedSlug, profileContent);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
