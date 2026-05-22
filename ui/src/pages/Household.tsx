@@ -70,6 +70,13 @@ interface HouseholdMember {
   profileContent?: string | null;
   profileUpdatedAt?: string | null;
   memoryDir?: string | null;
+  /** Disk-aware profile presence from the server. v0.5+ stores USER.md
+   *  on disk; a profile may exist there without a non-null
+   *  profileContent (e.g. after direct disk edits or migration). The
+   *  server computes this; UI must use it rather than re-deriving from
+   *  profileContent alone, or disk-only profiles get hidden.
+   *  Optional for backward-compat with older server responses. */
+  hasProfile?: boolean;
 }
 
 interface HouseholdData {
@@ -505,7 +512,9 @@ function MemberCard({
     );
   }
 
-  const hasProfile = !!member.profileContent;
+  // Prefer the server-computed disk-aware flag; fall back to the DB
+  // column for older server responses or legacy data shapes.
+  const hasProfile = member.hasProfile ?? !!member.profileContent;
 
   return (
     <Card className="border hover:shadow-sm transition-shadow" style={{ borderColor: "#ddd5c8" }}>
