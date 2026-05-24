@@ -1,0 +1,246 @@
+/**
+ * CodexHarness — runs an agent turn through the user's ChatGPT subscription via
+ * the local `codex` CLI (no OPENAI_API_KEY), behind the {@link AgentHarness}
+ * interface. Spawns `codex exec --json`, normalizes its event stream to
+ * {@link HarnessEvent}s, and owns thread resume + abort.
+ *
+ * Security: spawns with `--sandbox read-only` + shell/browser/computer tools
+ * disabled, and NEVER `--dangerously-bypass-approvals-and-sandbox`. Only the
+ * CarsonOS MCP server's tools are auto-approved (via the per-conversation
+ * config.toml written by the auth bridge). See memory/project_v060_harness.
+ *
+ * Streaming note: Codex emits complete `agent_message` items (no character
+ * deltas), so text arrives as one `text_delta` per message. `session_id`
+ * (the thread_id) is emitted only on a successful turn, so an aborted/killed
+ * turn never persists a resume token.
+ */
+
+import { spawn as nodeSpawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import { createInterface } from "node:readline";
+import path from "node:path";
+import type { HarnessEvent, HarnessTurnParams, MediaAttachment } from "@carsonos/shared";
+import type { AgentHarness, HarnessCapabilities } from "./types.js";
+import { CodexEventMapper } from "./codex-json.js";
+import {
+  prepareCodexHome,
+  codexAuthHealthy,
+  type CarsonosMcpServer,
+} from "./codex-auth-bridge.js";
+
+type SpawnFn = typeof nodeSpawn;
+
+const CODEX_BIN = process.platform === "win32" ? "codex.cmd" : "codex";
+const KILL_GRACE_MS = 5_000;
+
+export interface CodexHarnessOptions {
+  /** CarsonOS data dir root (e.g. ~/.carsonos). */
+  dataDir: string;
+  /** CarsonOS system-tools MCP server. Omitted until tool migration lands —
+   * a Codex agent then runs text+image only. */
+  mcpServer?: CarsonosMcpServer;
+  /** Test seam: inject a fake spawn. */
+  spawn?: SpawnFn;
+  /** Override the codex binary name/path. */
+  codexBin?: string;
+  /** Test seam: override the master `~/.codex/auth.json` path. */
+  masterAuthPath?: string;
+}
+
+export class CodexHarness implements AgentHarness {
+  readonly id = "codex";
+  readonly capabilities: HarnessCapabilities = {
+    supportsImages: true,
+    supportsMcp: true,
+    refreshTier: "per-turn",
+    reasoningLevels: ["low", "medium", "high"],
+    resumeKind: "thread_id",
+  };
+
+  private readonly spawnFn: SpawnFn;
+  private readonly codexBin: string;
+
+  constructor(private readonly opts: CodexHarnessOptions) {
+    this.spawnFn = opts.spawn ?? nodeSpawn;
+    this.codexBin = opts.codexBin ?? CODEX_BIN;
+  }
+
+  streamTurn(params: HarnessTurnParams, signal: AbortSignal): AsyncIterable<HarnessEvent> {
+    const self = this;
+    return (async function* (): AsyncGenerator<HarnessEvent> {
+      const conversationId = params.conversationId ?? "default";
+      const model = stripFamily(params.model);
+
+      // 1. Prepare the per-conversation CODEX_HOME (auth mirror + config.toml).
+      let codexHome: string;
+      let clearEnv: string[];
+      try {
+        const prep = await prepareCodexHome({
+          conversationId,
+          dataDir: self.opts.dataDir,
+          ...(model ? { model } : {}),
+          ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+          ...(self.opts.mcpServer ? { mcpServer: self.opts.mcpServer } : {}),
+          ...(self.opts.masterAuthPath ? { masterAuthPath: self.opts.masterAuthPath } : {}),
+        });
+        codexHome = prep.codexHome;
+        clearEnv = prep.clearEnv;
+      } catch (err) {
+        yield {
+          type: "error",
+          recoverable: false,
+          error: `Codex auth unavailable — run \`codex login\`. (${errMsg(err)})`,
+        };
+        return;
+      }
+
+      // 2. System prompt → instructions file; attachments → image files.
+      const instructionsPath = path.join(codexHome, "instructions.md");
+      await fs.writeFile(instructionsPath, params.systemPrompt, { mode: 0o600 });
+      const imagePaths = await writeImages(codexHome, params.attachments);
+
+      // 3. Build args. Resume keeps the same thread; fresh starts a new one.
+      const opts = [
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "browser_use",
+        "--disable",
+        "computer_use",
+        "-c",
+        `model_instructions_file=${JSON.stringify(instructionsPath)}`,
+        ...imagePaths.flatMap((p) => ["--image", p]),
+      ];
+      const prompt = renderPrompt(params);
+      const args = params.resumeSessionId
+        ? ["exec", "resume", params.resumeSessionId, ...opts, prompt]
+        : ["exec", ...opts, prompt];
+
+      // 4. Spawn detached (own process group) so abort can kill codex + its MCP
+      //    grandchildren together.
+      const child = self.spawnFn(self.codexBin, args, {
+        cwd: codexHome,
+        env: childEnv(codexHome, clearEnv),
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let aborted = signal.aborted;
+      const onAbort = () => {
+        aborted = true;
+        killTree(child.pid);
+      };
+      if (signal.aborted) killTree(child.pid);
+      else signal.addEventListener("abort", onAbort, { once: true });
+
+      let stderr = "";
+      child.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      const exited = new Promise<number | null>((resolve) => {
+        child.on("close", (code) => resolve(code));
+        child.on("error", () => resolve(null));
+      });
+
+      // 5. Stream stdout: each JSON line maps to zero+ HarnessEvents.
+      const mapper = new CodexEventMapper();
+      try {
+        if (child.stdout) {
+          const rl = createInterface({ input: child.stdout });
+          for await (const line of rl) {
+            for (const ev of mapper.handleLine(line)) yield ev;
+          }
+        }
+        const code = await exited;
+
+        // 6. Terminal event.
+        if (aborted) {
+          yield { type: "error", recoverable: true, error: "aborted" };
+        } else if (code === 0 && mapper.sawTurnCompleted) {
+          if (mapper.capturedThreadId) {
+            yield { type: "session_id", harness: "codex", id: mapper.capturedThreadId };
+          }
+          yield { type: "done", content: mapper.content };
+        } else {
+          yield {
+            type: "error",
+            recoverable: false,
+            error: stderr.trim() || `codex exited with code ${code ?? "unknown"}`,
+          };
+        }
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        killTree(child.pid); // no-op if already exited
+      }
+    })();
+  }
+
+  async healthCheck(): Promise<{ healthy: boolean; reason?: string }> {
+    return codexAuthHealthy(this.opts.masterAuthPath);
+  }
+}
+
+// -- helpers ----------------------------------------------------------
+
+/** "codex/gpt-5.4" -> "gpt-5.4"; "gpt-5.4" -> "gpt-5.4"; undefined -> undefined. */
+function stripFamily(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  const i = model.indexOf("/");
+  return i >= 0 ? model.slice(i + 1) : model;
+}
+
+/** Render the message array into a single prompt string for `codex exec`. */
+function renderPrompt(params: HarnessTurnParams): string {
+  const msgs = params.messages;
+  if (msgs.length === 1) return msgs[0].content;
+  return msgs
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
+}
+
+async function writeImages(
+  codexHome: string,
+  attachments: MediaAttachment[] | undefined,
+): Promise<string[]> {
+  if (!attachments?.length) return [];
+  const paths: string[] = [];
+  for (let i = 0; i < attachments.length; i++) {
+    const a = attachments[i];
+    const ext = (a.mediaType.split("/")[1] ?? "png").replace(/[^a-z0-9]/gi, "");
+    const p = path.join(codexHome, `attachment-${i}.${ext}`);
+    await fs.writeFile(p, Buffer.from(a.base64, "base64"), { mode: 0o600 });
+    paths.push(p);
+  }
+  return paths;
+}
+
+function childEnv(codexHome: string, clearEnv: string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: codexHome };
+  for (const key of clearEnv) delete env[key];
+  return env;
+}
+
+/** Kill the whole process group (codex + MCP grandchildren); SIGKILL after grace. */
+function killTree(pid: number | undefined): void {
+  if (pid == null) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    return; // already gone / not a group leader
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      /* already exited */
+    }
+  }, KILL_GRACE_MS).unref();
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
