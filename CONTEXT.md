@@ -57,6 +57,10 @@ _Avoid_: rules, policy
 **Memory**:
 Markdown-backed knowledge an agent searches on demand via the `search_memory` tool. 13 typed kinds (people, events, preferences, etc.); QMD-indexed.
 
+**Profile**:
+What an agent knows about its member, injected into the system prompt. Stored on disk as `~/.carsonos/members/{slug}/USER.md` — the file is the source of truth (the DB column is a sync mirror). The on-disk `{slug}` comes from the member's stable `profile_slug`, captured at create time so the path survives renames. The agent equivalent is `PERSONALITY.md`.
+_Avoid_: bio, member.md
+
 ## Relationships
 
 - A **Household** has many **Members**, **Agents**, **Specialists**, **Projects**, and **Delegated runs**
