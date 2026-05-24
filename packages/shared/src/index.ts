@@ -333,3 +333,66 @@ export interface AdapterExecuteResult {
   sessionId?: string;
   metadata?: Record<string, unknown>;
 }
+
+// ── Harness types (v0.6.0 multi-model) ──────────────────────────────
+
+/**
+ * Reasoning effort for harnesses that expose it (Codex). Claude ignores it.
+ * `xhigh`/Max is intentionally omitted until verified against the Codex CLI.
+ */
+export type ReasoningEffort = "low" | "medium" | "high";
+
+/**
+ * Parameters for a single agent turn through a harness. Mirrors
+ * {@link AdapterExecuteParams} but streaming is expressed as an event stream
+ * (no `onTextDelta` callback) and abort is via an `AbortSignal` passed
+ * alongside, not an `AbortController` in the params.
+ */
+export interface HarnessTurnParams {
+  systemPrompt: string;
+  messages: Array<{ role: string; content: string }>;
+  /** Optional attachments merged into the latest user message (images today). */
+  attachments?: MediaAttachment[];
+  /** Concrete model string, e.g. "claude-sonnet-4-6" or "codex/gpt-5.4". */
+  model?: string;
+  tools?: ToolDefinition[];
+  toolExecutor?: ToolExecutor;
+  /** Claude built-in tools to enable (e.g. ["Bash", "Read"]). Claude-only. */
+  builtinTools?: string[];
+  /** Claude Code skill names to enable. Claude-only. */
+  enabledSkills?: string[];
+  /** Resume an existing per-harness session (Agent SDK session_id / Codex thread_id). */
+  resumeSessionId?: string;
+  /**
+   * Re-injects an updated tool list after a tool-list-modifying tool call.
+   * Honored mid-turn by Claude (`refreshTier: 'mid-turn'`); Codex picks up
+   * changes on the next turn (`refreshTier: 'per-turn'`).
+   */
+  refreshTools?: () => Promise<{ tools: ToolDefinition[]; toolExecutor: ToolExecutor }>;
+  /** Working directory for the turn (delegation worktrees). */
+  cwd?: string;
+  /** Per-turn tool-call cap override. */
+  maxTurns?: number;
+  /** Reasoning effort for harnesses that support it (Codex). Ignored by Claude. */
+  reasoningEffort?: ReasoningEffort;
+  /** Correlates logs across the engine, harness, and (for Codex) subprocess. */
+  traceId?: string;
+}
+
+/**
+ * Normalized event a harness streams during a turn. Consumers (Telegram
+ * edit-in-place, the engine) read these without knowing which model produced
+ * them. Ordering: any number of `text_delta` / `tool_use_*` / `session_id` /
+ * `usage` events, then exactly one terminal `done` or `error`. `done.content`
+ * is the full assistant text for the turn. Aborting a turn yields a terminal
+ * `{ type: 'error', recoverable: true, error: 'aborted' }`. A future
+ * harness/CONTRACT.md will tighten these guarantees.
+ */
+export type HarnessEvent =
+  | { type: "text_delta"; text: string }
+  | { type: "tool_use_start"; name: string; input?: unknown; id?: string }
+  | { type: "tool_use_end"; name: string; result?: unknown; isError?: boolean; id?: string }
+  | { type: "session_id"; harness: string; id: string }
+  | { type: "usage"; inputTokens?: number; outputTokens?: number; costUsd?: number }
+  | { type: "error"; error: string; recoverable: boolean }
+  | { type: "done"; content: string };
