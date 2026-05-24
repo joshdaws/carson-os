@@ -4,6 +4,23 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.9] - 2026-05-24
+
+### Added
+
+- **Edit a family member's profile as a document.** A new profile editor opens a member's `USER.md` as raw markdown — view it, edit it, save it. Profiles now live on disk (`~/.carsonos/members/{slug}/USER.md`) as the source of truth, the same way SOUL.md and the other identity files already do. The DB column is kept in sync behind the scenes for backward compatibility, but the file is what the rest of the system reads. Edit the file directly on disk or through the UI — both stay consistent.
+- **Opus 4.7 in the per-agent model picker.** Available alongside Sonnet 4.6, Opus 4.6, and Haiku 4.5.
+
+### Changed
+
+- **Profiles survive renames.** Each member gets a stable filesystem slug captured when they're created, so renaming a member ("Alex" → "Alexander") no longer orphans their profile file. Reads everywhere — agent prompts, the onboarding checklist, the household view — resolve to the same stable path.
+
+### Fixed
+
+- **Profile saves are all-or-nothing.** A profile write goes to disk first; if the disk write fails, the save is rejected with a clear error and the database is left untouched — no more "Saved!" while the canonical file is stale. Writes are atomic (write-temp-then-rename), so a crash mid-save can't truncate a profile, and failed writes leave no junk behind.
+- **Edge-case names no longer break profiles.** Members whose names are emoji-only or otherwise reduce to an empty slug get a stable id-derived path instead of crashing or silently sharing one file. Two family members with the same name (two "Alex"es) each get a distinct profile file — enforced by a database uniqueness constraint, not just a best-effort check, so even simultaneous adds can't collide. The same empty-slug guard now protects agent personality files (`PERSONALITY.md`) too.
+- **Disk-only profiles show correctly in the UI.** A member whose profile exists only on disk (e.g., edited directly, or after the DB column is eventually retired) now shows the "View / Edit" action instead of a misleading "Build profile" prompt.
+
 ## [0.5.8] - 2026-05-10
 
 ### Fixed
