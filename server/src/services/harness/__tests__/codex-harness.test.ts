@@ -113,8 +113,10 @@ describe("CodexHarness", () => {
 
     const args = captured.args!;
     expect(args.slice(0, 3)).toEqual(["exec", "resume", "thread-1"]);
-    expect(args).toContain("read-only");
     expect(args).toContain("shell_tool");
+    // sandbox is config-driven (sandbox_mode in config.toml), NOT a CLI flag —
+    // `codex exec resume` rejects --sandbox, so it must never appear.
+    expect(args).not.toContain("--sandbox");
     expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 

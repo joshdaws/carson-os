@@ -124,11 +124,13 @@ export class CodexHarness implements AgentHarness {
       const imagePaths = await writeImages(codexHome, params.attachments);
 
       // 3. Build args. Resume keeps the same thread; fresh starts a new one.
+      // NOTE: sandbox_mode = "read-only" comes from config.toml (auth bridge),
+      // NOT a --sandbox CLI flag: `codex exec` accepts --sandbox but
+      // `codex exec resume` does not, so a CLI flag breaks the resume path.
+      // --disable, -c, --image, --json, --skip-git-repo-check work on both.
       const opts = [
         "--json",
         "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
         "--disable",
         "shell_tool",
         "--disable",
