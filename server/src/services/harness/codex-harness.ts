@@ -22,23 +22,24 @@ import path from "node:path";
 import type { HarnessEvent, HarnessTurnParams, MediaAttachment } from "@carsonos/shared";
 import type { AgentHarness, HarnessCapabilities } from "./types.js";
 import { CodexEventMapper } from "./codex-json.js";
-import {
-  prepareCodexHome,
-  codexAuthHealthy,
-  type CarsonosMcpServer,
-} from "./codex-auth-bridge.js";
+import { prepareCodexHome, codexAuthHealthy } from "./codex-auth-bridge.js";
+import type { CodexToolRegistry } from "./codex-tool-registry.js";
 
 type SpawnFn = typeof nodeSpawn;
 
 const CODEX_BIN = process.platform === "win32" ? "codex.cmd" : "codex";
 const KILL_GRACE_MS = 5_000;
+const MCP_TOKEN_ENV = "CARSONOS_MCP_TOKEN";
 
 export interface CodexHarnessOptions {
   /** CarsonOS data dir root (e.g. ~/.carsonos). */
   dataDir: string;
-  /** CarsonOS system-tools MCP server. Omitted until tool migration lands —
-   * a Codex agent then runs text+image only. */
-  mcpServer?: CarsonosMcpServer;
+  /** Per-turn tool registry backing the loopback MCP server. When provided
+   * (with mcpUrl), a turn's tools are exposed to codex over HTTP MCP; without
+   * it, a Codex agent runs text+image only. */
+  toolRegistry?: CodexToolRegistry;
+  /** Loopback MCP endpoint URL, e.g. http://127.0.0.1:3300/internal/codex-mcp. */
+  mcpUrl?: string;
   /** Test seam: inject a fake spawn. */
   spawn?: SpawnFn;
   /** Override the codex binary name/path. */
@@ -71,6 +72,28 @@ export class CodexHarness implements AgentHarness {
       const conversationId = params.conversationId ?? "default";
       const model = stripFamily(params.model);
 
+      // 0. Expose this turn's system tools over the loopback MCP server (if a
+      //    registry + URL are wired and the turn has tools). The bearer token
+      //    scopes codex to exactly this turn's tools; tools run in this (main)
+      //    process, so the read-only codex sandbox never touches them.
+      const registry = self.opts.toolRegistry;
+      let mcpToken: string | undefined;
+      let mcpServer: { url: string; bearerTokenEnvVar: string; tools: string[] } | undefined;
+      if (registry && self.opts.mcpUrl && params.toolExecutor && params.tools?.length) {
+        mcpToken = registry.register(params.tools, params.toolExecutor);
+        mcpServer = {
+          url: self.opts.mcpUrl,
+          bearerTokenEnvVar: MCP_TOKEN_ENV,
+          tools: params.tools.map((t) => t.name),
+        };
+      }
+      const releaseTurn = () => {
+        if (mcpToken) {
+          registry?.unregister(mcpToken);
+          mcpToken = undefined;
+        }
+      };
+
       // 1. Prepare the per-conversation CODEX_HOME (auth mirror + config.toml).
       let codexHome: string;
       let clearEnv: string[];
@@ -80,12 +103,13 @@ export class CodexHarness implements AgentHarness {
           dataDir: self.opts.dataDir,
           ...(model ? { model } : {}),
           ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
-          ...(self.opts.mcpServer ? { mcpServer: self.opts.mcpServer } : {}),
+          ...(mcpServer ? { mcpServer } : {}),
           ...(self.opts.masterAuthPath ? { masterAuthPath: self.opts.masterAuthPath } : {}),
         });
         codexHome = prep.codexHome;
         clearEnv = prep.clearEnv;
       } catch (err) {
+        releaseTurn();
         yield {
           type: "error",
           recoverable: false,
@@ -124,7 +148,7 @@ export class CodexHarness implements AgentHarness {
       //    grandchildren together.
       const child = self.spawnFn(self.codexBin, args, {
         cwd: codexHome,
-        env: childEnv(codexHome, clearEnv),
+        env: childEnv(codexHome, clearEnv, mcpToken),
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -173,6 +197,7 @@ export class CodexHarness implements AgentHarness {
           };
         }
       } finally {
+        releaseTurn();
         signal.removeEventListener("abort", onAbort);
         killTree(child.pid); // no-op if already exited
       }
@@ -218,8 +243,13 @@ async function writeImages(
   return paths;
 }
 
-function childEnv(codexHome: string, clearEnv: string[]): NodeJS.ProcessEnv {
+function childEnv(
+  codexHome: string,
+  clearEnv: string[],
+  mcpToken: string | undefined,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: codexHome };
+  if (mcpToken) env[MCP_TOKEN_ENV] = mcpToken;
   for (const key of clearEnv) delete env[key];
   return env;
 }

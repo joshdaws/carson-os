@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import type { HarnessEvent, HarnessTurnParams } from "@carsonos/shared";
 import { CodexHarness } from "../codex-harness.js";
 import { codexHomeFor } from "../codex-auth-bridge.js";
+import { CodexToolRegistry } from "../codex-tool-registry.js";
+import { promises as fsp } from "node:fs";
 
 const SPIKE_LINES = [
   `{"type":"thread.started","thread_id":"019e5af2-fb3a-7d61-81be-65fd34f323db"}`,
@@ -25,11 +27,12 @@ const SPIKE_LINES = [
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function fakeSpawn(lines: string[], opts: { code?: number | null; stderr?: string } = {}) {
-  const captured: { bin?: string; args?: string[] } = {};
+  const captured: { bin?: string; args?: string[]; env?: NodeJS.ProcessEnv } = {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fn = ((bin: string, args: string[]) => {
+  const fn = ((bin: string, args: string[], spawnOpts?: { env?: NodeJS.ProcessEnv }) => {
     captured.bin = bin;
     captured.args = args;
+    captured.env = spawnOpts?.env;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const child: any = new EventEmitter();
     child.pid = undefined; // killTree() is a no-op — never signals a real pgroup
@@ -139,6 +142,41 @@ describe("CodexHarness", () => {
     const h = new CodexHarness({ dataDir, masterAuthPath: masterAuth, spawn: fn });
     const events = await collect(h.streamTurn(baseParams, new AbortController().signal));
     expect(events).toEqual<HarnessEvent[]>([{ type: "error", recoverable: false, error: "codex boom" }]);
+  });
+
+  it("registers the turn's tools, wires the MCP token + config, and unregisters after", async () => {
+    await fs.writeFile(masterAuth, AUTH);
+    const registry = new CodexToolRegistry();
+    const { fn, captured } = fakeSpawn(SPIKE_LINES);
+    const h = new CodexHarness({
+      dataDir,
+      masterAuthPath: masterAuth,
+      spawn: fn,
+      toolRegistry: registry,
+      mcpUrl: "http://127.0.0.1:3300/internal/codex-mcp",
+    });
+
+    await collect(
+      h.streamTurn(
+        {
+          ...baseParams,
+          tools: [{ name: "search_memory", description: "d", input_schema: {} }],
+          toolExecutor: async () => ({ content: "ok" }),
+        },
+        new AbortController().signal,
+      ),
+    );
+
+    // Token was minted, passed to the codex child, and written into config.toml...
+    const token = captured.env?.CARSONOS_MCP_TOKEN;
+    expect(token).toBeTruthy();
+    const config = await fsp.readFile(join(codexHomeFor(dataDir, "conv-1"), "config.toml"), "utf8");
+    expect(config).toContain("[mcp_servers.carsonos]");
+    expect(config).toContain(`url = "http://127.0.0.1:3300/internal/codex-mcp"`);
+    expect(config).toContain(`bearer_token_env_var = "CARSONOS_MCP_TOKEN"`);
+    expect(config).toContain("[mcp_servers.carsonos.tools.search_memory]");
+    // ...and released when the turn ended (no leak).
+    expect(registry.size).toBe(0);
   });
 
   it("emits a recoverable 'aborted' error and no done when the signal is aborted", async () => {
