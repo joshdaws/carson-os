@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAgents } from "@carsonos/db";
 
@@ -119,21 +119,28 @@ export function getMemberSlug(member: {
 }
 
 /**
- * Compute a unique `profile_slug` for a member, scoped to the household.
- * Used at every create path (members route POST, onboarding routes) and
- * the lazy-backfill path (profiles route PUT, interview completion) so
- * two same-name siblings never share a USER.md path.
+ * Compute a unique `profile_slug` for a member. Used at every create path
+ * (members route POST, onboarding routes) and the lazy-backfill path
+ * (profiles route PUT, interview completion) so two same-name members
+ * never share a USER.md path.
+ *
+ * Uniqueness is GLOBAL across `family_members`, not per-household — the
+ * disk namespace `${dataDir}/members/{slug}/USER.md` is flat (not
+ * household-scoped), so the slug invariant must match the namespace it
+ * protects. CarsonOS is single-household today (CONTEXT.md: "the unit of
+ * tenancy — a single family"), so this is equivalent in practice, but
+ * global scoping removes the latent cross-household collision if a second
+ * household is ever created.
  *
  * If the member already has a non-empty `profileSlug`, returns it
  * unchanged (no-op for already-assigned rows). Otherwise computes the
  * name-derived (or id-fallback) base slug, then appends a 4-hex id
- * suffix on collision within the same household.
+ * suffix on collision.
  */
 export async function assignUniqueMemberSlug(
   db: Db,
   member: {
     id: string;
-    householdId: string;
     name: string;
     profileSlug?: string | null;
   },
@@ -146,12 +153,7 @@ export async function assignUniqueMemberSlug(
   const collision = await db
     .select({ id: familyMembers.id })
     .from(familyMembers)
-    .where(
-      and(
-        eq(familyMembers.householdId, member.householdId),
-        eq(familyMembers.profileSlug, baseSlug),
-      ),
-    )
+    .where(eq(familyMembers.profileSlug, baseSlug))
     .limit(1);
   return collision.length > 0 ? `${baseSlug}-${idHex.slice(0, 4)}` : baseSlug;
 }

@@ -163,7 +163,6 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
       const memberId = crypto.randomUUID();
       const profileSlug = await assignUniqueMemberSlug(db, {
         id: memberId,
-        householdId,
         name: m.name,
         profileSlug: null,
       });
@@ -208,7 +207,6 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
       const memberId = crypto.randomUUID();
       const profileSlug = await assignUniqueMemberSlug(db, {
         id: memberId,
-        householdId: household.id,
         name: m.name,
         profileSlug: null,
       });

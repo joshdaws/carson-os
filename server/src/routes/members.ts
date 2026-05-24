@@ -50,7 +50,6 @@ export function createMemberRoutes(db: Db): Router {
     const memberId = crypto.randomUUID();
     const profileSlug = await assignUniqueMemberSlug(db, {
       id: memberId,
-      householdId,
       name,
       profileSlug: null,
     });
