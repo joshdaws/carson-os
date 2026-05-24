@@ -62,6 +62,7 @@ CREATE TABLE family_members (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX family_members_household_idx ON family_members(household_id);
+CREATE UNIQUE INDEX family_members_profile_slug_unique ON family_members(profile_slug) WHERE profile_slug IS NOT NULL;
 
 CREATE TABLE staff_agents (
   id TEXT PRIMARY KEY,
@@ -618,6 +619,55 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
         taken.add(slug);
         updateStmt.run(slug, row.id);
       }
+      upgraded = true;
+    }
+
+    // family_members: enforce profile_slug uniqueness at the DB level. This
+    // is the durable backstop for the TOCTOU window in assignUniqueMemberSlug
+    // (two concurrent same-name creates can both pass the SELECT pre-check,
+    // then both INSERT the same slug). The partial index allows multiple NULLs
+    // (legacy rows not yet backfilled). Runs separately from the column-add
+    // block above so DBs that already have the column (added by a prior boot)
+    // still get the index. Dedup any pre-existing duplicates first, or
+    // CREATE UNIQUE INDEX would fail on a dirty table.
+    const hasSlugUniqIdx = sqlite
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='family_members_profile_slug_unique'",
+      )
+      .get();
+    if (!hasSlugUniqIdx) {
+      const dupes = sqlite
+        .prepare(
+          `SELECT id, profile_slug FROM family_members
+           WHERE profile_slug IS NOT NULL
+             AND profile_slug IN (
+               SELECT profile_slug FROM family_members
+               WHERE profile_slug IS NOT NULL
+               GROUP BY profile_slug HAVING COUNT(*) > 1
+             )
+           ORDER BY profile_slug, created_at`,
+        )
+        .all() as Array<{ id: string; profile_slug: string }>;
+      if (dupes.length > 0) {
+        const dupUpdate = sqlite.prepare(
+          "UPDATE family_members SET profile_slug = ? WHERE id = ?",
+        );
+        const keptFirst = new Set<string>();
+        for (const row of dupes) {
+          // Keep the earliest-created row's slug; suffix every later collision.
+          if (!keptFirst.has(row.profile_slug)) {
+            keptFirst.add(row.profile_slug);
+            continue;
+          }
+          const suffix = row.id.replace(/-/g, "").slice(0, 4);
+          dupUpdate.run(`${row.profile_slug}-${suffix}`, row.id);
+        }
+      }
+      sqlite
+        .prepare(
+          "CREATE UNIQUE INDEX family_members_profile_slug_unique ON family_members(profile_slug) WHERE profile_slug IS NOT NULL",
+        )
+        .run();
       upgraded = true;
     }
 

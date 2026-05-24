@@ -17,8 +17,10 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
@@ -158,8 +160,32 @@ export async function assignUniqueMemberSlug(
   return collision.length > 0 ? `${baseSlug}-${idHex.slice(0, 4)}` : baseSlug;
 }
 
-/** Write USER.md atomically (tempfile + rename) so a crash mid-write
- *  can't truncate the canonical file. */
+/**
+ * Atomically write a markdown file: write to a unique tempfile, then
+ * rename over the final path (rename is atomic on POSIX, so a crash
+ * mid-write can't truncate the canonical file). On rename failure the
+ * tempfile is unlinked so failed writes don't leave `.tmp-*` junk in
+ * the identity dirs. Tempfile suffix uses randomBytes (not Date.now())
+ * so two writes to the same path in the same millisecond can't collide.
+ */
+function writeMdAtomic(dir: string, finalPath: string, content: string): void {
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${finalPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  writeFileSync(tmpPath, content, "utf-8");
+  try {
+    renameSync(tmpPath, finalPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // best-effort cleanup; rethrow the original rename failure below
+    }
+    throw err;
+  }
+}
+
+/** Write USER.md atomically. Throws on empty slug (would collapse to a
+ *  shared `members//USER.md` path). */
 export function writeUserMd(
   dataDir: string,
   memberSlug: string,
@@ -168,23 +194,43 @@ export function writeUserMd(
   if (!memberSlug) {
     throw new Error("writeUserMd: memberSlug must be non-empty");
   }
-  const dir = join(dataDir, "members", memberSlug);
-  mkdirSync(dir, { recursive: true });
-  const finalPath = userMdPath(dataDir, memberSlug);
-  const tmpPath = `${finalPath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmpPath, content, "utf-8");
-  renameSync(tmpPath, finalPath);
+  writeMdAtomic(
+    join(dataDir, "members", memberSlug),
+    userMdPath(dataDir, memberSlug),
+    content,
+  );
 }
 
-/** Write PERSONALITY.md, creating parent dirs as needed. */
+/** Write PERSONALITY.md atomically. Throws on empty slug — same guard as
+ *  writeUserMd, so an emoji-only / all-stripped agent name can't write to
+ *  the shared `agents//PERSONALITY.md` path and collide with siblings. */
 export function writePersonalityMd(
   dataDir: string,
   agentSlug: string,
   content: string,
 ): void {
-  const path = personalityMdPath(dataDir, agentSlug);
-  mkdirSync(join(dataDir, "agents", agentSlug), { recursive: true });
-  writeFileSync(path, content, "utf-8");
+  if (!agentSlug) {
+    throw new Error("writePersonalityMd: agentSlug must be non-empty");
+  }
+  writeMdAtomic(
+    join(dataDir, "agents", agentSlug),
+    personalityMdPath(dataDir, agentSlug),
+    content,
+  );
+}
+
+/**
+ * Resolve the on-disk slug for an agent's PERSONALITY.md. Mirrors
+ * getMemberSlug's fallback chain for the agent half: slugifyName(name),
+ * then an id-derived slug for names that collapse to empty. Agents don't
+ * yet have a stable slug column (staff_agents), so renames can still
+ * orphan PERSONALITY.md — tracked as a follow-up (see TODOS). This helper
+ * at least prevents the empty-slug crash + the emoji-name collision.
+ */
+export function getAgentSlug(agent: { id: string; name: string }): string {
+  const fromName = slugifyName(agent.name);
+  if (fromName) return fromName;
+  return `a-${agent.id.replace(/-/g, "").slice(0, 12)}`;
 }
 
 /**
@@ -216,7 +262,10 @@ export async function migrateIdentityToFiles(
   const agents = await db.select().from(staffAgents);
   for (const a of agents) {
     if (!a.soulContent || a.soulContent.trim().length === 0) continue;
-    const slug = slugifyName(a.name);
+    // getAgentSlug (not bare slugifyName) so emoji-only/all-stripped agent
+    // names fall back to an id-derived slug instead of writePersonalityMd
+    // throwing on empty input and aborting the rest of the migration.
+    const slug = getAgentSlug(a);
     if (existsSync(personalityMdPath(dataDir, slug))) continue;
     writePersonalityMd(dataDir, slug, a.soulContent);
     personalitiesWritten++;

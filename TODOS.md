@@ -24,6 +24,18 @@
 - **Approach:** Update `currentMcpToolNames` and `currentMcpServerName` atomically before the await, OR have `canUseTool` also accept tools from a "pending" set during refresh.
 - **Depends on:** None.
 
+## v0.6.x — agent identity files: stable slug + rename safety (parity with members)
+- **What:** `PERSONALITY.md` (and any future agent identity file) is still keyed by `getAgentSlug(agent)` = `slugifyName(name)` with an id-fallback for empty names. This prevents the empty-slug crash and the emoji-name collision (shipped in the profile-disk-sync PR), but agents have NO stable `profile_slug`-equivalent column. So renaming an agent still orphans its `PERSONALITY.md` at the old slug, and two same-name agents would collide on `agents/{slug}/PERSONALITY.md` (no per-agent uniqueness; `staff_agents.name` is not unique).
+- **Why:** Same bug class the profile-disk-sync PR fixed for `family_members` (5 review rounds), left unaddressed on the agent half. Flagged by the round-6 adversarial review (P3, confidence 5). Lower stakes than members — agents are renamed rarely and there are few of them — but it's the same latent footgun.
+- **Approach:** Mirror the member fix on `staff_agents`: add `personality_slug TEXT` + partial unique index, an `assignUniqueAgentSlug` helper, capture at create, lazy-backfill on first write, migration backfill with dedup. Route all `getAgentSlug` write/read sites through the stable column.
+- **Depends on:** None. The member-side `assignUniqueMemberSlug` + migration block are the template to copy.
+
+## v0.6.x — profile dual-write: concurrent same-member PUT can leave DB column stale
+- **What:** Two writes to the SAME member's profile interleaving (rapid double-Save, or a PUT racing the interview-completion commit) can land `writeUserMd(A) → writeUserMd(B) → dbUpdate(B) → dbUpdate(A)`, leaving disk=B but DB column=A. `renameSync` makes each file write atomic, so disk is always coherent; only the DB *mirror* can go stale-wrong.
+- **Why:** Round-6 adversarial review (P2, confidence 6). Low likelihood at family scale (human-paced saves) and disk is the authoritative read source, so a stale DB mirror is mostly cosmetic — but the boot migration + any DB-column fallback would read the wrong value.
+- **Approach:** Per-member async mutex around the disk-write + DB-update pair, OR document the DB column as non-authoritative (disk wins) and stop treating it as a mirror. Decide which when the dual-write window is revisited (likely when the DB column is dropped entirely).
+- **Depends on:** None.
+
 ## v0.5.6 — Onboarding form audit (UI audit #51 follow-up)
 - **What:** Migrate the `Onboarding.tsx` multi-step flow to FormField. v0.5.5 deferred this because the onboarding flow has bespoke per-step styling and a designed mission-statement reveal moment that's currently working — careless migration could break it.
 - **Why:** v0.5.5 closed the FormField migration on every other form (Settings, Projects, Schedules, Household), but Onboarding still uses `<label>` siblings without `htmlFor` and lacks browser-autofill metadata. First impression for a new install passes through this flow.

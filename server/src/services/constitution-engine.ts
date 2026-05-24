@@ -46,6 +46,7 @@ import {
 import { compileSystemPrompt } from "./prompt-compiler.js";
 import { readUpdateAvailable } from "./system-update-check.js";
 import {
+  getAgentSlug,
   getMemberSlug,
   loadPersonalityMd,
   loadUserMd,
@@ -632,7 +633,9 @@ export class ConstitutionEngine {
     // during the v0.5.0 transition window. v0.5.x will deprecate the
     // DB columns once all instances have been migrated.
     const memberSlug = memberSlugForProfile;
-    const agentSlug = slugifyName(agent.name);
+    // getAgentSlug (not bare slugifyName) so a renamed/emoji-named agent
+    // reads its PERSONALITY.md from the same id-fallback path the writer used.
+    const agentSlug = getAgentSlug(agent);
     const userMdContent = userMdForProfile;
     const personalityMdContent = this.dataDir ? loadPersonalityMd(this.dataDir, agentSlug) : null;
 

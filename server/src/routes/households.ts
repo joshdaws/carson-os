@@ -9,11 +9,11 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { households, familyMembers, staffAgents, constitutions, staffAssignments } from "@carsonos/db";
 import {
+  getAgentSlug,
   getMemberSlug,
   hasIdentityContent,
   loadPersonalityMd,
   loadUserMd,
-  slugifyName,
 } from "../services/identity-files.js";
 
 export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
@@ -75,7 +75,7 @@ export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
     );
     const agentsWithSoul = familyStaff.filter((s) =>
       hasIdentityContent(
-        dataDir ? loadPersonalityMd(dataDir, slugifyName(s.name)) : null,
+        dataDir ? loadPersonalityMd(dataDir, getAgentSlug(s)) : null,
         s.soulContent,
       ),
     );

@@ -53,7 +53,16 @@ export const familyMembers = sqliteTable(
     memoryDir: text("memory_dir"), // Override: point at existing brain directory instead of default
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("family_members_household_idx").on(t.householdId)]
+  (t) => [
+    index("family_members_household_idx").on(t.householdId),
+    // Durable backstop for slug uniqueness (the disk namespace
+    // members/{slug}/USER.md is flat). Partial so multiple NULLs are
+    // allowed for not-yet-backfilled legacy rows. Created in client.ts
+    // (with dedup-first) for the raw-SQL bootstrap/upgrade path.
+    uniqueIndex("family_members_profile_slug_unique")
+      .on(t.profileSlug)
+      .where(sql`${t.profileSlug} IS NOT NULL`),
+  ]
 );
 
 // ── 3. staffAgents ──────────────────────────────────────────────────
