@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
-import { toolSecrets } from "@carsonos/db";
+import { toolSecrets, staffAgents } from "@carsonos/db";
 import type { ToolResult, MemoryProvider } from "@carsonos/shared";
 
 import type { HttpConfig, HttpAuth } from "./skill-md.js";
@@ -45,6 +45,10 @@ export function toolError(code: CustomErrorCode, content: string, detail?: strin
 export interface ExecContext {
   db: Db;
   householdId: string;
+  /** ID of the staff agent invoking this tool (used to resolve per-agent
+   * resources like the agent's own Telegram bot token). Optional because
+   * not every call path has an agent (e.g. internal/system invocations). */
+  agentId?: string;
   memberId?: string;
   memberName?: string;
   memoryProvider?: MemoryProvider | null;
@@ -225,6 +229,50 @@ function stripAuthHeaders(
   return out;
 }
 
+/**
+ * Resolve a staff agent's Telegram bot token from the staff_agents table.
+ *
+ * Lookup order:
+ *   1. If agentId is provided, return that agent's `telegram_bot_token`
+ *      (constrained to the current household for safety).
+ *   2. Otherwise, fall back to the household's head-butler agent token.
+ *   3. Return null when neither is configured.
+ *
+ * This helper exists so script handlers can resolve per-agent bot tokens
+ * automatically (e.g. `send_telegram_photo` sending as the calling agent's
+ * own bot identity) without us having to widen the handler sandbox to
+ * include raw `ctx.db` — which was removed deliberately after a prior
+ * cross-tenant exfiltration regression (see CustomToolContext docstring).
+ */
+async function loadAgentBotToken(
+  db: Db,
+  householdId: string,
+  agentId?: string,
+): Promise<string | null> {
+  if (agentId) {
+    // "Send-as-self or fail": if the caller has an agent identity, we must
+    // resolve THAT agent's bot token. Falling back to the head butler here
+    // would cause a non-head agent (e.g. Django, Grant's agent) to send as
+    // Carson, which is wrong and breaks inline-button routing. If the agent
+    // row exists but has no token, return null and let the handler's
+    // fallback chain (e.g. ctx.getSecret('telegram_bot_token')) decide.
+    const [row] = await db
+      .select({ token: staffAgents.telegramBotToken })
+      .from(staffAgents)
+      .where(and(eq(staffAgents.id, agentId), eq(staffAgents.householdId, householdId)))
+      .limit(1);
+    return row?.token ?? null;
+  }
+  // No agent identity on the caller — fall back to the household's head
+  // butler, which usually has the canonical bot token.
+  const [hb] = await db
+    .select({ token: staffAgents.telegramBotToken })
+    .from(staffAgents)
+    .where(and(eq(staffAgents.householdId, householdId), eq(staffAgents.isHeadButler, true)))
+    .limit(1);
+  return hb?.token ?? null;
+}
+
 async function loadSecret(
   db: Db,
   householdId: string,
@@ -330,8 +378,21 @@ export function executePromptTool(body: string, input: Record<string, unknown>):
 export interface CustomToolContext {
   fetch: typeof globalThis.fetch;
   getSecret: (keyName: string) => Promise<string | null>;
+  /** Resolve the calling agent's Telegram bot token from the staff_agents
+   * table (scoped to the current household). Returns the calling agent's own
+   * token when an agentId is available, otherwise falls back to the
+   * household's head-butler token. Returns null when neither is configured.
+   *
+   * This is a scoped helper rather than raw `db` access so handlers can't
+   * exfiltrate cross-household data — see the cross-tenant exfiltration
+   * note above. Handlers should still call `ctx.getSecret('telegram_bot_token')`
+   * as a final fallback for hand-installed tokens. */
+  getAgentBotToken: () => Promise<string | null>;
   memory: MemoryProvider | null;
   householdId: string;
+  /** ID of the staff agent invoking the tool, when known. Useful for
+   * per-agent attribution and routing (e.g. send-as-this-agent flows). */
+  agentId?: string;
   memberId?: string;
   memberName?: string;
   log: (msg: string) => void;
@@ -368,8 +429,10 @@ export async function executeScriptTool(
   const scriptCtx: CustomToolContext = {
     fetch: globalThis.fetch,
     getSecret: (keyName) => loadSecret(ctx.db, ctx.householdId, keyName, ctx.dataDir),
+    getAgentBotToken: () => loadAgentBotToken(ctx.db, ctx.householdId, ctx.agentId),
     memory: ctx.memoryProvider ?? null,
     householdId: ctx.householdId,
+    agentId: ctx.agentId,
     memberId: ctx.memberId,
     memberName: ctx.memberName,
     log: (msg) => console.log(`[custom-tool] ${msg}`),
