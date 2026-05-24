@@ -889,6 +889,7 @@ export class ConstitutionEngine {
         // is created/updated/disabled. Claude applies it within the turn; other
         // harnesses pick it up on the next turn (capabilities.refreshTier).
         refreshTools: refreshToolsForAdapter,
+        conversationId,
         traceId,
       };
       // Route the turn by the agent's model. Claude is this engine's wrapped

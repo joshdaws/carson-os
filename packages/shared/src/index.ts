@@ -375,6 +375,9 @@ export interface HarnessTurnParams {
   maxTurns?: number;
   /** Reasoning effort for harnesses that support it (Codex). Ignored by Claude. */
   reasoningEffort?: ReasoningEffort;
+  /** Conversation id — used by Codex for per-conversation CODEX_HOME isolation.
+   * Claude ignores it (the Agent SDK handles its own session isolation). */
+  conversationId?: string;
   /** Correlates logs across the engine, harness, and (for Codex) subprocess. */
   traceId?: string;
 }
