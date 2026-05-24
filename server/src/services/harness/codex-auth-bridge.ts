@@ -30,9 +30,17 @@ function masterAuthPath(): string {
   return path.join(os.homedir(), ".codex", "auth.json");
 }
 
+/**
+ * The CarsonOS system-tools MCP server, exposed as a loopback streamable-HTTP
+ * endpoint by the main process (no subprocess → not subject to codex's
+ * sandbox; tools execute in the unjailed main process). Codex connects with a
+ * per-turn bearer token read from `bearerTokenEnvVar`.
+ */
 export interface CarsonosMcpServer {
-  command: string;
-  args: string[];
+  /** Loopback MCP URL, e.g. http://127.0.0.1:3300/internal/codex-mcp. */
+  url: string;
+  /** Env var name codex reads the per-turn bearer token from. */
+  bearerTokenEnvVar: string;
   /** Tool names to auto-approve (`approval_mode = "approve"`). */
   tools: string[];
 }
@@ -94,8 +102,8 @@ export function buildConfigToml(opts: PrepareCodexHomeOptions): string {
   }
   if (opts.mcpServer) {
     lines.push("", "[mcp_servers.carsonos]");
-    lines.push(`command = ${JSON.stringify(opts.mcpServer.command)}`);
-    lines.push(`args = ${JSON.stringify(opts.mcpServer.args)}`);
+    lines.push(`url = ${JSON.stringify(opts.mcpServer.url)}`);
+    lines.push(`bearer_token_env_var = ${JSON.stringify(opts.mcpServer.bearerTokenEnvVar)}`);
     for (const tool of opts.mcpServer.tools) {
       lines.push("", `[mcp_servers.carsonos.tools.${tool}]`, `approval_mode = "approve"`);
     }
