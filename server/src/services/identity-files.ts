@@ -16,9 +16,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAgents } from "@carsonos/db";
 
@@ -92,26 +96,141 @@ export function loadPersonalityMd(
   }
 }
 
-/** Write USER.md, creating parent dirs as needed. */
+/**
+ * Resolve the on-disk slug for a member's identity files.
+ * Uses the stable `profileSlug` column when set; falls back to
+ * `slugifyName(name)`, and finally to an id-derived slug for names
+ * whose slugify collapses to empty (emoji-only, all-stripped, etc.).
+ * The id-derived branch is deterministic so the same member always
+ * maps to the same path. Callers that write should lazily backfill
+ * `profile_slug` so the slug sticks across future renames.
+ */
+export function getMemberSlug(member: {
+  id: string;
+  name: string;
+  profileSlug?: string | null;
+}): string {
+  const stable = member.profileSlug?.trim();
+  if (stable) return stable;
+  const fromName = slugifyName(member.name);
+  if (fromName) return fromName;
+  // Name doesn't slugify (all-emoji, only stripped chars, etc.) —
+  // fall back to a stable id-derived slug. Same rule as the migration
+  // backfill in packages/db/src/client.ts so paths stay consistent.
+  return `m-${member.id.replace(/-/g, "").slice(0, 12)}`;
+}
+
+/**
+ * Compute a unique `profile_slug` for a member. Used at every create path
+ * (members route POST, onboarding routes) and the lazy-backfill path
+ * (profiles route PUT, interview completion) so two same-name members
+ * never share a USER.md path.
+ *
+ * Uniqueness is GLOBAL across `family_members`, not per-household — the
+ * disk namespace `${dataDir}/members/{slug}/USER.md` is flat (not
+ * household-scoped), so the slug invariant must match the namespace it
+ * protects. CarsonOS is single-household today (CONTEXT.md: "the unit of
+ * tenancy — a single family"), so this is equivalent in practice, but
+ * global scoping removes the latent cross-household collision if a second
+ * household is ever created.
+ *
+ * If the member already has a non-empty `profileSlug`, returns it
+ * unchanged (no-op for already-assigned rows). Otherwise computes the
+ * name-derived (or id-fallback) base slug, then appends a 4-hex id
+ * suffix on collision.
+ */
+export async function assignUniqueMemberSlug(
+  db: Db,
+  member: {
+    id: string;
+    name: string;
+    profileSlug?: string | null;
+  },
+): Promise<string> {
+  const existing = member.profileSlug?.trim();
+  if (existing) return existing;
+
+  const idHex = member.id.replace(/-/g, "");
+  const baseSlug = slugifyName(member.name) || `m-${idHex.slice(0, 12)}`;
+  const collision = await db
+    .select({ id: familyMembers.id })
+    .from(familyMembers)
+    .where(eq(familyMembers.profileSlug, baseSlug))
+    .limit(1);
+  return collision.length > 0 ? `${baseSlug}-${idHex.slice(0, 4)}` : baseSlug;
+}
+
+/**
+ * Atomically write a markdown file: write to a unique tempfile, then
+ * rename over the final path (rename is atomic on POSIX, so a crash
+ * mid-write can't truncate the canonical file). On rename failure the
+ * tempfile is unlinked so failed writes don't leave `.tmp-*` junk in
+ * the identity dirs. Tempfile suffix uses randomBytes (not Date.now())
+ * so two writes to the same path in the same millisecond can't collide.
+ */
+function writeMdAtomic(dir: string, finalPath: string, content: string): void {
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${finalPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  writeFileSync(tmpPath, content, "utf-8");
+  try {
+    renameSync(tmpPath, finalPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // best-effort cleanup; rethrow the original rename failure below
+    }
+    throw err;
+  }
+}
+
+/** Write USER.md atomically. Throws on empty slug (would collapse to a
+ *  shared `members//USER.md` path). */
 export function writeUserMd(
   dataDir: string,
   memberSlug: string,
   content: string,
 ): void {
-  const path = userMdPath(dataDir, memberSlug);
-  mkdirSync(join(dataDir, "members", memberSlug), { recursive: true });
-  writeFileSync(path, content, "utf-8");
+  if (!memberSlug) {
+    throw new Error("writeUserMd: memberSlug must be non-empty");
+  }
+  writeMdAtomic(
+    join(dataDir, "members", memberSlug),
+    userMdPath(dataDir, memberSlug),
+    content,
+  );
 }
 
-/** Write PERSONALITY.md, creating parent dirs as needed. */
+/** Write PERSONALITY.md atomically. Throws on empty slug — same guard as
+ *  writeUserMd, so an emoji-only / all-stripped agent name can't write to
+ *  the shared `agents//PERSONALITY.md` path and collide with siblings. */
 export function writePersonalityMd(
   dataDir: string,
   agentSlug: string,
   content: string,
 ): void {
-  const path = personalityMdPath(dataDir, agentSlug);
-  mkdirSync(join(dataDir, "agents", agentSlug), { recursive: true });
-  writeFileSync(path, content, "utf-8");
+  if (!agentSlug) {
+    throw new Error("writePersonalityMd: agentSlug must be non-empty");
+  }
+  writeMdAtomic(
+    join(dataDir, "agents", agentSlug),
+    personalityMdPath(dataDir, agentSlug),
+    content,
+  );
+}
+
+/**
+ * Resolve the on-disk slug for an agent's PERSONALITY.md. Mirrors
+ * getMemberSlug's fallback chain for the agent half: slugifyName(name),
+ * then an id-derived slug for names that collapse to empty. Agents don't
+ * yet have a stable slug column (staff_agents), so renames can still
+ * orphan PERSONALITY.md — tracked as a follow-up (see TODOS). This helper
+ * at least prevents the empty-slug crash + the emoji-name collision.
+ */
+export function getAgentSlug(agent: { id: string; name: string }): string {
+  const fromName = slugifyName(agent.name);
+  if (fromName) return fromName;
+  return `a-${agent.id.replace(/-/g, "").slice(0, 12)}`;
 }
 
 /**
@@ -130,7 +249,11 @@ export async function migrateIdentityToFiles(
   const members = await db.select().from(familyMembers);
   for (const m of members) {
     if (!m.profileContent || m.profileContent.trim().length === 0) continue;
-    const slug = slugifyName(m.name);
+    // Use getMemberSlug so emoji-only/all-stripped names fall back to the
+    // id-derived slug instead of writeUserMd throwing on empty input.
+    // Also respects any stable profile_slug already backfilled by the
+    // db/client.ts migration so paths stay consistent.
+    const slug = getMemberSlug(m);
     if (existsSync(userMdPath(dataDir, slug))) continue;
     writeUserMd(dataDir, slug, m.profileContent);
     usersWritten++;
@@ -139,7 +262,10 @@ export async function migrateIdentityToFiles(
   const agents = await db.select().from(staffAgents);
   for (const a of agents) {
     if (!a.soulContent || a.soulContent.trim().length === 0) continue;
-    const slug = slugifyName(a.name);
+    // getAgentSlug (not bare slugifyName) so emoji-only/all-stripped agent
+    // names fall back to an id-derived slug instead of writePersonalityMd
+    // throwing on empty input and aborting the rest of the migration.
+    const slug = getAgentSlug(a);
     if (existsSync(personalityMdPath(dataDir, slug))) continue;
     writePersonalityMd(dataDir, slug, a.soulContent);
     personalitiesWritten++;

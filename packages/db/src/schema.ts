@@ -40,12 +40,29 @@ export const familyMembers = sqliteTable(
     telegramUserId: text("telegram_user_id").unique(),
     signalNumber: text("signal_number").unique(), // Signal phone number (e.g. +15551234567)
     signalUuid: text("signal_uuid").unique(), // Signal ACI (sender UUID) — used when phone sharing is off
-    profileContent: text("profile_content"), // Per-person profile document (member.md)
+    profileContent: text("profile_content"), // Per-person profile document (member.md). Mirror of USER.md.
     profileUpdatedAt: integer("profile_updated_at", { mode: "timestamp" }),
+    /**
+     * Stable filesystem slug for this member's identity files (USER.md etc.).
+     * Captured at create time; survives renames so disk paths stay anchored
+     * and old USER.md files don't get orphaned. Nullable for backward
+     * compatibility — falls back to `slugifyName(name)` and lazily backfills
+     * on the next disk write.
+     */
+    profileSlug: text("profile_slug"),
     memoryDir: text("memory_dir"), // Override: point at existing brain directory instead of default
     createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(nowEpoch),
   },
-  (t) => [index("family_members_household_idx").on(t.householdId)]
+  (t) => [
+    index("family_members_household_idx").on(t.householdId),
+    // Durable backstop for slug uniqueness (the disk namespace
+    // members/{slug}/USER.md is flat). Partial so multiple NULLs are
+    // allowed for not-yet-backfilled legacy rows. Created in client.ts
+    // (with dedup-first) for the raw-SQL bootstrap/upgrade path.
+    uniqueIndex("family_members_profile_slug_unique")
+      .on(t.profileSlug)
+      .where(sql`${t.profileSlug} IS NOT NULL`),
+  ]
 );
 
 // ── 3. staffAgents ──────────────────────────────────────────────────

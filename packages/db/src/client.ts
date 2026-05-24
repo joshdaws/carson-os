@@ -57,10 +57,12 @@ CREATE TABLE family_members (
   signal_uuid TEXT UNIQUE,
   profile_content TEXT,
   profile_updated_at INTEGER,
+  profile_slug TEXT,
   memory_dir TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX family_members_household_idx ON family_members(household_id);
+CREATE UNIQUE INDEX family_members_profile_slug_unique ON family_members(profile_slug) WHERE profile_slug IS NOT NULL;
 
 CREATE TABLE staff_agents (
   id TEXT PRIMARY KEY,
@@ -561,6 +563,111 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     // family_members: add memoryDir for per-member memory directory override
     if (!memberCols.has("memory_dir")) {
       sqlite.prepare("ALTER TABLE family_members ADD COLUMN memory_dir TEXT").run();
+      upgraded = true;
+    }
+
+    // family_members: stable filesystem slug for identity files (USER.md).
+    // Captured at create time, survives renames. Existing rows are
+    // backfilled here from current name so a rename between this migration
+    // and the next profile write doesn't orphan the (already-migrated)
+    // USER.md file. Empty-slug names (emoji-only etc.) fall back to an
+    // id-derived slug so every member has a non-null slug post-migration.
+    if (!memberCols.has("profile_slug")) {
+      sqlite.prepare("ALTER TABLE family_members ADD COLUMN profile_slug TEXT").run();
+      // Inline slugify — same rule as server/src/services/identity-files.ts.
+      // Duplicated here to keep the db package boundary clean (no imports
+      // from server/).
+      const slugify = (name: string) =>
+        name
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/[^a-z0-9-]/g, "")
+          .replace(/^-+|-+$/g, "");
+      const rows = sqlite
+        .prepare(
+          "SELECT id, name FROM family_members WHERE profile_slug IS NULL",
+        )
+        .all() as Array<{ id: string; name: string }>;
+      const updateStmt = sqlite.prepare(
+        "UPDATE family_members SET profile_slug = ? WHERE id = ?",
+      );
+      // Track slugs already taken so two same-slug names ("Alex" + "Alex",
+      // "J.J." + "JJ") get disambiguated. Uniqueness is GLOBAL, not
+      // per-household, because the disk namespace
+      // (${dataDir}/members/{slug}/USER.md) is flat. Mirrors
+      // assignUniqueMemberSlug in server/src/services/identity-files.ts.
+      //
+      // Pre-load slugs any prior partial backfill (e.g. lazy-backfill on
+      // first write) already set, so newly-backfilled slugs don't collide
+      // with them either.
+      const taken = new Set<string>(
+        (
+          sqlite
+            .prepare(
+              "SELECT profile_slug FROM family_members WHERE profile_slug IS NOT NULL",
+            )
+            .all() as Array<{ profile_slug: string }>
+        ).map((r) => r.profile_slug),
+      );
+      for (const row of rows) {
+        const base =
+          slugify(row.name) || `m-${row.id.replace(/-/g, "").slice(0, 12)}`;
+        let slug = base;
+        if (taken.has(slug)) {
+          slug = `${base}-${row.id.replace(/-/g, "").slice(0, 4)}`;
+        }
+        taken.add(slug);
+        updateStmt.run(slug, row.id);
+      }
+      upgraded = true;
+    }
+
+    // family_members: enforce profile_slug uniqueness at the DB level. This
+    // is the durable backstop for the TOCTOU window in assignUniqueMemberSlug
+    // (two concurrent same-name creates can both pass the SELECT pre-check,
+    // then both INSERT the same slug). The partial index allows multiple NULLs
+    // (legacy rows not yet backfilled). Runs separately from the column-add
+    // block above so DBs that already have the column (added by a prior boot)
+    // still get the index. Dedup any pre-existing duplicates first, or
+    // CREATE UNIQUE INDEX would fail on a dirty table.
+    const hasSlugUniqIdx = sqlite
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='family_members_profile_slug_unique'",
+      )
+      .get();
+    if (!hasSlugUniqIdx) {
+      const dupes = sqlite
+        .prepare(
+          `SELECT id, profile_slug FROM family_members
+           WHERE profile_slug IS NOT NULL
+             AND profile_slug IN (
+               SELECT profile_slug FROM family_members
+               WHERE profile_slug IS NOT NULL
+               GROUP BY profile_slug HAVING COUNT(*) > 1
+             )
+           ORDER BY profile_slug, created_at`,
+        )
+        .all() as Array<{ id: string; profile_slug: string }>;
+      if (dupes.length > 0) {
+        const dupUpdate = sqlite.prepare(
+          "UPDATE family_members SET profile_slug = ? WHERE id = ?",
+        );
+        const keptFirst = new Set<string>();
+        for (const row of dupes) {
+          // Keep the earliest-created row's slug; suffix every later collision.
+          if (!keptFirst.has(row.profile_slug)) {
+            keptFirst.add(row.profile_slug);
+            continue;
+          }
+          const suffix = row.id.replace(/-/g, "").slice(0, 4);
+          dupUpdate.run(`${row.profile_slug}-${suffix}`, row.id);
+        }
+      }
+      sqlite
+        .prepare(
+          "CREATE UNIQUE INDEX family_members_profile_slug_unique ON family_members(profile_slug) WHERE profile_slug IS NOT NULL",
+        )
+        .run();
       upgraded = true;
     }
 

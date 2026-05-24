@@ -246,7 +246,7 @@ Two versions of the constitution:
 SQLite via Drizzle ORM. Single file at `~/.carsonos/carsonos.db`. Tables:
 
 - `households` — Family name, timezone
-- `family_members` — Name, age, role, telegram user ID, profile, memory dir override
+- `family_members` — Name, age, role, telegram user ID, profile, profile slug (stable filesystem id), memory dir override
 - `staff_agents` — Name, role, personality, trust level, operating instructions, bot token
 - `staff_assignments` — Which agents serve which members
 - `constitutions` — Document text, version, active flag
@@ -255,6 +255,8 @@ SQLite via Drizzle ORM. Single file at `~/.carsonos/carsonos.db`. Tables:
 - `conversations` / `messages` — Chat history
 - `activity_log` — Tool call records for dashboard visibility
 - `tasks` / `task_events` — Task system (future)
+
+**Identity files are disk-first.** Member profiles live at `~/.carsonos/members/{slug}/USER.md` and agent personalities at `~/.carsonos/agents/{slug}/PERSONALITY.md` — the file is the source of truth (the same model as memory), and the `profile` / `personality` DB columns are kept in sync as a mirror for backward compatibility. The rest of the system reads the file. Each member's `profile_slug` is captured once at create time so the on-disk path survives renames; a partial UNIQUE index keeps two members from sharing a file. Writes are atomic (write-temp-then-rename), and the disk write must succeed before the DB mirror is updated.
 
 ## First-Contact Behavior
 

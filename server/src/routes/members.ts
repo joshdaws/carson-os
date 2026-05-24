@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, staffAssignments } from "@carsonos/db";
 import type { MemberRole } from "@carsonos/shared";
+import { assignUniqueMemberSlug } from "../services/identity-files.js";
 
 export function createMemberRoutes(db: Db): Router {
   const router = Router();
@@ -42,20 +43,52 @@ export function createMemberRoutes(db: Db): Router {
       return;
     }
 
+    // Capture profileSlug at creation time so identity-file paths stay
+    // anchored across renames + uniqueness within household. See
+    // assignUniqueMemberSlug for the rule (name-derived → id-fallback,
+    // 4-hex suffix on collision).
+    const memberId = crypto.randomUUID();
+    let profileSlug = await assignUniqueMemberSlug(db, {
+      id: memberId,
+      name,
+      profileSlug: null,
+    });
+
     try {
-      const [member] = await db
-        .insert(familyMembers)
-        .values({
-          householdId,
-          name,
-          role,
-          age,
-          telegramUserId: telegramUserId ?? null,
-          signalNumber: signalNumber ?? null,
-          signalUuid: signalUuid ?? null,
-          memoryDir: memoryDir ?? null,
-        })
-        .returning();
+      let member;
+      // The profile_slug pre-check (assignUniqueMemberSlug) has a TOCTOU
+      // window across the await boundary — a concurrent same-name create
+      // can claim the slug between the SELECT and this INSERT. The DB
+      // unique index (family_members_profile_slug_unique) is the real
+      // arbiter: on its violation, fall back to the id-derived slug
+      // (guaranteed unique, member id is a UUID) and retry once.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          [member] = await db
+            .insert(familyMembers)
+            .values({
+              id: memberId,
+              householdId,
+              name,
+              role,
+              age,
+              telegramUserId: telegramUserId ?? null,
+              signalNumber: signalNumber ?? null,
+              signalUuid: signalUuid ?? null,
+              memoryDir: memoryDir ?? null,
+              profileSlug,
+            })
+            .returning();
+          break;
+        } catch (insErr: unknown) {
+          const im = insErr instanceof Error ? insErr.message : String(insErr);
+          if (im.includes("family_members.profile_slug") && attempt === 0) {
+            profileSlug = `m-${memberId.replace(/-/g, "").slice(0, 12)}`;
+            continue;
+          }
+          throw insErr;
+        }
+      }
 
       res.status(201).json({ member });
     } catch (err: unknown) {

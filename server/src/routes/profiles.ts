@@ -2,6 +2,10 @@
  * Profile routes -- per-member profile CRUD + interview wizard.
  *
  * Mounted at /api/members/:memberId/profile
+ *
+ * Reads are disk-first (USER.md) with the DB column as a fallback; writes
+ * update both. The DB column existed before v0.5 and is kept in sync so
+ * older code paths and the boot migration continue to work.
  */
 
 import { Router } from "express";
@@ -9,14 +13,24 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { familyMembers, profileInterviewState } from "@carsonos/db";
 import type { ProfileInterviewEngine } from "../services/profile-interview.js";
+import {
+  assignUniqueMemberSlug,
+  getMemberSlug,
+  loadUserMd,
+  writeUserMd,
+} from "../services/identity-files.js";
 
 export interface ProfileRouteDeps {
   db: Db;
   profileInterviewEngine: ProfileInterviewEngine;
+  /** Data directory root. When set, GET reads USER.md first and PUT
+   * mirrors the saved content to USER.md. Null disables disk I/O. */
+  dataDir?: string | null;
 }
 
 export function createProfileRoutes(deps: ProfileRouteDeps): Router {
   const { db, profileInterviewEngine } = deps;
+  const dataDir = deps.dataDir ?? null;
   const router = Router();
 
   // GET /:memberId/profile -- get profile + interview state
@@ -41,10 +55,18 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
       .where(eq(profileInterviewState.memberId, memberId))
       .limit(1);
 
+    // Disk-first read: USER.md is the v0.5+ source of truth. Fall back
+    // to the DB column when the file doesn't exist (older members or
+    // pre-migration state).
+    const diskContent = dataDir
+      ? loadUserMd(dataDir, getMemberSlug(member))
+      : null;
+    const profileContent = diskContent ?? member.profileContent ?? null;
+
     res.json({
       memberId: member.id,
       memberName: member.name,
-      profileContent: member.profileContent ?? null,
+      profileContent,
       profileUpdatedAt: member.profileUpdatedAt ?? null,
       interview: interviewState
         ? {
@@ -77,11 +99,48 @@ export function createProfileRoutes(deps: ProfileRouteDeps): Router {
       return;
     }
 
+    // Disk-first ordering: write USER.md before the DB column. If disk
+    // fails we return 500 and leave the DB untouched, so we never end up
+    // with a "saved" toast while the canonical (disk) source is stale.
+    // The DB column is the mirror; it's safe to update only after disk wins.
+    //
+    // For members whose profile_slug is still null (legacy / pre-migration
+    // / inserted via a non-dedupe path), use assignUniqueMemberSlug so the
+    // backfill picks a unique slug — otherwise two same-name siblings can
+    // both write to the same USER.md path on their first PUT.
+    let resolvedSlug: string | null = null;
+    if (dataDir) {
+      try {
+        resolvedSlug = member.profileSlug?.trim()
+          ? getMemberSlug(member)
+          : await assignUniqueMemberSlug(db, member);
+        writeUserMd(dataDir, resolvedSlug, profileContent);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[profiles] USER.md write failed for ${member.name}; aborting save:`,
+          err,
+        );
+        res.status(500).json({
+          error: "Failed to write profile to disk; nothing was saved.",
+          detail: msg,
+        });
+        return;
+      }
+    }
+
+    // Lazy-backfill profile_slug so this member's disk path becomes stable
+    // across future renames. Only set when we actually wrote to disk and
+    // the column is currently null.
+    const slugBackfill =
+      resolvedSlug && !member.profileSlug ? { profileSlug: resolvedSlug } : {};
+
     const [updated] = await db
       .update(familyMembers)
       .set({
         profileContent,
         profileUpdatedAt: new Date(),
+        ...slugBackfill,
       })
       .where(eq(familyMembers.id, memberId))
       .returning();

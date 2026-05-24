@@ -4,8 +4,9 @@ Family AI agent platform. Each family member gets a personal AI on Telegram with
 
 ## Critical Rules
 
-- **NEVER delete, reset, or recreate `~/.carsonos/carsonos.db`**. This is the family's live data (conversations, agents, constitution, profiles). Use `pnpm dev:sandbox` for destructive QA testing.
+- **NEVER delete, reset, or recreate `~/.carsonos/carsonos.db`**. This is the family's live data (conversations, agents, constitution, profile mirror). Use `pnpm dev:sandbox` for destructive QA testing.
 - **NEVER delete files in `~/.carsonos/memory/`**. These are the family's memories.
+- **NEVER delete files in `~/.carsonos/members/` or `~/.carsonos/agents/`**. These hold the canonical identity files — member profiles (`USER.md`) and agent personalities (`PERSONALITY.md`) — which are the source of truth; the DB columns are only a sync mirror.
 - Before any schema migration, backup the database (the boot sequence does this automatically).
 
 ## Development

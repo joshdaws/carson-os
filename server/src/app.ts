@@ -161,7 +161,7 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
   app.use("/api/tools", createToolRoutes({ db, toolRegistry }));
   app.use(
     "/api/members",
-    createProfileRoutes({ db, profileInterviewEngine }),
+    createProfileRoutes({ db, profileInterviewEngine, dataDir: deps.dataDir ?? null }),
   );
 
   // --------------- UI serving ---------------

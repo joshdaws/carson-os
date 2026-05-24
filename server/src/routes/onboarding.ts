@@ -20,6 +20,7 @@ import {
 } from "@carsonos/db";
 import type { MemberRole } from "@carsonos/shared";
 import type { InterviewEngine } from "../services/interview.js";
+import { assignUniqueMemberSlug } from "../services/identity-files.js";
 
 export interface OnboardingRouteDeps {
   db: Db;
@@ -149,7 +150,9 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
       .delete(familyMembers)
       .where(eq(familyMembers.householdId, householdId));
 
-    // Create new members
+    // Create new members. Pre-generate id + assign unique profile_slug
+    // so two same-name siblings (two "Alex"s) don't collide on the same
+    // USER.md path. Matches members.ts POST behavior.
     const createdMembers = [];
     for (const m of members) {
       if (!m.name || !m.role || m.age === undefined) continue;
@@ -157,13 +160,21 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
       const validRole = (["parent", "kid"] as const).find((r) => r === m.role);
       if (!validRole) continue;
 
+      const memberId = crypto.randomUUID();
+      const profileSlug = await assignUniqueMemberSlug(db, {
+        id: memberId,
+        name: m.name,
+        profileSlug: null,
+      });
       const [member] = await db
         .insert(familyMembers)
         .values({
+          id: memberId,
           householdId,
           name: m.name,
           role: validRole,
           age: m.age,
+          profileSlug,
         })
         .returning();
 
@@ -188,18 +199,27 @@ export function createOnboardingRoutes(deps: OnboardingRouteDeps): Router {
       .values({ name: householdName })
       .returning();
 
-    // 2. Create family members
+    // 2. Create family members. Pre-generate id + assign unique
+    // profile_slug per household. Same logic as the /save route above.
     const createdMembers = [];
     for (const m of members) {
       if (!m.name) continue;
+      const memberId = crypto.randomUUID();
+      const profileSlug = await assignUniqueMemberSlug(db, {
+        id: memberId,
+        name: m.name,
+        profileSlug: null,
+      });
       const [member] = await db
         .insert(familyMembers)
         .values({
+          id: memberId,
           householdId: household.id,
           name: m.name,
           role: m.role === "parent" ? "parent" : "kid",
           age: m.age || 0,
           telegramUserId: m.telegramUserId || null,
+          profileSlug,
         })
         .returning();
       createdMembers.push(member);

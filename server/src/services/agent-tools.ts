@@ -445,8 +445,12 @@ async function handleUpdatePersonality(ctx: AgentToolContext, input: Record<stri
         .where(eq(staffAgents.id, ctx.agentId))
         .limit(1);
       if (agent) {
-        const { writePersonalityMd, slugifyName } = await import("./identity-files.js");
-        writePersonalityMd(ctx.dataDir, slugifyName(agent.name), personality);
+        const { writePersonalityMd, getAgentSlug } = await import("./identity-files.js");
+        writePersonalityMd(
+          ctx.dataDir,
+          getAgentSlug({ id: ctx.agentId, name: agent.name }),
+          personality,
+        );
       }
     } catch (err) {
       console.warn(`[agent-tools] Failed to mirror personality to PERSONALITY.md:`, err);

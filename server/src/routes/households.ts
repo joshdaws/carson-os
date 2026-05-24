@@ -9,10 +9,11 @@ import { eq, and } from "drizzle-orm";
 import type { Db } from "@carsonos/db";
 import { households, familyMembers, staffAgents, constitutions, staffAssignments } from "@carsonos/db";
 import {
+  getAgentSlug,
+  getMemberSlug,
   hasIdentityContent,
   loadPersonalityMd,
   loadUserMd,
-  slugifyName,
 } from "../services/identity-files.js";
 
 export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
@@ -56,15 +57,25 @@ export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
     // v0.5+ stores profiles/personalities on disk as USER.md / PERSONALITY.md;
     // the DB columns remain as fallback. Consult both so disk-only identity
     // content doesn't leave the onboarding checklist falsely incomplete.
-    const membersWithProfiles = members.filter((m) =>
-      hasIdentityContent(
-        dataDir ? loadUserMd(dataDir, slugifyName(m.name)) : null,
-        m.profileContent,
-      ),
+    // Same per-member computation drives the response's `hasProfile` field
+    // below (UI uses it to gate the View/Edit CTA), so a disk-only profile
+    // doesn't get misrendered as "Build profile".
+    const memberProfileStatus = new Map<string, boolean>();
+    for (const m of members) {
+      memberProfileStatus.set(
+        m.id,
+        hasIdentityContent(
+          dataDir ? loadUserMd(dataDir, getMemberSlug(m)) : null,
+          m.profileContent,
+        ),
+      );
+    }
+    const membersWithProfiles = members.filter(
+      (m) => memberProfileStatus.get(m.id) === true,
     );
     const agentsWithSoul = familyStaff.filter((s) =>
       hasIdentityContent(
-        dataDir ? loadPersonalityMd(dataDir, slugifyName(s.name)) : null,
+        dataDir ? loadPersonalityMd(dataDir, getAgentSlug(s)) : null,
         s.soulContent,
       ),
     );
@@ -95,9 +106,17 @@ export function createHouseholdRoutes(db: Db, dataDir?: string | null): Router {
     };
     checklist.completedCount = checklist.items.filter((i) => i.complete).length;
 
+    // Enrich each member with `hasProfile` so the UI doesn't have to
+    // re-derive it from the (possibly null) DB column alone. A disk-only
+    // profile reads as hasProfile=true here.
+    const membersWithStatus = members.map((m) => ({
+      ...m,
+      hasProfile: memberProfileStatus.get(m.id) === true,
+    }));
+
     res.json({
       household,
-      members,
+      members: membersWithStatus,
       memberCount: members.length,
       staffCount: staff.length,
       checklist,
