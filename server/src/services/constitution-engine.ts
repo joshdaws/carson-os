@@ -43,6 +43,10 @@ import {
   type ConversationSessionContext,
   type HarnessKey,
 } from "./harness/session-context.js";
+import { ClaudeHarness } from "./harness/claude-harness.js";
+import { resolveHarness } from "./harness/registry.js";
+import { consumeHarnessTurn } from "./harness/consume.js";
+import type { HarnessTurnParams } from "@carsonos/shared";
 import {
   evaluateKeywordBlock,
   evaluateAgeGate,
@@ -322,6 +326,8 @@ export class ConstitutionEngine {
   private db: Db;
   private broadcast: BroadcastFn;
   private adapter: Adapter;
+  /** Wraps the injected adapter as the Claude harness (the default runtime). */
+  private claudeHarness: ClaudeHarness;
   private memoryProvider: MemoryProvider | null;
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
@@ -338,6 +344,7 @@ export class ConstitutionEngine {
     this.db = config.db;
     this.broadcast = config.broadcast;
     this.adapter = config.adapter;
+    this.claudeHarness = new ClaudeHarness(this.adapter);
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
@@ -868,7 +875,7 @@ export class ConstitutionEngine {
 
     try {
       const adapterStart = Date.now();
-      const executeParams: Parameters<Adapter["execute"]>[0] & { traceId?: string } = {
+      const turnParams: HarnessTurnParams = {
         systemPrompt: effectiveSystemPrompt,
         messages: messagesForLlm,
         model: agent.model,
@@ -876,30 +883,49 @@ export class ConstitutionEngine {
         toolExecutor,
         builtinTools,
         enabledSkills,
-        onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
         attachments: params.attachments,
         // Mid-session tool refresh: re-run buildExecutor after a custom tool
-        // is created/updated/disabled. The adapter uses this to call
-        // setMcpServers so the new tool is immediately usable in this conv.
+        // is created/updated/disabled. Claude applies it within the turn; other
+        // harnesses pick it up on the next turn (capabilities.refreshTier).
         refreshTools: refreshToolsForAdapter,
         traceId,
       };
-      const result = await this.adapter.execute(executeParams);
+      // Route the turn by the agent's model. Claude is this engine's wrapped
+      // adapter (so injected/test adapters flow through unchanged); other
+      // families resolve from the harness registry (Codex registers at startup,
+      // and an unknown model falls back to Claude).
+      const harness =
+        harnessKey === "claude" ? this.claudeHarness : resolveHarness(agent.model);
+      const turn = await consumeHarnessTurn(
+        harness.streamTurn(turnParams, new AbortController().signal),
+        params.onTextDelta,
+      );
       perf.adapterMs = Date.now() - adapterStart;
-      llmResponse = result.content;
+
+      // A terminal error with no usable content maps to the same friendly
+      // fallback the adapter-throws path used.
+      if (turn.error && !turn.content) {
+        console.error(`[engine] Harness error [${harnessKey}]: ${turn.error.message}`);
+        return {
+          response: FRIENDLY_ERROR_MESSAGE,
+          blocked: false,
+          policyEvents: collectedEvents,
+        };
+      }
+      llmResponse = turn.content;
 
       // Save session ID for resume on next message
-      if (result.sessionId) {
+      if (turn.sessionId) {
         await this.saveHarnessSession(
           conversationId,
           harnessKey,
-          result.sessionId,
+          turn.sessionId,
           toolCallLog,
           contextSignature,
         );
         console.log(
-          `[engine] Session saved for conversation ${conversationId} [${harnessKey}]: ${result.sessionId}`,
+          `[engine] Session saved for conversation ${conversationId} [${harnessKey}]: ${turn.sessionId}`,
         );
       }
 

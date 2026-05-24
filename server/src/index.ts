@@ -31,6 +31,8 @@ import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
 import { createAdapter } from "./services/subprocess-adapter.js";
+import { registerHarness } from "./services/harness/registry.js";
+import { ClaudeHarness } from "./services/harness/claude-harness.js";
 import { ConstitutionEngine } from "./services/constitution-engine.js";
 import { TaskEngine } from "./services/task-engine.js";
 import { CarsonOversight } from "./services/carson-oversight.js";
@@ -160,6 +162,11 @@ async function main() {
   console.log(
     `[adapter] ${adapter.name} — ${adapterHealthy ? "healthy" : "unavailable"}`,
   );
+
+  // 2a. Register harnesses. Claude wraps the adapter above; the engine routes
+  // each agent turn by agent.model. An unknown/Codex model falls back to this
+  // until CodexHarness is registered (v0.6.x).
+  registerHarness("claude", () => new ClaudeHarness(adapter));
 
   // 2b. Boot memory system
   let memoryProvider = undefined;
