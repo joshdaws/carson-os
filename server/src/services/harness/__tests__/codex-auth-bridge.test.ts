@@ -87,12 +87,16 @@ describe("buildConfigToml", () => {
     const toml = buildConfigToml({
       conversationId: "c",
       dataDir,
-      mcpServer: { command: "node", args: ["mcp.js"], tools: ["search_memory", "send_telegram"] },
+      mcpServer: {
+        url: "http://127.0.0.1:3300/internal/codex-mcp",
+        bearerTokenEnvVar: "CARSONOS_MCP_TOKEN",
+        tools: ["search_memory", "send_telegram"],
+      },
     });
     expect(toml).toContain(`sandbox_mode = "read-only"`);
     expect(toml).toContain("[mcp_servers.carsonos]");
-    expect(toml).toContain(`command = "node"`);
-    expect(toml).toContain(`args = ["mcp.js"]`);
+    expect(toml).toContain(`url = "http://127.0.0.1:3300/internal/codex-mcp"`);
+    expect(toml).toContain(`bearer_token_env_var = "CARSONOS_MCP_TOKEN"`);
     expect(toml).toContain("[mcp_servers.carsonos.tools.search_memory]");
     expect(toml).toContain("[mcp_servers.carsonos.tools.send_telegram]");
     expect(toml).toContain(`approval_mode = "approve"`);
