@@ -59,6 +59,7 @@ interface StaffAgent {
   autonomyLevel: string;
   trustLevel?: string;
   model?: string;
+  reasoningEffort?: string | null;
   operatingInstructions?: string;
   assignments?: Assignment[];
 }
@@ -127,11 +128,23 @@ const TRUST_LEVEL_OPTIONS = [
 ];
 
 const MODEL_OPTIONS = [
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { value: "claude-opus-4-7", label: "Opus 4.7" },
-  { value: "claude-opus-4-6", label: "Opus 4.6" },
-  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { value: "claude-sonnet-4-6", label: "Claude · Sonnet 4.6" },
+  { value: "claude-opus-4-7", label: "Claude · Opus 4.7" },
+  { value: "claude-opus-4-6", label: "Claude · Opus 4.6" },
+  { value: "claude-haiku-4-5-20251001", label: "Claude · Haiku 4.5" },
+  { value: "codex/gpt-5.5", label: "Codex · GPT-5.5" },
 ];
+
+// Codex-only. Translated labels; raw value drives the codex CLI.
+const REASONING_OPTIONS = [
+  { value: "low", label: "Quick" },
+  { value: "medium", label: "Balanced" },
+  { value: "high", label: "Thorough" },
+];
+
+/** A model string routed through the Codex harness (vs Claude). */
+const isCodexModel = (model: string | undefined | null): boolean =>
+  (model ?? "").toLowerCase().startsWith("codex");
 
 const TASK_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   pending: { bg: "#fff3e0", text: "#8b6f4e" },
@@ -398,6 +411,28 @@ export function StaffDetailPage() {
               ))}
             </SelectContent>
           </Select>
+
+          {isCodexModel(agent.model) && (
+            <Select
+              value={agent.reasoningEffort ?? "medium"}
+              onValueChange={(reasoningEffort) =>
+                patchStaff.mutate({ reasoningEffort } as Partial<StaffAgent>)
+              }
+            >
+              <SelectTrigger
+                className="h-7 w-auto text-[11px] gap-1 px-2.5"
+                style={{ borderColor: "#ddd5c8", color: "#6b6358" }}
+                title="How hard Codex thinks before replying. Quick is fastest; Thorough is best at hard problems."
+              >
+                <span className="text-carson-text-meta">Effort:</span> <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
           <Select value={agent.trustLevel ?? "restricted"} onValueChange={handleTrustLevelChange}>
             <SelectTrigger

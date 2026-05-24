@@ -77,6 +77,7 @@ CREATE TABLE staff_agents (
   signal_account TEXT,
   signal_daemon_port INTEGER,
   model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+  reasoning_effort TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   is_head_butler INTEGER NOT NULL DEFAULT 0,
   autonomy_level TEXT NOT NULL DEFAULT 'supervised',
@@ -452,6 +453,7 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     !tableExists("tool_grants") || !tableExists("personality_interview_state") ||
     !tableExists("scheduled_tasks") ||
     !staffCols.has("signal_account") || !staffCols.has("signal_daemon_port") ||
+    !staffCols.has("reasoning_effort") ||
     !memberCols.has("profile_content") || !memberCols.has("profile_updated_at") ||
     !memberCols.has("memory_dir") || !memberCols.has("signal_number") ||
     !memberCols.has("signal_uuid") ||
@@ -787,6 +789,11 @@ function upgradeTables(sqlite: Database.Database, preMigrationHook?: PreMigratio
     }
     if (!staffCols.has("signal_daemon_port")) {
       sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN signal_daemon_port INTEGER").run();
+      upgraded = true;
+    }
+    // v0.6 multi-model: Codex reasoning effort (low|medium|high). NULL for Claude.
+    if (!staffCols.has("reasoning_effort")) {
+      sqlite.prepare("ALTER TABLE staff_agents ADD COLUMN reasoning_effort TEXT").run();
       upgraded = true;
     }
 
