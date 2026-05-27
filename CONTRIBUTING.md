@@ -27,7 +27,7 @@ The sandbox uses `.sandbox/` for its database and memory files, so you can devel
 packages/
   shared/     <- Types shared across server and UI
   db/         <- SQLite schema (Drizzle ORM)
-server/       <- Express backend + Claude Agent SDK adapter
+server/       <- Express backend + harness layer (Claude Agent SDK / Codex CLI)
 ui/           <- React frontend (Vite)
 ```
 

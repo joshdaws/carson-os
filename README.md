@@ -128,7 +128,7 @@ Telegram message
   → Load agent + member + constitution from DB
   → Compile system prompt (constitution first, always)
   → Resolve tools (memory, calendar, etc.) by trust level
-  → Execute via Claude Agent SDK (streaming, multi-turn, MCP tools)
+  → Run a turn via the harness for agent.model — Claude (Agent SDK) or Codex (codex CLI)
   → Stream response back to Telegram (edit-in-place)
   → Log conversation + tool calls
 ```
@@ -152,9 +152,13 @@ The constitution comes first. Always.
 
 When an agent talks to a family member for the first time, it suggests a profile interview — a short conversation to learn about the person. No auto-compiling; the agent asks and the member shares what they want.
 
+### Harness: Claude or Codex
+
+Each agent runs on a **harness** chosen by its `model`. The `claude` harness wraps the Claude Agent SDK; the `codex` harness shells out to the local `codex` CLI under your ChatGPT subscription (no OpenAI API key). Both get full tool parity — Codex reaches CarsonOS tools over a loopback MCP server. Pick the brain per agent from the staff detail page, including reasoning effort for Codex.
+
 ### Session Resume
 
-Conversations maintain continuity via Claude Agent SDK session resume. Each conversation tracks a session ID so the agent picks up where it left off.
+Conversations maintain continuity via harness session resume. Each conversation stores a resume token per harness (Claude `session_id`, Codex `thread_id`), so flipping an agent between models picks up each runtime's session where it left off.
 
 ## Memory
 
@@ -252,9 +256,10 @@ server/
     config.ts                   <- Environment config
     routes/                     <- API routes (onboarding, staff, settings, etc.)
     services/
-      constitution-engine.ts    <- Core pipeline: prompt compilation + tool wiring
+      constitution-engine.ts    <- Core pipeline: prompt compilation + tool wiring + harness routing
       prompt-compiler.ts        <- System prompt builder (ordered sections)
-      subprocess-adapter.ts     <- Claude Agent SDK adapter (streaming, resume)
+      harness/                  <- Pluggable agent loops: AgentHarness interface, registry, ClaudeHarness, CodexHarness, auth bridge, loopback MCP server, per-harness session storage
+      subprocess-adapter.ts     <- Claude Agent SDK adapter (wrapped by ClaudeHarness)
       tool-registry.ts          <- Tool registration, grants, trust levels
       telegram-streaming.ts     <- Edit-in-place streaming with markdown formatting
       multi-relay-manager.ts    <- One Telegram bot per agent
@@ -313,7 +318,8 @@ At boot, CarsonOS walks every `tool_secrets` row and tries to decrypt. Partial o
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document covering:
-- The message pipeline (Telegram → Constitution → Agent SDK → Tools → Response)
+- The message pipeline (Telegram → Constitution → Harness → Tools → Response)
+- The harness layer (Claude / Codex routing, per-harness session storage, loopback MCP)
 - Memory system (MemoryProvider interface, QMD backend, 13 memory types)
 - Tool registry (4 tiers: system, builtin, custom, discovered)
 - Constitution engine (prompt-based enforcement, two versions)

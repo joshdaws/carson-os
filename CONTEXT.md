@@ -15,7 +15,7 @@ A human family member with a personal agent. Identified by name; carries a profi
 _Avoid_: user (too generic — also overloaded with the human typing into Telegram), person
 
 **Agent**:
-A persona running on the Claude Agent SDK with a constitution, role, personality, memory, and tool access. Distinct kinds: a member's personal agent (e.g. Carson) and hired specialists.
+A persona with a constitution, role, personality, memory, and tool access, running on a **harness** (Claude or Codex — see below). Distinct kinds: a member's personal agent (e.g. Carson) and hired specialists.
 _Avoid_: bot, assistant
 
 **Specialist**:
@@ -47,6 +47,14 @@ A registered codebase the household can do delegated work in. Has a name and a p
 
 **Self-modifying runtime**:
 The CarsonOS host process can produce changes to its own source through delegated runs. This constrains how the runtime is reloaded — naive file-watch auto-reload is incompatible with self-modification because the act of modifying triggers the cure (restart) that kills the run mid-modification. See [ADR-0001](./docs/adr/0001-no-file-watch-on-live-instance.md).
+
+**Harness**:
+The runtime that owns one model family's agent loop — runs a turn, streams normalized events, owns session resume. Two today: `claude` (wraps the Claude Agent SDK adapter) and `codex` (shells out to the `codex` CLI under a ChatGPT subscription). The engine routes each turn by `agent.model` through the harness registry; adding a model family is a registry entry, not a type change. See [ADR-0002](./docs/adr/0002-pluggable-harness-layer.md).
+_Avoid_: adapter (reserved for the Claude-SDK process wrapper the Claude harness uses), backend, provider
+
+**Auth bridge**:
+The per-conversation isolation the Codex harness sets up before a turn: it mirrors the master `~/.codex/auth.json` (the user's ChatGPT tokens) into an isolated `CODEX_HOME` and writes a locked-down `config.toml` (read-only sandbox, no shell/browser/computer tools, CarsonOS MCP tools auto-approved, `OPENAI_API_KEY` stripped). Keeps two family members' Codex sessions fully separate.
+_Avoid_: shim, wrapper
 
 ### Memory and constitution
 
