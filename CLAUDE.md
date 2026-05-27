@@ -20,7 +20,7 @@ pnpm test          # run all tests
 
 ## Stack
 
-- **Server:** TypeScript, Express 5, Claude Agent SDK, SQLite (Drizzle ORM), QMD (memory search)
+- **Server:** TypeScript, Express 5, harness layer (Claude Agent SDK / Codex CLI), SQLite (Drizzle ORM), QMD (memory search)
 - **UI:** React, Vite, TanStack Query, Tailwind-adjacent inline styles
 - **Monorepo:** pnpm workspaces — `packages/shared`, `packages/db`, `server`, `ui`
 
@@ -28,8 +28,9 @@ pnpm test          # run all tests
 
 - System prompt order: Constitution first, then role, personality, operating instructions, member profile, memory schema, capabilities
 - Memory: 13 types, QMD-backed markdown files, agents search on demand via `search_memory` tool
-- Tools: MCP tools via Claude Agent SDK. System tools always on, builtin tools toggleable, trust levels control Claude built-in access
-- Agents: Claude Agent SDK with session resume, streaming to Telegram via edit-in-place
+- Tools: MCP tools. For Claude agents, in-SDK MCP; for Codex agents, a loopback streamable-HTTP MCP server at `/internal/codex-mcp` (same tools, full parity). System tools always on, builtin tools toggleable, trust levels control Claude built-in access
+- Harness layer (`server/src/services/harness/`): the engine routes each turn by `agent.model` through a registry to a `Harness` — `claude` (wraps the Agent SDK adapter) or `codex` (shells out to the `codex` CLI under a ChatGPT subscription, no `OPENAI_API_KEY`). Per-harness session storage in `conversations.session_context` keeps both runtimes' resume tokens so model switches are lossless. See ARCHITECTURE.md "The Harness Layer" and `docs/adr/0002`
+- Agents: harness with session resume, streaming to Telegram via edit-in-place. Per-agent model + reasoning-effort picker in the staff detail UI
 
 ## Testing
 

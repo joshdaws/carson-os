@@ -31,6 +31,10 @@ import { createApp } from "./app.js";
 import { setupWebSocket, broadcast } from "./ws/live-events.js";
 import { AppEventBus } from "./services/event-bus.js";
 import { createAdapter } from "./services/subprocess-adapter.js";
+import { registerHarness } from "./services/harness/registry.js";
+import { ClaudeHarness } from "./services/harness/claude-harness.js";
+import { CodexHarness } from "./services/harness/codex-harness.js";
+import { CodexToolRegistry } from "./services/harness/codex-tool-registry.js";
 import { ConstitutionEngine } from "./services/constitution-engine.js";
 import { TaskEngine } from "./services/task-engine.js";
 import { CarsonOversight } from "./services/carson-oversight.js";
@@ -159,6 +163,20 @@ async function main() {
   const adapterHealthy = await adapter.healthCheck();
   console.log(
     `[adapter] ${adapter.name} — ${adapterHealthy ? "healthy" : "unavailable"}`,
+  );
+
+  // 2a. Register harnesses. Claude wraps the adapter above; the engine routes
+  // each agent turn by agent.model. Codex shells out to the `codex` CLI under
+  // the user's ChatGPT subscription (read-only sandbox, shell disabled, no
+  // bypass flag) and reaches CarsonOS system tools over the loopback MCP
+  // endpoint (per-turn bearer token via codexToolRegistry).
+  const codexToolRegistry = new CodexToolRegistry();
+  const codexMcpUrl = `http://127.0.0.1:${config.port}/internal/codex-mcp`;
+  registerHarness("claude", () => new ClaudeHarness(adapter));
+  registerHarness(
+    "codex",
+    () =>
+      new CodexHarness({ dataDir: config.dataDir, toolRegistry: codexToolRegistry, mcpUrl: codexMcpUrl }),
   );
 
   // 2b. Boot memory system
@@ -453,6 +471,7 @@ async function main() {
     multiRelay,
     signalRelay,
     dataDir: config.dataDir,
+    codexToolRegistry,
     // Pass through for /api/health → QMD reindex health surface. AppDeps
     // exposes `memoryProvider?: ReindexHealthSource | null`; only providers
     // that implement getReindexHealth get surfaced.

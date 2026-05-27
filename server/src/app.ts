@@ -43,6 +43,8 @@ import { createProfileRoutes } from "./routes/profiles.js";
 import { createScheduledTaskRoutes } from "./routes/scheduled-tasks.js";
 import { createProjectRoutes } from "./routes/projects.js";
 import { createApprovalRoutes } from "./routes/approval.js";
+import { createCodexMcpRouter } from "./services/harness/codex-mcp-server.js";
+import type { CodexToolRegistry } from "./services/harness/codex-tool-registry.js";
 
 const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -68,6 +70,9 @@ export interface AppDeps {
    * files (USER.md, PERSONALITY.md) check the filesystem in addition to
    * DB columns. Without it, callers fall back to DB-only behavior. */
   dataDir?: string | null;
+  /** Optional. Backs the loopback /internal/codex-mcp endpoint that exposes a
+   * Codex agent's system tools. Omit to disable the endpoint. */
+  codexToolRegistry?: CodexToolRegistry;
 }
 
 export async function createApp(deps: AppDeps): Promise<express.Express> {
@@ -163,6 +168,13 @@ export async function createApp(deps: AppDeps): Promise<express.Express> {
     "/api/members",
     createProfileRoutes({ db, profileInterviewEngine, dataDir: deps.dataDir ?? null }),
   );
+
+  // --------------- Codex MCP (loopback, per-turn bearer token) ---------------
+  // Outside /api so it skips the same-origin gate (codex is not a browser and
+  // authenticates with its per-turn token). Loopback bind + token = the auth.
+  if (deps.codexToolRegistry) {
+    app.use("/internal/codex-mcp", createCodexMcpRouter(deps.codexToolRegistry));
+  }
 
   // --------------- UI serving ---------------
 

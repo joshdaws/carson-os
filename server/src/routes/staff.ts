@@ -233,12 +233,24 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
       visibility,
       telegramBotToken,
       model,
+      reasoningEffort,
       status,
       autonomyLevel,
     } = req.body;
 
     const signalAccount = req.body.signal_account;
     const signalDaemonPort = req.body.signal_daemon_port;
+
+    // Codex reasoning effort: low|medium|high, or null to clear (Claude).
+    const REASONING = new Set(["low", "medium", "high"]);
+    if (
+      reasoningEffort !== undefined &&
+      reasoningEffort !== null &&
+      !REASONING.has(reasoningEffort)
+    ) {
+      res.status(400).json({ error: "reasoningEffort must be low, medium, high, or null" });
+      return;
+    }
 
     const [updated] = await db
       .update(staffAgents)
@@ -253,6 +265,7 @@ export function createStaffRoutes(deps: StaffRouteDeps): Router {
         ...(signalAccount !== undefined && { signalAccount }),
         ...(signalDaemonPort !== undefined && { signalDaemonPort }),
         ...(model !== undefined && { model }),
+        ...(reasoningEffort !== undefined && { reasoningEffort }),
         ...(status !== undefined && { status }),
         ...(autonomyLevel !== undefined && { autonomyLevel }),
         updatedAt: new Date(),

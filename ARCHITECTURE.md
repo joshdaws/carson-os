@@ -44,25 +44,40 @@ Telegram update (text | voice | audio | photo | document | sticker | video)
   ├─ 4. Evaluate hard clauses (feature-flagged OFF for v1.0)
   ├─ 5. Compile system prompt (constitution first, then role/personality/memory instructions)
   ├─ 6. Resolve agent's tools (registry + grants + trust level)
-  ├─ 7. Resume session if continuing a conversation (Agent SDK session resume)
-  ├─ 8. Execute via Agent SDK (MCP tools, streaming, max turns from CARSONOS_MAX_TURNS)
-  │     ├─ When attachments present: AsyncIterable<SDKUserMessage> with image content blocks
+  ├─ 7. Resolve the harness for agent.model (Claude or Codex), resume that harness's session
+  ├─ 8. Run one turn via harness.streamTurn() (MCP tools, streaming, max turns from CARSONOS_MAX_TURNS)
+  │     ├─ When attachments present: image content blocks pass through to the model
   │     ├─ Otherwise: string prompt
   │     ├─ Agent searches memory on demand via search_memory tool
   │     ├─ Agent may call tools: save_memory, update_memory, list_calendar_events, etc.
-  │     ├─ Tool calls handled by MCP server inside the SDK
-  │     └─ Text deltas stream back via onTextDelta callback
+  │     ├─ Tool calls handled by MCP (in-SDK for Claude, loopback HTTP for Codex)
+  │     └─ Normalized HarnessEvents (text deltas, tool calls, usage, done) stream back
   ├─ 9. Stream formatted response to Telegram (edit-in-place)
   ├─ 10. Post-execution: scan response for policy violations
   ├─ 11. Record conversation + log tool calls
   └─ 12. Handle delegation (if agent deferred to another agent)
 ```
 
-## The Adapter Layer
+## The Harness Layer
 
-CarsonOS has a pluggable adapter system. The default is the Claude Agent SDK adapter.
+A **harness** owns one model family's agent loop: it runs a single turn, streams normalized `HarnessEvent`s back, and owns its own session resume. The engine routes each turn by the agent's `model` string through a registry — `claude` and `codex` are the two harnesses today — so the same family member's agent can run on Claude or Codex with full tool parity. Same constitution, memory, tools, personality, and Telegram streaming either way.
 
-### Claude Agent SDK Adapter (default)
+The engine never branches on a model enum. It calls `resolveHarness(agent.model)` (in `services/harness/registry.ts`), gets back an `AgentHarness`, and calls `harness.streamTurn(params, signal)`. Adding a third model family is one `registerHarness()` call at startup, not a type change. An unknown model key degrades to the Claude harness with a logged warning rather than crashing.
+
+```typescript
+interface AgentHarness {
+  readonly id: string;                 // "claude" | "codex"
+  readonly capabilities: HarnessCapabilities;
+  streamTurn(params: HarnessTurnParams, signal: AbortSignal): AsyncIterable<HarnessEvent>;
+  healthCheck(): Promise<{ healthy: boolean; reason?: string }>;
+}
+```
+
+Each harness declares its `HarnessCapabilities` (image support, MCP support, tool-refresh tier, reasoning levels, resume-token kind) so the engine and the UI picker read declared capabilities instead of hardcoding behavior per model.
+
+### Claude Harness (default)
+
+`ClaudeHarness` wraps the existing Claude Agent SDK adapter (`subprocess-adapter.ts`) behind the `AgentHarness` interface. The adapter is unchanged; the harness bridges its `execute()` + `onTextDelta` callback shape into an `AsyncIterable<HarnessEvent>`.
 
 Uses `query()` from `@anthropic-ai/claude-agent-sdk`. This spawns a Claude process, passes the system prompt, and lets the SDK handle the tool loop.
 
@@ -105,9 +120,37 @@ const conversation = query({
 });
 ```
 
+### Codex Harness
+
+`CodexHarness` runs an agent turn through the user's ChatGPT subscription via the local `codex` CLI — never an `OPENAI_API_KEY`. It spawns `codex exec --json`, normalizes the event stream to `HarnessEvent`s, and persists a `thread_id` for resume.
+
+**Auth bridge.** `codex login` populates the master `~/.codex/auth.json`. The auth bridge (`codex-auth-bridge.ts`) mirrors that file into a per-conversation `CODEX_HOME` (`~/.carsonos/codex/<hash>/`) so two family members' Codex sessions never share tool or session state, and writes a locked-down `config.toml` next to it. The master is re-read every turn, so codex's own token refresh propagates.
+
+**Security posture.** Codex spawns with `sandbox_mode = "read-only"`; the model's `apply_patch`/file-change and shell cannot write anything. The `shell`/`browser`/`computer` tools are disabled at spawn (defense in depth). Only the CarsonOS MCP server's tools are auto-approved (`approval_mode = "approve"`), so they run non-interactively WITHOUT the dangerous `--dangerously-bypass-approvals-and-sandbox` flag. `OPENAI_API_KEY` is stripped from the child env.
+
+**Tool parity via loopback MCP.** A Codex agent reaches every CarsonOS system tool through a streamable-HTTP MCP server (`codex-mcp-server.ts`) mounted at `/internal/codex-mcp` on the main process (loopback only). Because the server runs IN the main process — not a subprocess — its tools execute unjailed even though codex itself runs under the read-only sandbox. Codex authenticates each turn with a bearer token that resolves (via `CodexToolRegistry`) to that turn's `{tools, executor}`, so an agent only ever sees its own tools. The transport is hand-rolled JSON-RPC over HTTP (no SDK): for a request/response-only tool server, the streamable-HTTP spec permits a plain `application/json` response per POST — no SSE, no session id.
+
+**Streaming difference.** Codex emits complete `agent_message` items, not character deltas, so text arrives as one `text_delta` per message rather than a token stream. The `thread_id` is emitted only on a successful turn, so an aborted or killed turn never persists a resume token.
+
+### Per-Harness Session Storage
+
+A conversation can be served by different harnesses over its life. Each harness owns its own resume token — Claude an Agent SDK `session_id`, Codex a `thread_id` — and switching the agent's model must NOT clobber the other harness's token. `conversations.session_context` holds a keyed shape:
+
+```json
+{
+  "activeHarness": "claude",
+  "sessions": {
+    "claude": { "id": "...", "lastActivity": "...", "toolCallNames": [] },
+    "codex":  { "id": "...", "lastActivity": "...", "toolCallNames": [] }
+  }
+}
+```
+
+`session-context.ts` reads, merges, and upgrades the legacy flat (implicitly-Claude, pre-v0.6.0) shape on read. No DB migration is required — the column was already nullable JSON. Flip an agent between Claude and Codex and back, and each runtime resumes its own session losslessly.
+
 ### Streaming
 
-Text deltas flow from the Agent SDK through an `onTextDelta` callback. The Telegram streaming engine:
+Text deltas flow from whichever harness served the turn as normalized `HarnessEvent`s (the Claude harness emits per-token deltas; Codex emits one delta per complete message). The Telegram streaming engine:
 
 1. Sends the first delta immediately (no delay)
 2. Buffers subsequent deltas on a 300ms timer

@@ -36,6 +36,18 @@ import type { MemoryProvider, ToolDefinition, ToolExecutor } from "@carsonos/sha
 import type { Adapter } from "./subprocess-adapter.js";
 import type { BroadcastFn } from "./event-bus.js";
 import {
+  parseSessionContext,
+  setHarnessSession,
+  getHarnessSession,
+  harnessKeyForModel,
+  type ConversationSessionContext,
+  type HarnessKey,
+} from "./harness/session-context.js";
+import { ClaudeHarness } from "./harness/claude-harness.js";
+import { resolveHarness, hasHarness } from "./harness/registry.js";
+import { consumeHarnessTurn } from "./harness/consume.js";
+import type { HarnessTurnParams } from "@carsonos/shared";
+import {
   evaluateKeywordBlock,
   evaluateAgeGate,
   evaluateRoleRestrict,
@@ -248,13 +260,6 @@ async function loadHouseholdSecrets(
 
 // -- Engine ----------------------------------------------------------
 
-interface SessionCacheEntry {
-  sessionId: string;
-  lastActivity: number;
-  toolCallNames: string[];
-  contextSignature?: string;
-}
-
 function hashPayload(payload: unknown): string {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
 }
@@ -317,10 +322,12 @@ export function computeHasProfile(
 export class ConstitutionEngine {
   private cache = new Map<string, CachedConstitution>();
   private cachedMemorySchema: string | null = null;
-  private sessionCache = new Map<string, SessionCacheEntry>();
+  private sessionCache = new Map<string, ConversationSessionContext>();
   private db: Db;
   private broadcast: BroadcastFn;
   private adapter: Adapter;
+  /** Wraps the injected adapter as the Claude harness (the default runtime). */
+  private claudeHarness: ClaudeHarness;
   private memoryProvider: MemoryProvider | null;
   private toolRegistry: ToolRegistry | null;
   private calendarProvider: GoogleCalendarProvider | null;
@@ -337,6 +344,7 @@ export class ConstitutionEngine {
     this.db = config.db;
     this.broadcast = config.broadcast;
     this.adapter = config.adapter;
+    this.claudeHarness = new ClaudeHarness(this.adapter);
     this.memoryProvider = config.memoryProvider ?? null;
     this.toolRegistry = config.toolRegistry ?? null;
     this.calendarProvider = config.calendarProvider ?? null;
@@ -558,12 +566,27 @@ export class ConstitutionEngine {
     );
     const conversationId = conversationContext.id;
 
-    // Try to resume existing Agent SDK session (check cache first, then DB)
-    let resumeSessionId = this.getSessionId(conversationId);
+    // The agent's model selects which harness serves this turn. Resolve it NOW
+    // (not later) and key the session by the RESOLVED harness's id: if a codex/*
+    // model falls back to Claude (codex harness unregistered), harnessKey must
+    // become "claude" so we don't load a Codex thread_id and hand it to Claude
+    // as a session_id. Claude (and any unregistered family) uses this engine's
+    // wrapped adapter — preserves test injection and avoids resolveHarness
+    // throwing when the registry is empty. Registered non-Claude families
+    // resolve from the registry.
+    const requestedKey = harnessKeyForModel(agent.model);
+    const harness =
+      requestedKey !== "claude" && hasHarness(requestedKey)
+        ? resolveHarness(agent.model)
+        : this.claudeHarness;
+    const harnessKey = harness.id;
+
+    // Try to resume the harness's existing session (check cache first, then DB)
+    let resumeSessionId = this.getResumeId(conversationId, harnessKey);
     if (!resumeSessionId) {
-      resumeSessionId = await this.loadSessionFromDb(conversationId);
+      resumeSessionId = await this.loadSessionFromDb(conversationId, harnessKey);
     }
-    const previousContextSignature = this.sessionCache.get(conversationId)?.contextSignature ?? null;
+    const previousContextSignature = this.getContextSignature(conversationId, harnessKey);
 
     // Persist the user message BEFORE loading history so:
     //   (a) tools invoked during this turn (e.g. redact_recent_user_message)
@@ -863,7 +886,7 @@ export class ConstitutionEngine {
 
     try {
       const adapterStart = Date.now();
-      const executeParams: Parameters<Adapter["execute"]>[0] & { traceId?: string } = {
+      const turnParams: HarnessTurnParams = {
         systemPrompt: effectiveSystemPrompt,
         messages: messagesForLlm,
         model: agent.model,
@@ -871,23 +894,61 @@ export class ConstitutionEngine {
         toolExecutor,
         builtinTools,
         enabledSkills,
-        onTextDelta: params.onTextDelta,
         resumeSessionId: resumeSessionId ?? undefined,
         attachments: params.attachments,
         // Mid-session tool refresh: re-run buildExecutor after a custom tool
-        // is created/updated/disabled. The adapter uses this to call
-        // setMcpServers so the new tool is immediately usable in this conv.
+        // is created/updated/disabled. Claude applies it within the turn; other
+        // harnesses pick it up on the next turn (capabilities.refreshTier).
         refreshTools: refreshToolsForAdapter,
+        conversationId,
+        // Codex reasoning effort (route-validated to low|medium|high). Ignored
+        // by Claude. Without this, the StaffDetail effort picker is inert.
+        ...(agent.reasoningEffort
+          ? { reasoningEffort: agent.reasoningEffort as "low" | "medium" | "high" }
+          : {}),
         traceId,
       };
-      const result = await this.adapter.execute(executeParams);
+      // `harness` was resolved up-front (see session-key resolution above) so
+      // the resume token is keyed by the harness that actually runs.
+      const turn = await consumeHarnessTurn(
+        harness.streamTurn(turnParams, new AbortController().signal),
+        params.onTextDelta,
+      );
       perf.adapterMs = Date.now() - adapterStart;
-      llmResponse = result.content;
+
+      // Per-turn usage telemetry. Codex reports tokens (no cost); Claude on Max
+      // often reports neither. Logged so usage is observable per harness — the
+      // measure-first signal the v0.6.0 hedge was built to inform.
+      if (turn.inputTokens != null || turn.outputTokens != null || turn.costUsd != null) {
+        console.log(
+          `[engine] Usage [${harnessKey}] conv=${conversationId} in=${turn.inputTokens ?? "?"} out=${turn.outputTokens ?? "?"} costUsd=${turn.costUsd ?? "?"}`,
+        );
+      }
+
+      // A terminal error with no usable content maps to the same friendly
+      // fallback the adapter-throws path used.
+      if (turn.error && !turn.content) {
+        console.error(`[engine] Harness error [${harnessKey}]: ${turn.error.message}`);
+        return {
+          response: FRIENDLY_ERROR_MESSAGE,
+          blocked: false,
+          policyEvents: collectedEvents,
+        };
+      }
+      llmResponse = turn.content;
 
       // Save session ID for resume on next message
-      if (result.sessionId) {
-        await this.saveSessionId(conversationId, result.sessionId, toolCallLog, contextSignature);
-        console.log(`[engine] Session saved for conversation ${conversationId}: ${result.sessionId}`);
+      if (turn.sessionId) {
+        await this.saveHarnessSession(
+          conversationId,
+          harnessKey,
+          turn.sessionId,
+          toolCallLog,
+          contextSignature,
+        );
+        console.log(
+          `[engine] Session saved for conversation ${conversationId} [${harnessKey}]: ${turn.sessionId}`,
+        );
       }
 
       // Log tool calls to activity log
@@ -1392,57 +1453,70 @@ export class ConstitutionEngine {
   // -- Private: session management -----------------------------------
 
   /**
-   * Get the Agent SDK session ID for a conversation, if it's still valid.
-   * Returns null if no session exists or it's expired.
+   * Get the resume token (Agent SDK session_id / Codex thread_id) for a
+   * conversation's harness, if it's still valid. Returns null if no session
+   * exists for that harness or it's expired.
    */
-  private getSessionId(conversationId: string): string | null {
-    const ctx = this.sessionCache.get(conversationId);
-    if (!ctx) return null;
+  private getResumeId(conversationId: string, harnessKey: HarnessKey): string | null {
+    const state = getHarnessSession(this.sessionCache.get(conversationId) ?? null, harnessKey);
+    if (!state) return null;
 
-    const elapsed = Date.now() - ctx.lastActivity;
+    const elapsed = Date.now() - new Date(state.lastActivity).getTime();
     if (elapsed > SESSION_TIMEOUT_MS) {
       // Session expired — will be cleaned up and noted
       return null;
     }
 
-    return ctx.sessionId;
+    return state.id;
   }
 
   /**
-   * Save the Agent SDK session ID after a successful query.
-   * Also persists to the conversation's sessionContext field in the DB.
+   * Context signature recorded on the harness's last turn, for lean-resume
+   * (skip re-sending unchanged system context). Null if no cached session.
    */
-  private async saveSessionId(
+  private getContextSignature(conversationId: string, harnessKey: HarnessKey): string | null {
+    return (
+      getHarnessSession(this.sessionCache.get(conversationId) ?? null, harnessKey)
+        ?.contextSignature ?? null
+    );
+  }
+
+  /**
+   * Save a harness's resume token after a successful turn. Merges into the
+   * conversation's existing session context (preserving any sibling harness's
+   * token) and persists to the DB for durability across restarts.
+   */
+  private async saveHarnessSession(
     conversationId: string,
+    harnessKey: HarnessKey,
     sessionId: string,
     toolCalls?: Array<{ name: string; input: Record<string, unknown> }>,
     contextSignature?: string,
   ): Promise<void> {
-    this.sessionCache.set(conversationId, {
-      sessionId,
-      lastActivity: Date.now(),
+    const merged = setHarnessSession(this.sessionCache.get(conversationId) ?? null, harnessKey, {
+      id: sessionId,
+      lastActivity: new Date().toISOString(),
       toolCallNames: toolCalls?.map((t) => t.name) ?? [],
-      contextSignature,
+      ...(contextSignature ? { contextSignature } : {}),
     });
+    this.sessionCache.set(conversationId, merged);
 
-    // Persist to DB for durability across restarts
     await this.db
       .update(conversations)
-      .set({
-        sessionContext: {
-          sessionId,
-          lastActivity: new Date().toISOString(),
-          toolCallNames: toolCalls?.map((t) => t.name) ?? [],
-          contextSignature,
-        },
-      })
+      .set({ sessionContext: merged })
       .where(eq(conversations.id, conversationId));
   }
 
   /**
-   * Load session state from DB (on server restart, cache is empty).
+   * Load session state from DB (on server restart, cache is empty). Restores
+   * the full per-harness context to the cache (so a later model switch keeps
+   * the sibling harness's token), then returns the requested harness's resume
+   * token if it's still valid.
    */
-  private async loadSessionFromDb(conversationId: string): Promise<string | null> {
+  private async loadSessionFromDb(
+    conversationId: string,
+    harnessKey: HarnessKey,
+  ): Promise<string | null> {
     const row = await this.db
       .select({ sessionContext: conversations.sessionContext })
       .from(conversations)
@@ -1450,23 +1524,19 @@ export class ConstitutionEngine {
       .limit(1)
       .then((rows) => rows[0]);
 
-    if (!row?.sessionContext) return null;
+    const ctx = parseSessionContext(row?.sessionContext ?? null);
+    if (!ctx) return null;
 
-    const ctx = row.sessionContext as { sessionId?: string; lastActivity?: string };
-    if (!ctx.sessionId || !ctx.lastActivity) return null;
+    // Restore to in-memory cache (upgrades legacy flat rows to the keyed shape).
+    this.sessionCache.set(conversationId, ctx);
 
-    const elapsed = Date.now() - new Date(ctx.lastActivity).getTime();
+    const state = getHarnessSession(ctx, harnessKey);
+    if (!state) return null;
+
+    const elapsed = Date.now() - new Date(state.lastActivity).getTime();
     if (elapsed > SESSION_TIMEOUT_MS) return null;
 
-    // Restore to in-memory cache
-    this.sessionCache.set(conversationId, {
-      sessionId: ctx.sessionId,
-      lastActivity: new Date(ctx.lastActivity).getTime(),
-      toolCallNames: (ctx as { toolCallNames?: string[] }).toolCallNames ?? [],
-      contextSignature: (ctx as { contextSignature?: string }).contextSignature,
-    });
-
-    return ctx.sessionId;
+    return state.id;
   }
 
   // -- Private: policy event logging ---------------------------------

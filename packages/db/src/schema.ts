@@ -86,6 +86,7 @@ export const staffAgents = sqliteTable(
     signalAccount: text("signal_account"), // Signal phone number the agent's daemon is registered under
     signalDaemonPort: integer("signal_daemon_port"), // signal-cli daemon HTTP port
     model: text("model").notNull().default("claude-sonnet-4-6"),
+    reasoningEffort: text("reasoning_effort"), // low | medium | high — Codex only; NULL for Claude
     status: text("status").notNull().default("active"), // active | paused | idle
     isHeadButler: integer("is_head_butler", { mode: "boolean" }).notNull().default(false),
     autonomyLevel: text("autonomy_level").notNull().default("supervised"), // supervised | trusted | autonomous
