@@ -16,6 +16,7 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
@@ -30,6 +31,10 @@ type SpawnFn = typeof nodeSpawn;
 const CODEX_BIN = process.platform === "win32" ? "codex.cmd" : "codex";
 const KILL_GRACE_MS = 5_000;
 const MCP_TOKEN_ENV = "CARSONOS_MCP_TOKEN";
+// Watchdog ceiling for a single Codex turn. Generous because high-reasoning +
+// multiple tool calls can be slow, but bounded so a hung subprocess can't wedge
+// the conversation forever (the engine has no abort plumbing for Codex).
+const TURN_TIMEOUT_MS = 300_000;
 
 export interface CodexHarnessOptions {
   /** CarsonOS data dir root (e.g. ~/.carsonos). */
@@ -118,42 +123,55 @@ export class CodexHarness implements AgentHarness {
         return;
       }
 
-      // 2. System prompt → instructions file; attachments → image files.
-      const instructionsPath = path.join(codexHome, "instructions.md");
-      await fs.writeFile(instructionsPath, params.systemPrompt, { mode: 0o600 });
-      const imagePaths = await writeImages(codexHome, params.attachments);
+      // 2-4. Instructions file, image files, and spawn — guarded so a failure
+      //       (disk full, EACCES, missing binary) releases the per-turn MCP
+      //       token and surfaces a terminal error instead of throwing out of
+      //       the generator (the AgentHarness contract: streamTurn never throws).
+      let child: ReturnType<SpawnFn>;
+      try {
+        // Per-turn nonce so concurrent turns on the same conversation (e.g. a
+        // scheduled task firing mid-chat — both share this CODEX_HOME) can't
+        // read each other's half-written instructions or overwrite images.
+        const turnNonce = crypto.randomBytes(6).toString("hex");
+        const instructionsPath = path.join(codexHome, `instructions-${turnNonce}.md`);
+        await fs.writeFile(instructionsPath, params.systemPrompt, { mode: 0o600 });
+        const imagePaths = await writeImages(codexHome, params.attachments, turnNonce);
 
-      // 3. Build args. Resume keeps the same thread; fresh starts a new one.
-      // NOTE: sandbox_mode = "read-only" comes from config.toml (auth bridge),
-      // NOT a --sandbox CLI flag: `codex exec` accepts --sandbox but
-      // `codex exec resume` does not, so a CLI flag breaks the resume path.
-      // --disable, -c, --image, --json, --skip-git-repo-check work on both.
-      const opts = [
-        "--json",
-        "--skip-git-repo-check",
-        "--disable",
-        "shell_tool",
-        "--disable",
-        "browser_use",
-        "--disable",
-        "computer_use",
-        "-c",
-        `model_instructions_file=${JSON.stringify(instructionsPath)}`,
-        ...imagePaths.flatMap((p) => ["--image", p]),
-      ];
-      const prompt = renderPrompt(params);
-      const args = params.resumeSessionId
-        ? ["exec", "resume", params.resumeSessionId, ...opts, prompt]
-        : ["exec", ...opts, prompt];
+        // sandbox_mode = "read-only" comes from config.toml (auth bridge), NOT a
+        // --sandbox CLI flag: `codex exec` accepts --sandbox but `codex exec
+        // resume` does not, so a CLI flag breaks the resume path. --disable, -c,
+        // --image, --json, --skip-git-repo-check work on both.
+        const opts = [
+          "--json",
+          "--skip-git-repo-check",
+          "--disable",
+          "shell_tool",
+          "--disable",
+          "browser_use",
+          "--disable",
+          "computer_use",
+          "-c",
+          `model_instructions_file=${JSON.stringify(instructionsPath)}`,
+          ...imagePaths.flatMap((p) => ["--image", p]),
+        ];
+        const prompt = renderPrompt(params);
+        const args = params.resumeSessionId
+          ? ["exec", "resume", params.resumeSessionId, ...opts, prompt]
+          : ["exec", ...opts, prompt];
 
-      // 4. Spawn detached (own process group) so abort can kill codex + its MCP
-      //    grandchildren together.
-      const child = self.spawnFn(self.codexBin, args, {
-        cwd: codexHome,
-        env: childEnv(codexHome, clearEnv, mcpToken),
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+        // Spawn detached (own process group) so abort/timeout can kill codex +
+        // its MCP grandchildren together.
+        child = self.spawnFn(self.codexBin, args, {
+          cwd: codexHome,
+          env: childEnv(codexHome, clearEnv, mcpToken),
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (err) {
+        releaseTurn();
+        yield { type: "error", recoverable: false, error: `Failed to start Codex: ${errMsg(err)}` };
+        return;
+      }
 
       let aborted = signal.aborted;
       const onAbort = () => {
@@ -167,10 +185,28 @@ export class CodexHarness implements AgentHarness {
       child.stderr?.on("data", (d: Buffer) => {
         stderr += d.toString();
       });
+      let closed = false;
       const exited = new Promise<number | null>((resolve) => {
-        child.on("close", (code) => resolve(code));
-        child.on("error", () => resolve(null));
+        child.on("close", (code) => {
+          closed = true;
+          resolve(code);
+        });
+        child.on("error", () => {
+          closed = true;
+          resolve(null);
+        });
       });
+
+      // Watchdog: codex turns have no engine-side abort (processMessage passes a
+      // never-aborted signal), so without this a hung subprocess (stuck on the
+      // network, or stdout open but idle) blocks the conversation forever.
+      // Killing the process group closes stdout, which ends the readline loop.
+      let timedOut = false;
+      const watchdog = setTimeout(() => {
+        timedOut = true;
+        killTree(child.pid);
+      }, TURN_TIMEOUT_MS);
+      watchdog.unref?.();
 
       // 5. Stream stdout: each JSON line maps to zero+ HarnessEvents.
       const mapper = new CodexEventMapper();
@@ -184,7 +220,13 @@ export class CodexHarness implements AgentHarness {
         const code = await exited;
 
         // 6. Terminal event.
-        if (aborted) {
+        if (timedOut) {
+          yield {
+            type: "error",
+            recoverable: false,
+            error: `Codex timed out after ${Math.round(TURN_TIMEOUT_MS / 1000)}s`,
+          };
+        } else if (aborted) {
           yield { type: "error", recoverable: true, error: "aborted" };
         } else if (code === 0 && mapper.sawTurnCompleted) {
           if (mapper.capturedThreadId) {
@@ -199,9 +241,12 @@ export class CodexHarness implements AgentHarness {
           };
         }
       } finally {
+        clearTimeout(watchdog);
         releaseTurn();
         signal.removeEventListener("abort", onAbort);
-        killTree(child.pid); // no-op if already exited
+        // Only kill if still running. After a clean close the pid is reaped, and
+        // signalling it could hit a recycled process group.
+        if (!closed) killTree(child.pid);
       }
     })();
   }
@@ -232,13 +277,14 @@ function renderPrompt(params: HarnessTurnParams): string {
 async function writeImages(
   codexHome: string,
   attachments: MediaAttachment[] | undefined,
+  nonce: string,
 ): Promise<string[]> {
   if (!attachments?.length) return [];
   const paths: string[] = [];
   for (let i = 0; i < attachments.length; i++) {
     const a = attachments[i];
     const ext = (a.mediaType.split("/")[1] ?? "png").replace(/[^a-z0-9]/gi, "");
-    const p = path.join(codexHome, `attachment-${i}.${ext}`);
+    const p = path.join(codexHome, `attachment-${nonce}-${i}.${ext}`);
     await fs.writeFile(p, Buffer.from(a.base64, "base64"), { mode: 0o600 });
     paths.push(p);
   }

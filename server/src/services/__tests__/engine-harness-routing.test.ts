@@ -124,4 +124,25 @@ describe("ConstitutionEngine harness routing", () => {
     // The Claude adapter must not be invoked for a Codex agent.
     expect(adapter.lastParams).toBeUndefined();
   });
+
+  it("falls back to the Claude adapter for a codex model when codex is unregistered", async () => {
+    // Registry is empty (beforeEach reset) — codex is NOT registered. The engine
+    // must route to its own Claude harness (not throw, not hand a codex thread_id
+    // to Claude as a session_id).
+    const { household, member, agent } = await seed(db, "codex/gpt-5.4");
+    const adapter = new FakeAdapter();
+    const engine = new ConstitutionEngine({ db, broadcast: () => {}, adapter });
+
+    const result = await engine.processMessage({
+      agentId: agent.id,
+      memberId: member.id,
+      householdId: household.id,
+      message: "hi",
+      channel: "telegram",
+    });
+
+    expect(result.blocked).toBe(false);
+    expect(result.response).toContain("claude says hi");
+    expect(adapter.lastParams).toBeDefined(); // used the injected Claude adapter, no throw
+  });
 });

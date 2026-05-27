@@ -36,6 +36,15 @@ describe("consumeHarnessTurn", () => {
     expect(result.costUsd).toBe(0.02);
   });
 
+  it("captures token counts from a usage event (Codex reports tokens, no cost)", async () => {
+    const result = await consumeHarnessTurn(
+      stream({ type: "usage", inputTokens: 1200, outputTokens: 340 }, { type: "done", content: "x" }),
+    );
+    expect(result.inputTokens).toBe(1200);
+    expect(result.outputTokens).toBe(340);
+    expect(result.costUsd).toBeUndefined();
+  });
+
   it("leaves content empty and sets error on a terminal error event", async () => {
     const result = await consumeHarnessTurn(
       stream(

@@ -99,7 +99,11 @@ describe("CodexHarness", () => {
 
     const home = codexHomeFor(dataDir, "conv-1");
     expect(await fs.readFile(join(home, "auth.json"), "utf8")).toBe(AUTH);
-    expect(await fs.readFile(join(home, "instructions.md"), "utf8")).toBe("you are carson");
+    // Instructions are written to a per-turn nonce file (concurrency-safe).
+    const files = await fsp.readdir(home);
+    const instrFile = files.find((f) => /^instructions-[0-9a-f]+\.md$/.test(f));
+    expect(instrFile).toBeTruthy();
+    expect(await fs.readFile(join(home, instrFile!), "utf8")).toBe("you are carson");
     const config = await fs.readFile(join(home, "config.toml"), "utf8");
     expect(config).toContain(`sandbox_mode = "read-only"`);
     expect(config).toContain(`model = "gpt-5.4"`); // codex/ prefix stripped
@@ -178,6 +182,38 @@ describe("CodexHarness", () => {
     expect(config).toContain(`bearer_token_env_var = "CARSONOS_MCP_TOKEN"`);
     expect(config).toContain("[mcp_servers.carsonos.tools.search_memory]");
     // ...and released when the turn ended (no leak).
+    expect(registry.size).toBe(0);
+  });
+
+  it("releases the MCP token and yields a terminal error (never throws) when spawn fails", async () => {
+    await fs.writeFile(masterAuth, AUTH);
+    const registry = new CodexToolRegistry();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const throwingSpawn = (() => {
+      throw new Error("spawn codex ENOENT");
+    }) as any;
+    const h = new CodexHarness({
+      dataDir,
+      masterAuthPath: masterAuth,
+      spawn: throwingSpawn,
+      toolRegistry: registry,
+      mcpUrl: "http://127.0.0.1:3300/internal/codex-mcp",
+    });
+
+    const events = await collect(
+      h.streamTurn(
+        {
+          ...baseParams,
+          tools: [{ name: "search_memory", description: "d", input_schema: {} }],
+          toolExecutor: async () => ({ content: "ok" }),
+        },
+        new AbortController().signal,
+      ),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "error", recoverable: false });
+    // The per-turn token must be released even though spawn threw — no leak.
     expect(registry.size).toBe(0);
   });
 

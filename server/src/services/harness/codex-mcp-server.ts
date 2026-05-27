@@ -63,12 +63,20 @@ export async function handleMcpMessage(
 
     case "tools/call": {
       const name = msg.params?.name;
-      if (typeof name !== "string" || !turn.tools.some((t) => t.name === name)) {
+      const def = typeof name === "string" ? turn.tools.find((t) => t.name === name) : undefined;
+      if (!def) {
         return rpcError(id, -32602, `unknown tool: ${String(name)}`);
       }
       const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+      // The Claude SDK path validates args against the tool's JSON schema before
+      // dispatch; the Codex path must too, or executors get raw model-shaped args
+      // (missing required fields, wrong types) the SDK path never lets through.
+      const argErr = validateArgs(def.input_schema, args);
+      if (argErr) {
+        return rpcError(id, -32602, `invalid arguments for ${def.name}: ${argErr}`);
+      }
       try {
-        const result = await turn.executor(name, args);
+        const result = await turn.executor(def.name, args);
         // Tool-level failures are returned as a successful result with
         // isError:true (per MCP) so the model sees the error, not a transport fault.
         return ok(id, {
@@ -148,4 +156,38 @@ function extractBearer(header: string | undefined): string | undefined {
 function normalizeSchema(schema: Record<string, unknown>): Record<string, unknown> {
   if (schema && typeof schema === "object" && schema.type) return schema;
   return { type: "object", properties: {} };
+}
+
+/**
+ * Lightweight JSON-Schema validation for tool args: required fields present and
+ * top-level property types match. Not a full validator — just enough to match
+ * the trust boundary the Claude SDK enforces. Returns an error string or null.
+ */
+function validateArgs(schema: Record<string, unknown>, args: Record<string, unknown>): string | null {
+  if (!schema || typeof schema !== "object") return null;
+  const required = Array.isArray(schema.required) ? (schema.required as unknown[]) : [];
+  for (const key of required) {
+    if (typeof key === "string" && !(key in args)) return `missing required field "${key}"`;
+  }
+  const props = (schema.properties ?? {}) as Record<string, { type?: string }>;
+  for (const [key, val] of Object.entries(args)) {
+    const declared = props[key]?.type;
+    if (!declared || val === null || val === undefined) continue;
+    if (!matchesJsonType(val, declared)) {
+      return `field "${key}" expected ${declared}, got ${Array.isArray(val) ? "array" : typeof val}`;
+    }
+  }
+  return null;
+}
+
+function matchesJsonType(val: unknown, type: string): boolean {
+  switch (type) {
+    case "string": return typeof val === "string";
+    case "number":
+    case "integer": return typeof val === "number";
+    case "boolean": return typeof val === "boolean";
+    case "array": return Array.isArray(val);
+    case "object": return typeof val === "object" && !Array.isArray(val);
+    default: return true; // unknown/unconstrained type — don't reject
+  }
 }

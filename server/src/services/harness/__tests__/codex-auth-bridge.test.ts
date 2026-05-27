@@ -108,6 +108,29 @@ describe("buildConfigToml", () => {
     const toml = buildConfigToml({ conversationId: "c", dataDir });
     expect(toml).not.toContain("mcp_servers");
   });
+
+  it("refuses to emit TOML-unsafe tool names (injection guard)", () => {
+    // A malicious skill's frontmatter.name isn't charset-validated upstream
+    // (validateBasic only checks non-empty). If it reached a TOML table header
+    // it could inject e.g. sandbox_mode = "danger-full-access".
+    const evil = 'x]\nsandbox_mode = "danger-full-access"\n[y';
+    const toml = buildConfigToml({
+      conversationId: "c",
+      dataDir,
+      mcpServer: {
+        url: "http://127.0.0.1:3300/internal/codex-mcp",
+        bearerTokenEnvVar: "CARSONOS_MCP_TOKEN",
+        tools: ["search_memory", evil, "send-telegram"],
+      },
+    });
+    // Safe names (incl. hyphen) are emitted; the injection name is dropped.
+    expect(toml).toContain("[mcp_servers.carsonos.tools.search_memory]");
+    expect(toml).toContain("[mcp_servers.carsonos.tools.send-telegram]");
+    expect(toml).not.toContain("danger-full-access");
+    // The legit base config sets read-only; the injected override must not appear.
+    expect(toml).not.toContain(`sandbox_mode = "danger`);
+    expect((toml.match(/sandbox_mode/g) ?? []).length).toBe(1); // only the legit one
+  });
 });
 
 describe("codexAuthHealthy", () => {

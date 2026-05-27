@@ -44,7 +44,7 @@ import {
   type HarnessKey,
 } from "./harness/session-context.js";
 import { ClaudeHarness } from "./harness/claude-harness.js";
-import { resolveHarness } from "./harness/registry.js";
+import { resolveHarness, hasHarness } from "./harness/registry.js";
 import { consumeHarnessTurn } from "./harness/consume.js";
 import type { HarnessTurnParams } from "@carsonos/shared";
 import {
@@ -566,9 +566,20 @@ export class ConstitutionEngine {
     );
     const conversationId = conversationContext.id;
 
-    // The agent's model selects which harness serves this turn; each harness
-    // keeps its own resume token under the same conversation row.
-    const harnessKey = harnessKeyForModel(agent.model);
+    // The agent's model selects which harness serves this turn. Resolve it NOW
+    // (not later) and key the session by the RESOLVED harness's id: if a codex/*
+    // model falls back to Claude (codex harness unregistered), harnessKey must
+    // become "claude" so we don't load a Codex thread_id and hand it to Claude
+    // as a session_id. Claude (and any unregistered family) uses this engine's
+    // wrapped adapter — preserves test injection and avoids resolveHarness
+    // throwing when the registry is empty. Registered non-Claude families
+    // resolve from the registry.
+    const requestedKey = harnessKeyForModel(agent.model);
+    const harness =
+      requestedKey !== "claude" && hasHarness(requestedKey)
+        ? resolveHarness(agent.model)
+        : this.claudeHarness;
+    const harnessKey = harness.id;
 
     // Try to resume the harness's existing session (check cache first, then DB)
     let resumeSessionId = this.getResumeId(conversationId, harnessKey);
@@ -890,19 +901,29 @@ export class ConstitutionEngine {
         // harnesses pick it up on the next turn (capabilities.refreshTier).
         refreshTools: refreshToolsForAdapter,
         conversationId,
+        // Codex reasoning effort (route-validated to low|medium|high). Ignored
+        // by Claude. Without this, the StaffDetail effort picker is inert.
+        ...(agent.reasoningEffort
+          ? { reasoningEffort: agent.reasoningEffort as "low" | "medium" | "high" }
+          : {}),
         traceId,
       };
-      // Route the turn by the agent's model. Claude is this engine's wrapped
-      // adapter (so injected/test adapters flow through unchanged); other
-      // families resolve from the harness registry (Codex registers at startup,
-      // and an unknown model falls back to Claude).
-      const harness =
-        harnessKey === "claude" ? this.claudeHarness : resolveHarness(agent.model);
+      // `harness` was resolved up-front (see session-key resolution above) so
+      // the resume token is keyed by the harness that actually runs.
       const turn = await consumeHarnessTurn(
         harness.streamTurn(turnParams, new AbortController().signal),
         params.onTextDelta,
       );
       perf.adapterMs = Date.now() - adapterStart;
+
+      // Per-turn usage telemetry. Codex reports tokens (no cost); Claude on Max
+      // often reports neither. Logged so usage is observable per harness — the
+      // measure-first signal the v0.6.0 hedge was built to inform.
+      if (turn.inputTokens != null || turn.outputTokens != null || turn.costUsd != null) {
+        console.log(
+          `[engine] Usage [${harnessKey}] conv=${conversationId} in=${turn.inputTokens ?? "?"} out=${turn.outputTokens ?? "?"} costUsd=${turn.costUsd ?? "?"}`,
+        );
+      }
 
       // A terminal error with no usable content maps to the same friendly
       // fallback the adapter-throws path used.

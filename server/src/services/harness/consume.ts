@@ -22,6 +22,9 @@ export interface HarnessTurnResult {
   sessionId?: string;
   /** Per-turn cost in USD when the harness reports it (Claude API; null on Max). */
   costUsd?: number;
+  /** Token counts when reported. Codex emits these (no cost); Claude on Max often omits both. */
+  inputTokens?: number;
+  outputTokens?: number;
   /** Set when the turn ended in a terminal `error` event. */
   error?: { recoverable: boolean; message: string };
 }
@@ -33,6 +36,8 @@ export async function consumeHarnessTurn(
   let content = "";
   let sessionId: string | undefined;
   let costUsd: number | undefined;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
   let error: { recoverable: boolean; message: string } | undefined;
 
   for await (const ev of stream) {
@@ -45,6 +50,8 @@ export async function consumeHarnessTurn(
         break;
       case "usage":
         if (typeof ev.costUsd === "number") costUsd = ev.costUsd;
+        if (typeof ev.inputTokens === "number") inputTokens = ev.inputTokens;
+        if (typeof ev.outputTokens === "number") outputTokens = ev.outputTokens;
         break;
       case "done":
         content = ev.content;
@@ -63,6 +70,8 @@ export async function consumeHarnessTurn(
     content,
     ...(sessionId ? { sessionId } : {}),
     ...(costUsd != null ? { costUsd } : {}),
+    ...(inputTokens != null ? { inputTokens } : {}),
+    ...(outputTokens != null ? { outputTokens } : {}),
     ...(error ? { error } : {}),
   };
 }

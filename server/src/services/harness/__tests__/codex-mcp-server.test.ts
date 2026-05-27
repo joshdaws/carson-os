@@ -61,7 +61,7 @@ describe("handleMcpMessage", () => {
 
   it("surfaces an executor throw as a tool result with isError:true (not a protocol error)", async () => {
     const res = (await handleMcpMessage(
-      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "search_memory", arguments: {} } },
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "search_memory", arguments: { query: "x" } } },
       turn(async () => {
         throw new Error("db locked");
       }),
@@ -69,6 +69,23 @@ describe("handleMcpMessage", () => {
 
     expect(res.result.isError).toBe(true);
     expect(res.result.content[0].text).toContain("db locked");
+  });
+
+  it("rejects tools/call with a missing required arg (-32602)", async () => {
+    const res = (await handleMcpMessage(
+      { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "search_memory", arguments: {} } },
+      turn(async () => ({ content: "x" })),
+    )) as { error: { code: number; message: string } };
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toMatch(/required/);
+  });
+
+  it("rejects tools/call with a wrong-typed arg (-32602)", async () => {
+    const res = (await handleMcpMessage(
+      { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "search_memory", arguments: { query: 123 } } },
+      turn(async () => ({ content: "x" })),
+    )) as { error: { code: number } };
+    expect(res.error.code).toBe(-32602);
   });
 
   it("rejects an unknown tool with -32602", async () => {

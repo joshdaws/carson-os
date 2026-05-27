@@ -16,6 +16,13 @@
  *     "approve"`), so they run non-interactively WITHOUT the dangerous
  *     `--dangerously-bypass-approvals-and-sandbox` flag.
  *   - `OPENAI_API_KEY` is cleared from the child env.
+ *
+ * Token-exposure note: `auth.json` (the user's ChatGPT tokens) must live in
+ * CODEX_HOME for codex to authenticate — that's inherent to the CLI. A
+ * prompt-injected model could only exfiltrate it if it had a file-read tool,
+ * but CodexHarness spawns with `shell_tool`/`browser_use`/`computer_use`
+ * disabled, so no file-read surface is exposed. If those tools are ever
+ * re-enabled, revisit this (consider a throwaway derived credential).
  */
 
 import crypto from "node:crypto";
@@ -25,6 +32,9 @@ import os from "node:os";
 
 /** Env key(s) stripped from the Codex child so it can only use ChatGPT auth. */
 export const CODEX_CLEAR_ENV = ["OPENAI_API_KEY"] as const;
+
+/** TOML bare-key charset — safe to interpolate into a `[table.header]`. */
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
 
 function masterAuthPath(): string {
   return path.join(os.homedir(), ".codex", "auth.json");
@@ -105,6 +115,14 @@ export function buildConfigToml(opts: PrepareCodexHomeOptions): string {
     lines.push(`url = ${JSON.stringify(opts.mcpServer.url)}`);
     lines.push(`bearer_token_env_var = ${JSON.stringify(opts.mcpServer.bearerTokenEnvVar)}`);
     for (const tool of opts.mcpServer.tools) {
+      // Tool names become a TOML table header (a bare key). Only emit names that
+      // are bare-key-safe; a name with brackets/newlines/dots could otherwise
+      // inject arbitrary config — e.g. sandbox_mode = "danger-full-access" —
+      // and defeat the read-only sandbox. Skill-imported tool names are NOT
+      // charset-validated upstream (validateBasic only checks non-empty), so
+      // this is the load-bearing guard. A skipped tool simply isn't
+      // auto-approved (codex can't call it non-interactively); no injection.
+      if (!TOML_BARE_KEY.test(tool)) continue;
       lines.push("", `[mcp_servers.carsonos.tools.${tool}]`, `approval_mode = "approve"`);
     }
   }
