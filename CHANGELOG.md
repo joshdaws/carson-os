@@ -4,6 +4,23 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-05-27
+
+### Added
+
+- **Each family member's AI can now run on Claude or Codex.** Pick a brain per agent: Claude (Sonnet 4.6, via the Max subscription) or Codex (GPT-5.5, via your ChatGPT subscription — no OpenAI API key, ever). The constitution, memory, tools, personality, and Telegram streaming all work identically either way. Bob can stay on Claude for long delegations; Alice can run on GPT-5.5 because she likes its writing. Same person, same relationship, different brain underneath — and a hedge against Anthropic's June 15 credit metering.
+- **Full tool parity for Codex agents.** A Codex agent reaches every CarsonOS system tool — `search_memory`, `send_telegram`, `schedule_task`, `delegate_task`, and the rest — over a loopback MCP endpoint, with the tools running in the main process. No capability gap versus Claude.
+- **Per-agent model + reasoning-effort picker** on the staff detail page. Flip an agent to Codex and choose Quick / Balanced / Thorough reasoning, all from the web UI.
+- **Photos work on Codex agents too** — Telegram images pass through as `--image` attachments.
+
+### Changed
+
+- **The agent loop is now a pluggable "harness."** Every family-agent turn routes by the agent's model through a `Harness` (Claude wraps the Agent SDK; Codex shells out to `codex exec --json`). Conversation sessions are stored per-harness, so switching an agent's model never drops the other runtime's session — flip back and forth losslessly.
+
+### Security
+
+- **Codex runs sandboxed with no bypass flag.** Read-only sandbox, shell/browser/computer tools disabled, only CarsonOS's own tools auto-approved, `OPENAI_API_KEY` stripped from the child. A per-conversation `CODEX_HOME` keeps two family members' Codex sessions fully isolated.
+
 ## [0.5.9] - 2026-05-24
 
 ### Added
