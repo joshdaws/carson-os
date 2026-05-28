@@ -4,7 +4,7 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.6.1] - 2026-05-28
 
 ### Changed
 
