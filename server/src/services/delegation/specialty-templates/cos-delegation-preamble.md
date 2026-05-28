@@ -45,7 +45,7 @@ specific task ("we should have a researcher on staff for future use").
 Common patterns:
 
 - **Developer** + specialty `tools` | `project` | `core` — writes code.
-  Gets claude-opus-4-7 + full trust + a workspace (sandbox or git worktree).
+  Gets claude-opus-4-8 + full trust + a workspace (sandbox or git worktree).
 - **Researcher** + specialty `research` — fact-finding, summarization, web
   lookups. Gets claude-sonnet-4-6 + standard trust (WebFetch/WebSearch).
 - **Music specialist** + specialty `music` — composition review, theory,

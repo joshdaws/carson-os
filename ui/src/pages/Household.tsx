@@ -103,7 +103,7 @@ const STAFF_ROLE_OPTIONS: { value: StaffRole; label: string }[] = [
 const MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
-  "claude-opus-4-7": "Opus 4.7",
+  "claude-opus-4-8": "Opus 4.8",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
   "claude-haiku-4-5": "Haiku 4.5",
 };
@@ -116,7 +116,7 @@ const TRUST_LEVEL_OPTIONS: { value: TrustLevel; label: string; description: stri
 
 const MODEL_OPTIONS = [
   { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { value: "claude-opus-4-7", label: "Opus 4.7" },
+  { value: "claude-opus-4-8", label: "Opus 4.8" },
   { value: "claude-opus-4-6", label: "Opus 4.6" },
   { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];

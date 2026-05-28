@@ -690,7 +690,7 @@ export class DelegationService {
     // (read-only builtins + web search). The proposer can override via the
     // model/trustLevel args on propose_hire.
     const isDevRole = isDeveloperSpecialty(specialty);
-    const model = proposal.model?.trim() || (isDevRole ? "claude-opus-4-7" : "claude-sonnet-4-6");
+    const model = proposal.model?.trim() || (isDevRole ? "claude-opus-4-8" : "claude-sonnet-4-6");
     const trustLevel = proposal.trustLevel ?? (isDevRole ? "full" : "standard");
 
     // Operating instructions precedence:
@@ -1676,7 +1676,7 @@ function composeHireCardText(args: {
   };
   const trustLine = `${effectiveTrust} (${trustCapabilities[effectiveTrust]})`;
   const effectiveModel =
-    args.model?.trim() || (devRole ? "claude-opus-4-7" : "claude-sonnet-4-6");
+    args.model?.trim() || (devRole ? "claude-opus-4-8" : "claude-sonnet-4-6");
 
   const lines: string[] = [
     `**Hire ${args.proposedName} — ${args.role}?**`,

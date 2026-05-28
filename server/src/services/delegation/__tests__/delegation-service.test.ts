@@ -77,7 +77,7 @@ async function seedBasics(db: Db) {
       staffRole: "custom",
       specialty: "tools",
       visibility: "internal",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       trustLevel: "full",
       autonomyLevel: "autonomous",
     })
@@ -374,7 +374,7 @@ describe("DelegationService — handleHireApproval / Rejection race gate", () =>
       .where(eq(staffAgents.id, result.developerAgentId!));
     expect(dev.name).toBe("Bob2");
     expect(dev.specialty).toBe("tools");
-    expect(dev.model).toBe("claude-opus-4-7");
+    expect(dev.model).toBe("claude-opus-4-8");
     expect(dev.trustLevel).toBe("full");
     expect(dev.autonomyLevel).toBe("autonomous");
     expect(dev.operatingInstructions).toContain("Operating Instructions");
@@ -604,7 +604,7 @@ describe("DelegationService — grant/revoke delegation (v0.4 N:M)", () => {
         name: "Alice",
         staffRole: "custom",
         specialty: "tools",
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-8",
         trustLevel: "full",
       })
       .returning();

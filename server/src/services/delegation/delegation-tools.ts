@@ -79,7 +79,7 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
   {
     name: "propose_hire",
     description:
-      "Propose hiring a new specialist agent. Always escalates to the principal via a Telegram approval card. On approval, the specialist is added to staff AND — if `originalUserRequest` is set — the hire flow automatically delegates that task to the newly-hired specialist without requiring the user to re-prompt. Use `originalUserRequest` whenever you're hiring in response to a specific ask (\"build me a Todoist tool\", \"research Netflix culture\"); omit it only for proactive hires without a tied task.\n\nThe `role` and `specialty` are free-form so you can bring in any kind of specialist — Developer, Researcher, Music specialist, Tutor, Coach, etc. Three specialties get first-class workspace provisioning: `tools` (sandbox), `project` (git worktree), `core` (carson-os worktree). Any other specialty runs as a conversation-driven agent with MCP tools + trust-level builtins (no workspace).\n\nDefaults by role: `Developer` → claude-opus-4-7 + full trust, anything else → claude-sonnet-4-6 + standard trust. Both autonomous. Override via the `model`/`trustLevel` args.",
+      "Propose hiring a new specialist agent. Always escalates to the principal via a Telegram approval card. On approval, the specialist is added to staff AND — if `originalUserRequest` is set — the hire flow automatically delegates that task to the newly-hired specialist without requiring the user to re-prompt. Use `originalUserRequest` whenever you're hiring in response to a specific ask (\"build me a Todoist tool\", \"research Netflix culture\"); omit it only for proactive hires without a tied task.\n\nThe `role` and `specialty` are free-form so you can bring in any kind of specialist — Developer, Researcher, Music specialist, Tutor, Coach, etc. Three specialties get first-class workspace provisioning: `tools` (sandbox), `project` (git worktree), `core` (carson-os worktree). Any other specialty runs as a conversation-driven agent with MCP tools + trust-level builtins (no workspace).\n\nDefaults by role: `Developer` → claude-opus-4-8 + full trust, anything else → claude-sonnet-4-6 + standard trust. Both autonomous. Override via the `model`/`trustLevel` args.",
     input_schema: {
       type: "object",
       properties: {
@@ -106,7 +106,7 @@ export const DELEGATION_TOOLS: ToolDefinition[] = [
         },
         model: {
           type: "string",
-          description: "Optional model override (e.g., 'claude-opus-4-7', 'claude-sonnet-4-6'). Defaults: Developer=opus, others=sonnet.",
+          description: "Optional model override (e.g., 'claude-opus-4-8', 'claude-sonnet-4-6'). Defaults: Developer=opus, others=sonnet.",
         },
         trustLevel: {
           type: "string",

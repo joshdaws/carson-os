@@ -4,6 +4,12 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.1] - 2026-05-28
+
+### Changed
+
+- **Claude Opus 4.8 everywhere Opus 4.7 was.** Opus 4.8 is now the Opus option in both model pickers and the default brain for hired Developer specialists. Agents previously on Opus 4.7 moved to 4.8.
+
 ## [0.6.0] - 2026-05-27
 
 ### Added
