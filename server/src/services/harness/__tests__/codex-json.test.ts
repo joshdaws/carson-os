@@ -49,6 +49,26 @@ describe("CodexEventMapper", () => {
     expect(mapper.content).toBe("first\n\nsecond");
   });
 
+  it("streams a paragraph break before each agent_message after the first", () => {
+    // Regression: post-v0.6.0 the live Telegram stream glued consecutive Codex
+    // agent_message blocks together (e.g. "…anything.Checked.") because the
+    // streamed text_delta carried no separator, while the final `content` joins
+    // blocks with "\n\n". The streamed deltas must reconstruct `content` exactly.
+    const { events, mapper } = mapAll([
+      `{"type":"item.completed","item":{"type":"agent_message","text":"anything."}}`,
+      `{"type":"item.completed","item":{"type":"agent_message","text":"Checked."}}`,
+    ]);
+
+    const textDeltas = events
+      .filter((e): e is Extract<HarnessEvent, { type: "text_delta" }> => e.type === "text_delta")
+      .map((e) => e.text);
+
+    // First block has no leading separator; every later block carries "\n\n".
+    expect(textDeltas).toEqual(["anything.", "\n\nChecked."]);
+    // The streamed concatenation must equal the final content exactly.
+    expect(textDeltas.join("")).toBe(mapper.content);
+  });
+
   it("flags a failed tool call as isError", () => {
     const m = new CodexEventMapper();
     const events = m.handleLine(
