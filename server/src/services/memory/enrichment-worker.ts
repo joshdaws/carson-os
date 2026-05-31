@@ -261,23 +261,25 @@ export class EnrichmentWorker {
   }
 
   /**
-   * Existing entity slugs across all collections, refreshed on a 60-second
-   * TTL. Disk-walks all entity-type files via the provider's listEntities,
-   * so the LLM can be given a list of known slugs to reuse instead of
-   * inventing a new one. If the provider doesn't implement listEntities
-   * (non-QMD provider), returns an empty list.
+   * Raw cache of existing entity slugs across all collections, refreshed on a
+   * 60-second TTL. Disk-walks all entity-type files via the provider's
+   * listEntities. If the provider doesn't implement listEntities (non-QMD
+   * provider), returns an empty list.
+   *
+   * NOTE: Returns the list UNSORTED. The member-priority sort + 100-entry cap
+   * lives inside `buildExtractionPrompt` so that callers can't accidentally
+   * skip it and so the sort/cap invariant is self-contained in one place.
    */
   private getCachedEntityList(): Array<{ collection: string; slug: string; type: string; title: string }> {
     const ENTITY_LIST_TTL_MS = 60_000;
     const now = Date.now();
-    if (this.entityListCache.length > 0 && now - this.entityListCachedAt < ENTITY_LIST_TTL_MS) {
-      return this.entityListCache;
+    if (this.entityListCache.length === 0 || now - this.entityListCachedAt >= ENTITY_LIST_TTL_MS) {
+      const provider = this.memoryProvider as unknown as {
+        listEntities?: () => Array<{ collection: string; slug: string; type: string; title: string }>;
+      };
+      this.entityListCache = provider.listEntities?.() ?? [];
+      this.entityListCachedAt = now;
     }
-    const provider = this.memoryProvider as unknown as {
-      listEntities?: () => Array<{ collection: string; slug: string; type: string; title: string }>;
-    };
-    this.entityListCache = provider.listEntities?.() ?? [];
-    this.entityListCachedAt = now;
     return this.entityListCache;
   }
 
@@ -579,21 +581,40 @@ function buildExtractionPrompt(
   payload: EnrichmentTurnPayload,
   existingEntities: Array<{ collection: string; slug: string; type: string; title: string }> = [],
 ): { system: string; user: string } {
-  // Format the existing-entity list as one entry per line, sorted by
-  // collection then slug for stability. Capped at 200 entries to keep the
-  // prompt under ~5KB even on large families.
+  const memberSlug = sanitizeSlug(payload.member);
+
+  // Format the existing-entity list as one entry per line.
+  //
+  // Own the sort + cap here (rather than relying on the caller) so the
+  // member-priority invariant (own collection → household → other) and the
+  // 100-entry cap are self-contained. Collapsing both into one place avoids
+  // a hidden contract where the caller is silently expected to pre-sort.
   const knownEntitiesBlock = (() => {
     if (existingEntities.length === 0) return "";
+    // Sort: member's own collection first, then household, then others.
+    // Stable secondary sort by collection then slug for deterministic prompts.
+    const rank = (collection: string): number => {
+      if (collection === memberSlug) return 0;
+      if (collection === "household") return 1;
+      return 2;
+    };
+    const sorted = [...existingEntities].sort((a, b) => {
+      const ra = rank(a.collection);
+      const rb = rank(b.collection);
+      if (ra !== rb) return ra - rb;
+      return a.collection.localeCompare(b.collection) || a.slug.localeCompare(b.slug);
+    });
     // Display the date-stripped slug — internal storage prepends YYYY-MM-DD
     // to file ids, but the LLM should see (and emit) the bare slug. Showing
     // the dated form caused the LLM to copy `2026-04-29-claire` verbatim,
     // which `generateMemoryId` then re-date-prefixed to
-    // `2026-04-29-2026-04-29-claire` on save.
-    const sorted = [...existingEntities]
+    // `2026-04-29-2026-04-29-claire` on save. The 100-entry cap keeps the
+    // prompt small and prevents household contamination from dominating
+    // the list once the member-own slugs have been promoted to the front.
+    const capped = sorted
       .map((e) => ({ ...e, displaySlug: stripDatePrefix(e.slug) }))
-      .sort((a, b) => a.collection.localeCompare(b.collection) || a.displaySlug.localeCompare(b.displaySlug))
-      .slice(0, 200);
-    const lines = sorted.map(
+      .slice(0, 100);
+    const lines = capped.map(
       (e) => `- [${e.collection}] ${e.displaySlug} (${e.type}) — ${e.title}`,
     );
     return [
@@ -611,17 +632,30 @@ function buildExtractionPrompt(
     "Output STRICT JSON matching the schema:",
     `{"atoms":[{"entity_slug":"kebab-case","entity_type":"person|project|place|media|relationship|commitment|goal|concept|fact|preference|event|decision|routine|skill","collection":"household|<member-slug>","content":"<one to three sentences>","importance":<1-10>}]}`,
     "",
+    `This conversation belongs to member slug "${memberSlug}". Default collection: ${memberSlug}.`,
+    "",
     "Rules:",
     "- entity_slug: kebab-case ASCII, no slashes/dots/underscores.",
-    "- collection: 'household' for facts that affect the family, otherwise the member-slug whose memory it belongs to.",
+    `- collection: Default to the member's own slug (\`${memberSlug}\`). Use 'household' ONLY when the atom (a) names two or more household members by name, (b) describes a dated event the whole family attends together, (c) describes a household-wide rule, shared possession, or shared decision, or (d) describes a relationship between two members. When in doubt, use the member slug.`,
     "- content: short, faithful to what was said. Never paraphrase loosely. If exact words matter, use them.",
     "- Don't fabricate. If the turn contains no factual atoms (chitchat, greetings, restating known info), return {\"atoms\":[]}.",
+    "- If the turn is agent self-description (e.g., \"I am patient and formal\"), a system status confirmation (\"memory write succeeded\", \"test complete\"), or contains no durable factual content, return {\"atoms\":[]}.",
+    "- Never create atoms with entity_slug matching the agent's own name (e.g., 'carson', 'django', 'rosie', 'riley'). Agents are not memory entities.",
     "- importance: 1-3 trivial, 4-6 normal, 7-9 high signal, 10 corrections only.",
+    "",
+    "Examples:",
+    "- Josh + Carson discussing a CarsonOS PR → collection: \"josh\", entity_slug: \"carson-os\" (project)",
+    "- Josh + Carson scheduling a family dinner all five members are attending → collection: \"household\"",
+    "- Josh noting Becca's birthday is next week → collection: \"becca\" (atom is about one person)",
+    "- Grant + Django working on a song → collection: \"grant\"",
+    "- Carson saying \"I am measured and precise\" → {\"atoms\":[]} (agent self-description, no atom)",
     knownEntitiesBlock,
   ].filter(Boolean).join("\n");
 
   const user = [
-    `Member: ${payload.member}`,
+    `Member name: ${payload.member}`,
+    `Member slug: ${memberSlug}`,
+    `Default collection: ${memberSlug}`,
     `Captured at: ${payload.capturedAt}`,
     `Channel: ${payload.channel}`,
     "",
