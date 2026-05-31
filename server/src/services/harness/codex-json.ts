@@ -98,8 +98,14 @@ export class CodexEventMapper {
         const item = ev.item;
         if (!item) return [];
         if (item.type === "agent_message" && typeof item.text === "string") {
+          // Codex delivers each agent_message complete (no char deltas), and a
+          // turn may contain several blocks split by tool calls. The `content`
+          // getter joins them with a blank line, so every streamed delta after
+          // the first must carry the same "\n\n" separator — otherwise the live
+          // Telegram message glues sentences together (e.g. "…anything.Checked.").
+          const separator = this.contentParts.length > 0 ? "\n\n" : "";
           this.contentParts.push(item.text);
-          return [{ type: "text_delta", text: item.text }];
+          return [{ type: "text_delta", text: separator + item.text }];
         }
         if (item.type === "mcp_tool_call") {
           const resultText = item.result?.content
