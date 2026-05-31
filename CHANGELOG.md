@@ -4,6 +4,14 @@ All notable changes to CarsonOS will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.2] - 2026-05-31
+
+### Fixed
+
+- **X/Twitter links go to the X-reader tool, not web search.** When a message contains an X post link and the agent has an X-reader tool granted, a per-turn steering note now points the agent at that tool and forbids guessing — so it reads the real post instead of fabricating a summary from web search. If no X-reader is granted, the agent is told to be honest about the limitation rather than invent one. (#76)
+- **Personal facts stop landing in household memory.** The enrichment worker now defaults a fact to the speaker's own collection, using `household` only when the fact genuinely names multiple members, a family-wide event, or a household rule. Previously ~73% of personal conversations were misfiled as household. (#69)
+- **Codex replies keep their paragraph breaks in Telegram.** Consecutive Codex message blocks no longer glue together (e.g. "…anything.Checked.") in the live edit-in-place stream. (#77)
+
 ## [0.6.1] - 2026-05-28
 
 ### Changed
