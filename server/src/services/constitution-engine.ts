@@ -56,6 +56,10 @@ import {
   type EvaluationResult,
 } from "./evaluators.js";
 import { compileSystemPrompt } from "./prompt-compiler.js";
+import {
+  appendSteeringToLastUserMessage,
+  buildXLinkSteering,
+} from "./link-tool-routing.js";
 import { readUpdateAvailable } from "./system-update-check.js";
 import {
   getAgentSlug,
@@ -876,9 +880,19 @@ export class ConstitutionEngine {
     const useLeanResume = !!resumeSessionId && contextUnchanged && leanResumeEnabled();
     const effectiveSystemPrompt = useLeanResume ? buildLeanResumePrompt() : systemPrompt;
 
+    // Steer links that generic web search can't read (currently X/Twitter
+    // posts) to the household's dedicated reader tool — or, when no such tool
+    // is granted, forbid the agent from inventing a summary. The note is
+    // attached to THIS turn's user message so it applies on both resume
+    // (single current turn) and fresh (full history) paths. `tools` reflects
+    // the agent's actually-granted tool defs for this turn.
+    const linkSteering = buildXLinkSteering(message, tools ?? []);
     const messagesForLlm = resumeSessionId
-      ? [{ role: "user", content: currentTurnForLlm }]
-      : history;
+      ? appendSteeringToLastUserMessage(
+          [{ role: "user", content: currentTurnForLlm }],
+          linkSteering,
+        )
+      : appendSteeringToLastUserMessage(history, linkSteering);
     const messagesForLlmChars = messagesForLlm.reduce((sum, m) => sum + m.content.length, 0);
     perf.preSdkMs = Date.now() - perf.start;
 
